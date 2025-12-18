@@ -14,6 +14,7 @@ import os
 import yaml
 import shutil
 import logging
+import h5py
 import xarray as xr
 import numpy as np
 from datetime import datetime
@@ -138,6 +139,45 @@ def loader(path, ENGINE="h5netcdf"):
             return fh
         except Exception as e:
             print(f"\033[91m ERROR: Could not open file {path} with phony_dims: {e} \033[0m")
+
+def get_dt_from_file(file_path: str, default: float = 0.025) -> float:
+    """
+    Extract time step (dt) from HDF5 file attributes.
+    
+    Searches common attribute locations in the HDF5 file structure.
+    
+    Parameters
+    ----------
+    file_path : str
+        Path to the HDF5 file.
+    default : float, optional
+        Default dt value if not found in file. Default is 0.025.
+    
+    Returns
+    -------
+    float
+        Time step value.
+    """
+    try:
+        with h5py.File(file_path, 'r') as f:
+            # Check root attributes
+            if 'dt' in f.attrs:
+                return float(f.attrs['dt'])
+            if 'dt' in f:
+                return float(f['dt'][()])
+            
+            # Check common group locations
+            for group_name in ['params', 'metadata', 'parameters']:
+                if group_name in f:
+                    grp = f[group_name]
+                    if 'dt' in grp.attrs:
+                        return float(grp.attrs['dt'])
+                    if 'dt' in grp:
+                        return float(grp['dt'][()])
+    except Exception as e:
+        print(f"  Warning: Could not read dt from {file_path}: {e}")
+    
+    return default
 
 def compute_truncation_snapshots(
     file_path: str,
