@@ -34,10 +34,10 @@ from utils import (
     get_output_paths,
     print_header,
     print_config_summary,
+    get_x_sq,
+    solve_opinf_difference_model,
     PipelineConfig,
 )
-from opinf_for_hw.utils.helpers import get_x_sq
-from opinf_for_hw.utils.opinf_utils import solve_opinf_difference_model
 
 # Try to import MPI - fall back to serial execution if not available
 try:

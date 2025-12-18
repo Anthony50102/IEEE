@@ -19,6 +19,74 @@ from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any
 
+#TODO: Clean this part
+# gets non-redundant quadratic terms of X
+def get_x_sq(X):
+    if len(np.shape(X)) == 1:  # if X is a vector
+        r = np.size(X)
+        prods = []
+        for i in range(r):
+            temp = X[i] * X[i:]
+            prods.append(temp)
+        X2 = np.concatenate(tuple(prods))
+
+    elif len(np.shape(X)) == 2:  # if X is a matrix
+        K, r = np.shape(X)
+
+        prods = []
+        for i in range(r):
+            temp = np.transpose(np.broadcast_to(X[:, i], (r - i, K))) * X[:, i:]
+            prods.append(temp)
+        X2 = np.concatenate(tuple(prods), axis=1)
+
+    else:
+        print("invalid input size for helpers.get_x_sq")
+    return X2
+
+def solve_opinf_difference_model(s0: np.ndarray, n_steps: int, f: callable):
+    """
+    Integrate a discrete-time dynamical system forward.
+    
+    Solves the difference equation: s_{k+1} = f(s_k)
+    
+    Parameters
+    ----------
+    s0 : np.ndarray
+        Initial state vector of shape (r,).
+    n_steps : int
+        Number of time steps to integrate.
+    f : callable
+        State transition function f: R^r -> R^r.
+    
+    Returns
+    -------
+    is_nan : bool
+        True if NaN values were encountered during integration.
+    s : np.ndarray
+        State trajectory of shape (r, n_steps).
+    
+    Examples
+    --------
+    >>> A = np.array([[0.9, 0.1], [-0.1, 0.9]])
+    >>> f = lambda x: A @ x
+    >>> s0 = np.array([1.0, 0.0])
+    >>> is_nan, trajectory = solve_opinf_difference_model(s0, 100, f)
+    """
+    r = np.size(s0)
+    s = np.zeros((r, n_steps))
+    is_nan = False
+
+    s[:, 0] = s0
+    for i in range(n_steps - 1):
+        s[:, i + 1] = f(s[:, i])
+
+        if np.any(np.isnan(s[:, i + 1])):
+            print(f"NaN encountered at iteration {i + 1}")
+            is_nan = True
+            break
+
+    return is_nan, s
+
 
 # =============================================================================
 # CONFIGURATION DATACLASS
