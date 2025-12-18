@@ -27,10 +27,11 @@ from utils import (
     check_step_completed,
     get_output_paths,
     print_header,
+    get_x_sq,
+    loader,
+    solve_opinf_difference_model,
     PipelineConfig,
 )
-from opinf_for_hw.utils.helpers import get_x_sq, loader
-from opinf_for_hw.utils.opinf_utils import solve_opinf_difference_model
 
 
 # =============================================================================
