@@ -7,7 +7,6 @@ Research comparing deep learning and traditional methods for predicting chaotic 
 ```
 chaotic-systems-prediction/
 ├── README.md                    # This file
-├── environment.yml              # Conda environment dependencies
 ├── requirements.txt             # Pip dependencies
 ├── setup.py                     # Package installation
 ├── .gitignore                   # Git ignore rules
@@ -23,22 +22,16 @@ chaotic-systems-prediction/
 │   ├── splits/                  # Train/val/test splits
 │   └── README.md                # Data documentation
 │
-├── src/                         # Source code
-│   ├── systems/                 # Chaotic system implementations
-│   ├── traditional/             # Traditional methods (Reservoir Computing, Koopman, etc.)
-│   ├── deep_learning/           # DL architectures (LSTM, Transformer, Neural ODE, etc.)
+├── src/                         # Main code for running experiments
+│   ├── opinf/                   # opinf implementation
+│   ├── fno/                     # Fourier neural operator
 │   ├── utils/                   # Metrics, visualization, data utilities
-│   └── training/                # Training and evaluation code
 │
-├── scripts/                     # Executable scripts
+├── scripts/                     # Executable scripts for job submission or pipeline runs
 │   ├── generate_data.py         # Generate chaotic trajectories
 │   ├── train.py                 # Train models
 │   ├── evaluate.py              # Evaluate models
 │   └── reproduce_paper.py       # Reproduce results
-│
-├── jobs/                        # HPC job scripts
-│   ├── frontera/                # SLURM scripts for Frontera
-│   └── vista/                   # SLURM scripts for Vista
 │
 ├── notebooks/                   # Jupyter notebooks for analysis
 │   ├── 01_exploratory_analysis.ipynb

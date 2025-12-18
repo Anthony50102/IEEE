@@ -1,1 +1,0 @@
-# Lyapunov exponents etc etc
