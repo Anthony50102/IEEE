@@ -216,7 +216,9 @@ def load_all_data(
     logger.info("Loading training trajectories...")
     for i, file_path in enumerate(cfg.training_files):
         t_start = time.time()
-        Q_ic = load_and_process_snapshots(...)
+        Q_ic = load_and_process_snapshots(
+            file_path, i, cfg.engine, train_truncations[i], cfg.verbose
+        )
         print(f"  [TIMING] load_and_process: {time.time() - t_start:.1f}s")
         
         t_start = time.time()
