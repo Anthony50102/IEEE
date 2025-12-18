@@ -20,6 +20,7 @@ Author: Anthony Poole
 """
 
 import argparse
+import gc
 import time
 import numpy as np
 import os
@@ -94,8 +95,10 @@ def evaluate_hyperparameters(
     D_state_reg = D_state_2 + regularizer
     
     O = np.linalg.solve(D_state_reg, np.dot(D_state.T, Y_state)).T
+    del D_state_reg, regularizer  # Free memory
     A = O[:, :r]
     F = O[:, r:r + s]
+    del O  # Free memory
     
     # Integrate model
     f = lambda x: np.dot(A, x) + np.dot(F, get_x_sq(x))
@@ -112,9 +115,11 @@ def evaluate_hyperparameters(
         }
     
     X_OpInf = Xhat_pred.T
+    del Xhat_pred  # Free memory immediately
     
     # Prepare for output operator
     Xhat_OpInf_scaled = (X_OpInf - mean_Xhat[np.newaxis, :]) / scaling_Xhat
+    del X_OpInf  # Free memory
     Xhat_2_OpInf = get_x_sq(Xhat_OpInf_scaled)
     
     # Solve output operator learning
@@ -136,6 +141,9 @@ def evaluate_hyperparameters(
         + G @ Xhat_2_OpInf.T
         + c[:, np.newaxis]
     )
+    
+    # Free large temporary arrays
+    del Xhat_OpInf_scaled, Xhat_2_OpInf, O_out, D_out_reg
     
     ts_Gamma_n = Y_OpInf[0, :]
     ts_Gamma_c = Y_OpInf[1, :]
@@ -234,8 +242,35 @@ def serial_hyperparameter_sweep(
 
 
 # =============================================================================
-# PARALLEL SWEEP (MPI)
+# PARALLEL SWEEP (MPI) WITH SHARED MEMORY
 # =============================================================================
+
+def create_shared_array(node_comm, shape, dtype=np.float64):
+    """
+    Create a numpy array backed by MPI shared memory within a node.
+    
+    Only node_rank 0 allocates the memory; other ranks attach to it.
+    """
+    from mpi4py import MPI
+    
+    node_rank = node_comm.Get_rank()
+    
+    # Calculate size in bytes
+    itemsize = np.dtype(dtype).itemsize
+    nbytes = int(np.prod(shape)) * itemsize
+    
+    # Only node rank 0 allocates
+    if node_rank == 0:
+        win = MPI.Win.Allocate_shared(nbytes, itemsize, comm=node_comm)
+    else:
+        win = MPI.Win.Allocate_shared(0, itemsize, comm=node_comm)
+    
+    # Get buffer from rank 0's allocation
+    buf, itemsize = win.Shared_query(0)
+    arr = np.ndarray(buffer=buf, dtype=dtype, shape=shape)
+    
+    return arr, win
+
 
 def parallel_hyperparameter_sweep(
     cfg: PipelineConfig,
@@ -278,6 +313,13 @@ def parallel_hyperparameter_sweep(
     
     if rank == 0:
         logger.info(f"Parallel sweep: {n_total:,} combinations across {size} ranks")
+        # Memory warning for HPC users
+        if size > 14:
+            logger.warning(
+                f"⚠️  Running {size} MPI ranks may cause memory issues. "
+                f"Consider using 8-14 ranks per node for r={cfg.r}. "
+                f"Memory per rank estimate: ~{2 * cfg.r * cfg.n_steps * 8 / 1e6:.0f} MB"
+            )
     
     # Distribute work
     params_per_rank = n_total // size
@@ -298,8 +340,9 @@ def parallel_hyperparameter_sweep(
     # Process assigned parameters
     local_results = []
     n_nan = 0
+    gc_interval = 50  # Run garbage collection every N iterations
     
-    for asl, asq, aol, aoq in my_params:
+    for i, (asl, asq, aol, aoq) in enumerate(my_params):
         result = evaluate_hyperparameters(
             asl, asq, aol, aoq,
             data['D_state'], data['D_state_2'], data['Y_state'],
@@ -314,6 +357,10 @@ def parallel_hyperparameter_sweep(
             n_nan += 1
         else:
             local_results.append(result)
+        
+        # Periodic garbage collection to prevent memory buildup
+        if (i + 1) % gc_interval == 0:
+            gc.collect()
     
     # Gather results to rank 0
     all_results = comm.gather(local_results, root=0)
@@ -597,33 +644,152 @@ def main():
     
     paths = get_output_paths(args.run_dir)
     
+    # Track shared memory windows for cleanup
+    shared_windows = []
+    
     try:
-        # Load pre-computed data
-        if rank == 0:
-            logger.info("Loading pre-computed data...")
+        # =====================================================================
+        # SHARED MEMORY DATA LOADING (like parallel_sweep.py)
+        # Only rank 0 on each node loads data; other ranks share that memory
+        # =====================================================================
         
-        learning = np.load(paths["learning_matrices"])
-        gamma_ref = np.load(paths["gamma_ref"])
+        if parallel:
+            # Create node-local communicator for shared memory
+            node_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)
+            node_rank = node_comm.Get_rank()
+            node_size = node_comm.Get_size()
+            
+            if rank == 0:
+                logger.info(f"Memory optimization: {node_size} ranks sharing memory per node")
+            
+            # Step 1: Rank 0 loads data and determines shapes
+            if rank == 0:
+                logger.info("Loading pre-computed data (rank 0)...")
+                learning = np.load(paths["learning_matrices"])
+                gamma_ref = np.load(paths["gamma_ref"])
+                
+                # Store local copies temporarily
+                data_local = {
+                    'X_state': learning['X_state'].copy(),
+                    'Y_state': learning['Y_state'].copy(),
+                    'D_state': learning['D_state'].copy(),
+                    'D_state_2': learning['D_state_2'].copy(),
+                    'D_out': learning['D_out'].copy(),
+                    'D_out_2': learning['D_out_2'].copy(),
+                    'mean_Xhat': learning['mean_Xhat'].copy(),
+                    'Y_Gamma': gamma_ref['Y_Gamma'].copy(),
+                }
+                scalars = {
+                    'scaling_Xhat': float(learning['scaling_Xhat']),
+                    'mean_Gamma_n': float(gamma_ref['mean_Gamma_n']),
+                    'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
+                    'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
+                    'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
+                }
+                shapes = {k: v.shape for k, v in data_local.items()}
+                
+                logger.info(f"  X_state shape: {shapes['X_state']}")
+                logger.info(f"  D_out shape: {shapes['D_out']}")
+                
+                # Close file handles
+                learning.close()
+                gamma_ref.close()
+            else:
+                data_local = None
+                shapes = None
+                scalars = None
+            
+            # Step 2: Broadcast shapes and scalars to all ranks
+            shapes = comm.bcast(shapes, root=0)
+            scalars = comm.bcast(scalars, root=0)
+            
+            # Step 3: Create shared memory arrays on each node
+            X_state_shared, win1 = create_shared_array(node_comm, shapes['X_state'])
+            Y_state_shared, win2 = create_shared_array(node_comm, shapes['Y_state'])
+            D_state_shared, win3 = create_shared_array(node_comm, shapes['D_state'])
+            D_state_2_shared, win4 = create_shared_array(node_comm, shapes['D_state_2'])
+            D_out_shared, win5 = create_shared_array(node_comm, shapes['D_out'])
+            D_out_2_shared, win6 = create_shared_array(node_comm, shapes['D_out_2'])
+            mean_Xhat_shared, win7 = create_shared_array(node_comm, shapes['mean_Xhat'])
+            Y_Gamma_shared, win8 = create_shared_array(node_comm, shapes['Y_Gamma'])
+            
+            shared_windows = [win1, win2, win3, win4, win5, win6, win7, win8]
+            
+            # Step 4: Fill shared memory from rank 0 on each node
+            # Create communicator of just node-rank-0s
+            node_root_comm = comm.Split(color=0 if node_rank == 0 else MPI.UNDEFINED, key=rank)
+            
+            if node_rank == 0:
+                # Broadcast data from global rank 0 to all node-rank-0s
+                if node_root_comm != MPI.COMM_NULL:
+                    X_state_shared[:] = node_root_comm.bcast(data_local['X_state'] if rank == 0 else None, root=0)
+                    Y_state_shared[:] = node_root_comm.bcast(data_local['Y_state'] if rank == 0 else None, root=0)
+                    D_state_shared[:] = node_root_comm.bcast(data_local['D_state'] if rank == 0 else None, root=0)
+                    D_state_2_shared[:] = node_root_comm.bcast(data_local['D_state_2'] if rank == 0 else None, root=0)
+                    D_out_shared[:] = node_root_comm.bcast(data_local['D_out'] if rank == 0 else None, root=0)
+                    D_out_2_shared[:] = node_root_comm.bcast(data_local['D_out_2'] if rank == 0 else None, root=0)
+                    mean_Xhat_shared[:] = node_root_comm.bcast(data_local['mean_Xhat'] if rank == 0 else None, root=0)
+                    Y_Gamma_shared[:] = node_root_comm.bcast(data_local['Y_Gamma'] if rank == 0 else None, root=0)
+            
+            # Synchronize within node so all ranks see the data
+            node_comm.Barrier()
+            
+            # Clean up
+            if node_root_comm != MPI.COMM_NULL:
+                node_root_comm.Free()
+            if rank == 0:
+                del data_local
+                gc.collect()
+            
+            # Build data dict pointing to shared memory
+            data = {
+                'X_state': X_state_shared,
+                'Y_state': Y_state_shared,
+                'D_state': D_state_shared,
+                'D_state_2': D_state_2_shared,
+                'D_out': D_out_shared,
+                'D_out_2': D_out_2_shared,
+                'mean_Xhat': mean_Xhat_shared,
+                'Y_Gamma': Y_Gamma_shared,
+                'scaling_Xhat': scalars['scaling_Xhat'],
+                'mean_Gamma_n': scalars['mean_Gamma_n'],
+                'std_Gamma_n': scalars['std_Gamma_n'],
+                'mean_Gamma_c': scalars['mean_Gamma_c'],
+                'std_Gamma_c': scalars['std_Gamma_c'],
+            }
+            
+            if rank == 0:
+                logger.info("Shared memory setup complete")
+            
+            comm.Barrier()
         
-        data = {
-            'X_state': learning['X_state'],
-            'Y_state': learning['Y_state'],
-            'D_state': learning['D_state'],
-            'D_state_2': learning['D_state_2'],
-            'D_out': learning['D_out'],
-            'D_out_2': learning['D_out_2'],
-            'mean_Xhat': learning['mean_Xhat'],
-            'scaling_Xhat': float(learning['scaling_Xhat']),
-            'Y_Gamma': gamma_ref['Y_Gamma'],
-            'mean_Gamma_n': float(gamma_ref['mean_Gamma_n']),
-            'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
-            'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
-            'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
-        }
-        
-        if rank == 0:
-            logger.info(f"  X_state shape: {data['X_state'].shape}")
-            logger.info(f"  D_out shape: {data['D_out'].shape}")
+        else:
+            # Serial mode - load data directly
+            if rank == 0:
+                logger.info("Loading pre-computed data...")
+            
+            learning = np.load(paths["learning_matrices"])
+            gamma_ref = np.load(paths["gamma_ref"])
+            
+            data = {
+                'X_state': learning['X_state'],
+                'Y_state': learning['Y_state'],
+                'D_state': learning['D_state'],
+                'D_state_2': learning['D_state_2'],
+                'D_out': learning['D_out'],
+                'D_out_2': learning['D_out_2'],
+                'mean_Xhat': learning['mean_Xhat'],
+                'scaling_Xhat': float(learning['scaling_Xhat']),
+                'Y_Gamma': gamma_ref['Y_Gamma'],
+                'mean_Gamma_n': float(gamma_ref['mean_Gamma_n']),
+                'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
+                'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
+                'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
+            }
+            
+            if rank == 0:
+                logger.info(f"  X_state shape: {data['X_state'].shape}")
+                logger.info(f"  D_out shape: {data['D_out'].shape}")
         
         # Run sweep
         if rank == 0:
@@ -706,6 +872,15 @@ def main():
             logger.error(f"Step 2 failed: {e}", exc_info=True)
             save_step_status(args.run_dir, "step_2", "failed", {"error": str(e)})
         raise
+    
+    finally:
+        # Cleanup shared memory windows
+        if parallel and shared_windows:
+            comm.Barrier()
+            for win in shared_windows:
+                win.Free()
+            if rank == 0:
+                logger.info("Shared memory windows freed")
 
 
 if __name__ == "__main__":
