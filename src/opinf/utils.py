@@ -14,6 +14,7 @@ import os
 import yaml
 import shutil
 import logging
+import xarray as xr
 import numpy as np
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -86,6 +87,96 @@ def solve_opinf_difference_model(s0: np.ndarray, n_steps: int, f: callable):
             break
 
     return is_nan, s
+
+# =============================================================================
+# MEMORY-MAPPED FILE UTILITIES
+# =============================================================================
+
+def get_memmap_path(output_path: str, name: str) -> str:
+    """
+    Get full path for a memory-mapped file.
+    
+    Parameters
+    ----------
+    output_path : str
+        Directory where memmap files are stored.
+    name : str
+        Base name for the memmap file.
+    
+    Returns
+    -------
+    str
+        Full path to memmap file.
+    """
+    return os.path.join(output_path, f"memmap_{name}.dat")
+
+
+def cleanup_memmap(output_path: str, name: str) -> None:
+    """
+    Remove a memory-mapped file if it exists.
+    
+    Parameters
+    ----------
+    output_path : str
+        Directory where memmap files are stored.
+    name : str
+        Base name for the memmap file.
+    """
+    path = get_memmap_path(output_path, name)
+    if os.path.exists(path):
+        os.remove(path)
+
+def loader(path, ENGINE="h5netcdf"):
+    try:
+        fh = xr.open_dataset(path, engine=ENGINE)
+        return fh
+    except Exception as e:
+        print(f"\033[91m ERROR: Could not open file {path}: {e} \033[0m")
+        print("  Retrying with phony_dims='sort'...")
+        try:
+            fh = xr.open_dataset(path, engine=ENGINE, phony_dims="sort")
+            return fh
+        except Exception as e:
+            print(f"\033[91m ERROR: Could not open file {path} with phony_dims: {e} \033[0m")
+
+def compute_truncation_snapshots(
+    file_path: str,
+    truncate_snapshots: int = None,
+    truncate_time: float = None,
+    default_dt: float = 0.025
+) -> int:
+    """
+    Compute number of snapshots to keep based on truncation settings.
+    
+    Parameters
+    ----------
+    file_path : str
+        Path to data file (used to extract dt).
+    truncate_snapshots : int, optional
+        Direct number of snapshots to keep.
+    truncate_time : float, optional
+        Simulation time to keep (converted to snapshots using dt).
+    default_dt : float, optional
+        Default time step if not found in file.
+    
+    Returns
+    -------
+    int or None
+        Number of snapshots to keep, or None if no truncation.
+    
+    Notes
+    -----
+    If both truncate_snapshots and truncate_time are provided,
+    truncate_snapshots takes priority.
+    """
+    if truncate_snapshots is not None:
+        return truncate_snapshots
+    elif truncate_time is not None:
+        dt = get_dt_from_file(file_path, default_dt)
+        n_snaps = int(truncate_time / dt)
+        print(f"    Using dt={dt:.4f} -> {n_snaps} snapshots for t={truncate_time}")
+        return n_snaps
+    return None
 
 
 # =============================================================================
