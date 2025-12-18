@@ -22,7 +22,7 @@ run_name: "hw_rom_experiment"  # Used for output directory naming
 # -----------------------------------------------------------------------------
 paths:
   # Base output directory - a timestamped subdirectory will be created here
-  output_base: "/scratch2/10407/anthony50102/sciml_roms_hasegawa_wakatani/"
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
   
   # Raw simulation data directory
   data_dir: "/work2/10407/anthony50102/frontera/data/hw2d_sim/t600_d256x256_raw/"
