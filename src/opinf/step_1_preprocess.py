@@ -72,40 +72,45 @@ def load_and_process_snapshots(
     np.ndarray
         Processed array of shape (n_spatial, n_time).
     """
+    import time
+    
+    t0 = time.time()
     if verbose:
         print(f"  Loading file {index + 1}: {os.path.basename(file_path)}")
     
+    # 1. Open and read
+    t1 = time.time()
     fh = xr.open_dataset(file_path, engine=engine, phony_dims="sort")
-    
-    density = fh["density"].values
+    density = fh["density"].values  # <-- This loads into RAM
     phi = fh["phi"].values
     fh.close()
+    print(f"    [TIMING] HDF5 read: {time.time() - t1:.1f}s")
     
-    # Apply truncation
-    original_n_time = density.shape[0]
-    if max_snapshots is not None and max_snapshots < original_n_time:
+    # 2. Truncate
+    t1 = time.time()
+    if max_snapshots is not None and max_snapshots < density.shape[0]:
         density = density[:max_snapshots]
         phi = phi[:max_snapshots]
-        if verbose:
-            print(f"    Truncated: {original_n_time} -> {max_snapshots} snapshots")
+    print(f"    [TIMING] Truncate: {time.time() - t1:.1f}s")
     
-    # Handle 2D vs 3D input
+    # 3. Reshape
+    t1 = time.time()
     if density.ndim == 2:
         n_time = density.shape[0]
         grid_size = int(np.sqrt(density.shape[1]))
         density = density.reshape(n_time, grid_size, grid_size)
         phi = phi.reshape(n_time, grid_size, grid_size)
+    print(f"    [TIMING] Reshape: {time.time() - t1:.1f}s")
     
-    # Stack fields: (time, y, x) -> (n_spatial, time)
-    Q = np.stack([density, phi], axis=0)  # (2, time, y, x)
+    # 4. Stack and transpose
+    t1 = time.time()
+    Q = np.stack([density, phi], axis=0)
     del density, phi
-    
-    Q = Q.transpose(0, 2, 3, 1)  # (2, y, x, time)
+    Q = Q.transpose(0, 2, 3, 1)
     n_field, n_y, n_x, n_time = Q.shape
     Q = Q.reshape(n_field * n_y * n_x, n_time)
-    
-    if verbose:
-        print(f"    Shape: {Q.shape}")
+    print(f"    [TIMING] Stack/transpose: {time.time() - t1:.1f}s")
+    print(f"    [TIMING] Total: {time.time() - t0:.1f}s")
     
     return Q
 
