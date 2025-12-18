@@ -26,6 +26,7 @@ from utils import (
     load_config,
     save_config,
     get_run_directory,
+    get_data_directory,
     setup_logging,
     save_step_status,
     get_output_paths,
@@ -479,12 +480,14 @@ def main():
     
     # Get/create run directory
     run_dir = get_run_directory(cfg, args.run_dir)
+    data_dir = get_data_directory(cfg, args.data_dir)
     
     # Set up logging
     logger = setup_logging("step_1", run_dir, cfg.log_level)
     
     print_header("STEP 1: DATA PREPROCESSING AND POD COMPUTATION")
     print(f"  Run directory: {run_dir}")
+    print(f"  Data directory: {data_dir}")
     print_config_summary(cfg)
     
     logger.info(f"Run directory: {run_dir}")

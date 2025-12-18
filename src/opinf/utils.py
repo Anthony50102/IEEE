@@ -529,6 +529,32 @@ def get_run_directory(cfg: PipelineConfig, run_dir: str = None) -> str:
     else:
         return create_run_directory(cfg)
 
+#TODO: Make this better, probaly don't need two methods for thsi
+def get_data_directory(cfg: PipelineConfig, data_dir: str = None) -> str:
+    """
+    Get or create run directory.
+    
+    If run_dir is provided, use it (for continuing from previous step).
+    Otherwise, create a new timestamped directory.
+    
+    Parameters
+    ----------
+    cfg : PipelineConfig
+        Configuration object.
+    run_dir : str, optional
+        Existing run directory to use.
+    
+    Returns
+    -------
+    str
+        Path to run directory.
+    """
+    if data_dir and os.path.isdir(data_dir):
+        cfg.data_dir = data_dir
+        return data_dir
+    else:
+        print(f"No directory found at data dir: {data_dir}")
+
 
 # =============================================================================
 # LOGGING
