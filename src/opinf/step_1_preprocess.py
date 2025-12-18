@@ -215,12 +215,18 @@ def load_all_data(
     # Load training data
     logger.info("Loading training trajectories...")
     for i, file_path in enumerate(cfg.training_files):
-        Q_ic = load_and_process_snapshots(
-            file_path, i, cfg.engine, train_truncations[i], cfg.verbose
-        )
+        t_start = time.time()
+        Q_ic = load_and_process_snapshots(...)
+        print(f"  [TIMING] load_and_process: {time.time() - t_start:.1f}s")
+        
+        t_start = time.time()
         Q_train[:, train_boundaries[i]:train_boundaries[i + 1]] = Q_ic
+        print(f"  [TIMING] memmap write: {time.time() - t_start:.1f}s")
+        
         del Q_ic
+        t_start = time.time()
         gc.collect()
+        print(f"  [TIMING] gc.collect: {time.time() - t_start:.1f}s")
     
     # Load test data
     logger.info("Loading test trajectories...")
