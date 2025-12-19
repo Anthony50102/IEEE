@@ -505,6 +505,14 @@ def compute_pod_distributed(
     if rank == 0:
         logger.info(f"  Local Gram matrix compute: {MPI.Wtime() - t_matmul:.2f}s")
     
+    # DIAGNOSTIC: Check local Gram matrix before Allreduce
+    if rank == 0:
+        logger.info(f"  [DIAGNOSTIC] D_local shape: {D_local.shape}, dtype: {D_local.dtype}")
+        logger.info(f"  [DIAGNOSTIC] D_local range: [{D_local.min():.2e}, {D_local.max():.2e}]")
+        logger.info(f"  [DIAGNOSTIC] D_local diagonal sum: {np.trace(D_local):.2e}")
+        logger.info(f"  [DIAGNOSTIC] D_local[0,0]: {D_local[0,0]:.2e}")
+        logger.info(f"  [DIAGNOSTIC] D_local is C-contiguous: {D_local.flags['C_CONTIGUOUS']}")
+    
     # Allreduce to get global Gram matrix (chunked to avoid overflow)
     t_reduce = MPI.Wtime()
     D_global = np.zeros_like(D_local)
@@ -524,17 +532,23 @@ def compute_pod_distributed(
         
         for start_row in range(0, n_time, rows_per_chunk):
             end_row = min(start_row + rows_per_chunk, n_time)
-            comm.Allreduce(
-                D_local[start_row:end_row, :],
-                D_global[start_row:end_row, :],
-                op=MPI.SUM
-            )
+            # CRITICAL: Ensure contiguous arrays for MPI
+            send_buf = np.ascontiguousarray(D_local[start_row:end_row, :])
+            recv_buf = np.zeros_like(send_buf)
+            comm.Allreduce(send_buf, recv_buf, op=MPI.SUM)
+            D_global[start_row:end_row, :] = recv_buf
         
         if rank == 0:
             logger.info(f"  Chunked Allreduce complete: {(n_time + rows_per_chunk - 1) // rows_per_chunk} chunks")
     else:
         # Small enough for single Allreduce
         comm.Allreduce(D_local, D_global, op=MPI.SUM)
+    
+    # DIAGNOSTIC: Check global Gram matrix after Allreduce
+    if rank == 0:
+        logger.info(f"  [DIAGNOSTIC] D_global range: [{D_global.min():.2e}, {D_global.max():.2e}]")
+        logger.info(f"  [DIAGNOSTIC] D_global diagonal sum: {np.trace(D_global):.2e}")
+        logger.info(f"  [DIAGNOSTIC] D_global[0,0]: {D_global[0,0]:.2e}")
     
     if rank == 0:
         logger.info(f"  Allreduce: {MPI.Wtime() - t_reduce:.2f}s")
