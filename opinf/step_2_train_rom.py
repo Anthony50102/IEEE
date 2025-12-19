@@ -452,7 +452,7 @@ def log_error_statistics(results: list, logger) -> dict:
     std_thresholds = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.75, 1.00]
     
     # Header
-    header = f"{'mean\\std':<10}"
+    header = "{:<10}".format("mean/std")
     for st in std_thresholds:
         header += f" | {st:>6.2f}"
     logger.info(header)
