@@ -574,9 +574,11 @@ def compute_pod_distributed(
     gc.collect()
     
     # Eigendecomposition of positive semi-definite Gram matrix
+    # Only rank 0 computes this to save memory - D_global is 12.8GB for 40k snapshots!
     t_eig = MPI.Wtime()
     
-    # Sanity check before eigendecomposition
+    n_time = D_global.shape[0]
+    
     if rank == 0:
         logger.info(f"  [DIAGNOSTIC] D_global dtype: {D_global.dtype}")
         logger.info(f"  [DIAGNOSTIC] D_global is C-contiguous: {D_global.flags['C_CONTIGUOUS']}")
@@ -585,14 +587,44 @@ def compute_pod_distributed(
         # Expected: sum of eigenvalues = trace
         expected_eig_sum = np.trace(D_global)
         logger.info(f"  [DIAGNOSTIC] Expected eigenvalue sum (trace): {expected_eig_sum:.2e}")
-    
-    eigs, eigv = np.linalg.eigh(D_global)
-    
-    if rank == 0:
+        
+        # Make a contiguous copy to ensure no memory aliasing issues
+        D_for_eig = np.ascontiguousarray(D_global.copy())
+        logger.info(f"  [DIAGNOSTIC] D_for_eig copy created, is C-contiguous: {D_for_eig.flags['C_CONTIGUOUS']}")
+        
+        # Use scipy for more robust eigendecomposition
+        try:
+            from scipy.linalg import eigh as scipy_eigh
+            logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
+            eigs, eigv = scipy_eigh(D_for_eig)
+        except ImportError:
+            logger.info("  Using numpy.linalg.eigh for eigendecomposition...")
+            eigs, eigv = np.linalg.eigh(D_for_eig)
+        
+        del D_for_eig
+        
         # Verify eigenvalue sum matches trace
         actual_eig_sum = np.sum(eigs)
         logger.info(f"  [DIAGNOSTIC] Actual eigenvalue sum: {actual_eig_sum:.2e}")
         logger.info(f"  [DIAGNOSTIC] Trace vs eig sum difference: {abs(expected_eig_sum - actual_eig_sum):.2e}")
+        
+        # If still broken, try alternative approach with SVD
+        if abs(actual_eig_sum - expected_eig_sum) / max(abs(expected_eig_sum), 1) > 0.01:
+            logger.warning("  WARNING: Eigenvalue sum doesn't match trace! Trying SVD instead...")
+            # For symmetric positive semi-definite matrix, SVD gives same result
+            # but may be more numerically stable
+            U, s, Vt = np.linalg.svd(D_global, full_matrices=True)
+            eigs = s  # Singular values = eigenvalues for symmetric PSD
+            eigv = U  # Left singular vectors = eigenvectors
+            actual_eig_sum = np.sum(eigs)
+            logger.info(f"  [DIAGNOSTIC] SVD singular value sum: {actual_eig_sum:.2e}")
+    else:
+        eigs = np.empty(n_time, dtype=np.float64)
+        eigv = np.empty((n_time, n_time), dtype=np.float64)
+    
+    # Broadcast eigenvalues and eigenvectors from rank 0
+    comm.Bcast(eigs, root=0)
+    comm.Bcast(eigv, root=0)
     
     # Sort by decreasing eigenvalue
     sorted_indices = np.argsort(eigs)[::-1]
