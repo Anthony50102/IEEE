@@ -332,7 +332,7 @@ def compute_pod_distributed(
     
     Uses the method of snapshots (Sirovich):
     1. Compute local Gram matrices D_local = Q_local.T @ Q_local
-    2. Allreduce to get global Gram matrix D_global
+    2. Allreduce to get global Gram matrix D_global (in chunks if needed)
     3. Eigendecomposition of D_global
     4. Compute transformation matrix Tr = V @ diag(sqrt(1/eigs))
     
@@ -365,10 +365,37 @@ def compute_pod_distributed(
     if rank == 0:
         logger.info(f"  Local Gram matrix compute: {MPI.Wtime() - t_matmul:.2f}s")
     
-    # Allreduce to get global Gram matrix
+    # Allreduce to get global Gram matrix (chunked to avoid overflow)
     t_reduce = MPI.Wtime()
     D_global = np.zeros_like(D_local)
-    comm.Allreduce(D_local, D_global, op=MPI.SUM)
+    
+    # MPI count limit is ~2^31 - 1 (~2.1 billion elements)
+    # Chunk the reduction if matrix is too large
+    total_elements = D_local.size
+    max_chunk_size = 2**30  # ~1 billion elements per chunk (safe margin)
+    
+    if total_elements > max_chunk_size:
+        if rank == 0:
+            logger.info(f"  Large matrix detected ({total_elements:,} elements), using chunked Allreduce...")
+        
+        n_time = D_local.shape[0]
+        # Reduce row by row or in row chunks
+        rows_per_chunk = max(1, max_chunk_size // n_time)
+        
+        for start_row in range(0, n_time, rows_per_chunk):
+            end_row = min(start_row + rows_per_chunk, n_time)
+            comm.Allreduce(
+                D_local[start_row:end_row, :],
+                D_global[start_row:end_row, :],
+                op=MPI.SUM
+            )
+        
+        if rank == 0:
+            logger.info(f"  Chunked Allreduce complete: {(n_time + rows_per_chunk - 1) // rows_per_chunk} chunks")
+    else:
+        # Small enough for single Allreduce
+        comm.Allreduce(D_local, D_global, op=MPI.SUM)
+    
     if rank == 0:
         logger.info(f"  Allreduce: {MPI.Wtime() - t_reduce:.2f}s")
     
@@ -386,10 +413,6 @@ def compute_pod_distributed(
     
     if rank == 0:
         logger.info(f"  Eigendecomposition: {MPI.Wtime() - t_eig:.2f}s")
-    
-    # Compute transformation matrix (relates to right singular vectors)
-    # Singular values are sqrt of eigenvalues
-    # Tr transforms temporal modes to get reduced coordinates
     
     elapsed = MPI.Wtime() - start_time
     if rank == 0:
