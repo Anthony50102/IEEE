@@ -549,6 +549,23 @@ def compute_pod_distributed(
         logger.info(f"  [DIAGNOSTIC] D_global range: [{D_global.min():.2e}, {D_global.max():.2e}]")
         logger.info(f"  [DIAGNOSTIC] D_global diagonal sum: {np.trace(D_global):.2e}")
         logger.info(f"  [DIAGNOSTIC] D_global[0,0]: {D_global[0,0]:.2e}")
+        
+        # Check for NaN/Inf
+        logger.info(f"  [DIAGNOSTIC] D_global has NaN: {np.any(np.isnan(D_global))}")
+        logger.info(f"  [DIAGNOSTIC] D_global has Inf: {np.any(np.isinf(D_global))}")
+        
+        # Check symmetry - CRITICAL for eigh
+        symmetry_error = np.max(np.abs(D_global - D_global.T))
+        logger.info(f"  [DIAGNOSTIC] D_global symmetry error: {symmetry_error:.2e}")
+        
+        # Force symmetry if needed (numerical fix)
+        if symmetry_error > 1e-10:
+            logger.warning(f"  WARNING: Matrix not symmetric! Forcing symmetry...")
+            D_global = (D_global + D_global.T) / 2.0
+            logger.info(f"  [DIAGNOSTIC] After symmetrization, error: {np.max(np.abs(D_global - D_global.T)):.2e}")
+    
+    # Broadcast the (possibly symmetrized) D_global to all ranks
+    comm.Bcast(D_global, root=0)
     
     if rank == 0:
         logger.info(f"  Allreduce: {MPI.Wtime() - t_reduce:.2f}s")
@@ -558,7 +575,24 @@ def compute_pod_distributed(
     
     # Eigendecomposition of positive semi-definite Gram matrix
     t_eig = MPI.Wtime()
+    
+    # Sanity check before eigendecomposition
+    if rank == 0:
+        logger.info(f"  [DIAGNOSTIC] D_global dtype: {D_global.dtype}")
+        logger.info(f"  [DIAGNOSTIC] D_global is C-contiguous: {D_global.flags['C_CONTIGUOUS']}")
+        logger.info(f"  [DIAGNOSTIC] D_global Frobenius norm: {np.linalg.norm(D_global, 'fro'):.2e}")
+        
+        # Expected: sum of eigenvalues = trace
+        expected_eig_sum = np.trace(D_global)
+        logger.info(f"  [DIAGNOSTIC] Expected eigenvalue sum (trace): {expected_eig_sum:.2e}")
+    
     eigs, eigv = np.linalg.eigh(D_global)
+    
+    if rank == 0:
+        # Verify eigenvalue sum matches trace
+        actual_eig_sum = np.sum(eigs)
+        logger.info(f"  [DIAGNOSTIC] Actual eigenvalue sum: {actual_eig_sum:.2e}")
+        logger.info(f"  [DIAGNOSTIC] Trace vs eig sum difference: {abs(expected_eig_sum - actual_eig_sum):.2e}")
     
     # Sort by decreasing eigenvalue
     sorted_indices = np.argsort(eigs)[::-1]
