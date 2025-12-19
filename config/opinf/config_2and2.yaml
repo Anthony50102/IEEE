@@ -105,8 +105,8 @@ model_selection:
   num_top_models: 20            # Number of top models to keep
   
   # threshold parameters
-  threshold_mean: 0.20          # Maximum relative error in mean (5%)
-  threshold_std: 0.70           # Maximum relative error in std (30%)
+  threshold_mean: 0.05          # Maximum relative error in mean (5%)
+  threshold_std: 0.45           # Maximum relative error in std (30%)
 
 # -----------------------------------------------------------------------------
 # Evaluation parameters
