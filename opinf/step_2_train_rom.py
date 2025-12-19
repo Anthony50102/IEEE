@@ -562,7 +562,7 @@ def recompute_operators(
     logger = None,
 ) -> list:
     """
-    Recompute operator matrices for selected models.
+    Recompute operator matrices for selected models (serial version).
     
     During the sweep, we don't store operators to save memory.
     This function recomputes them for the selected models.
@@ -584,15 +584,22 @@ def recompute_operators(
         Models with operator matrices (A, F, C, G, c).
     """
     if logger:
-        logger.info(f"Recomputing operators for {len(selected)} models...")
+        logger.info(f"Recomputing operators for {len(selected)} models (serial)...")
     
     s = int(r * (r + 1) / 2)
     d_state = r + s
     d_out = r + s + 1
     
+    # Precompute common terms (these are the same for all models)
+    DtY_state = data['D_state'].T @ data['Y_state']
+    DtY_gamma = data['D_out'].T @ data['Y_Gamma'].T
+    
     models_with_ops = []
     
-    for params in selected:
+    for i, params in enumerate(selected):
+        if logger and (i + 1) % 100 == 0:
+            logger.info(f"  Progress: {i + 1}/{len(selected)}")
+        
         alpha_state_lin = params['alpha_state_lin']
         alpha_state_quad = params['alpha_state_quad']
         alpha_out_lin = params['alpha_out_lin']
@@ -602,10 +609,9 @@ def recompute_operators(
         regg = np.zeros(d_state)
         regg[:r] = alpha_state_lin
         regg[r:r + s] = alpha_state_quad
-        regularizer = np.diag(regg)
-        D_state_reg = data['D_state_2'] + regularizer
+        D_state_reg = data['D_state_2'] + np.diag(regg)
         
-        O = np.linalg.solve(D_state_reg, np.dot(data['D_state'].T, data['Y_state'])).T
+        O = np.linalg.solve(D_state_reg, DtY_state).T
         A = O[:, :r]
         F = O[:, r:r + s]
         
@@ -614,10 +620,9 @@ def recompute_operators(
         regg_out[:r] = alpha_out_lin
         regg_out[r:r + s] = alpha_out_quad
         regg_out[r + s:] = alpha_out_lin
-        regularizer_out = np.diag(regg_out)
-        D_out_reg = data['D_out_2'] + regularizer_out
+        D_out_reg = data['D_out_2'] + np.diag(regg_out)
         
-        O_out = np.linalg.solve(D_out_reg, np.dot(data['D_out'].T, data['Y_Gamma'].T)).T
+        O_out = np.linalg.solve(D_out_reg, DtY_gamma).T
         C = O_out[:, :r]
         G = O_out[:, r:r + s]
         c = O_out[:, r + s]
@@ -644,9 +649,319 @@ def recompute_operators(
     return models_with_ops
 
 
+def parallel_recompute_and_save(
+    selected: list,
+    data: dict,
+    r: int,
+    output_dir: str,
+    cfg,
+    comm,
+    logger = None,
+) -> int:
+    """
+    Recompute operator matrices in parallel and save directly from each rank.
+    
+    Each rank computes operators for its assigned models and saves them
+    directly to a chunk file. This avoids gathering all operators to rank 0,
+    which would cause memory issues with thousands of models.
+    
+    Parameters
+    ----------
+    selected : list
+        Selected model parameter dictionaries (only needed on rank 0).
+    data : dict
+        Pre-loaded data matrices (in shared memory).
+    r : int
+        Number of POD modes.
+    output_dir : str
+        Directory to save model files.
+    cfg : PipelineConfig
+        Configuration object.
+    comm : MPI.Comm
+        MPI communicator.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    int
+        Total number of models saved (on rank 0), 0 on other ranks.
+    """
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    
+    # Broadcast number of models and their parameters from rank 0
+    if rank == 0:
+        n_models = len(selected)
+        # Extract just the hyperparameters for broadcasting (not full model data)
+        params_list = [
+            {
+                'alpha_state_lin': m['alpha_state_lin'],
+                'alpha_state_quad': m['alpha_state_quad'],
+                'alpha_out_lin': m['alpha_out_lin'],
+                'alpha_out_quad': m['alpha_out_quad'],
+                'total_error': m['total_error'],
+                'mean_err_Gamma_n': m['mean_err_Gamma_n'],
+                'std_err_Gamma_n': m['std_err_Gamma_n'],
+                'mean_err_Gamma_c': m['mean_err_Gamma_c'],
+                'std_err_Gamma_c': m['std_err_Gamma_c'],
+            }
+            for m in selected
+        ]
+        if logger:
+            logger.info(f"Recomputing operators for {n_models} models across {size} ranks...")
+            logger.info(f"  Each rank saves directly to avoid memory bottleneck")
+    else:
+        n_models = None
+        params_list = None
+    
+    # Broadcast to all ranks
+    n_models = comm.bcast(n_models, root=0)
+    params_list = comm.bcast(params_list, root=0)
+    
+    if n_models == 0:
+        return 0
+    
+    # Distribute models across ranks
+    models_per_rank = n_models // size
+    remainder = n_models % size
+    
+    if rank < remainder:
+        start_idx = rank * (models_per_rank + 1)
+        end_idx = start_idx + models_per_rank + 1
+    else:
+        start_idx = rank * models_per_rank + remainder
+        end_idx = start_idx + models_per_rank
+    
+    my_params = params_list[start_idx:end_idx]
+    
+    if rank == 0 and logger:
+        logger.info(f"  Each rank recomputes ~{len(my_params)} models")
+    
+    # Precompute common terms (same for all models)
+    s = int(r * (r + 1) / 2)
+    d_state = r + s
+    d_out = r + s + 1
+    
+    DtY_state = data['D_state'].T @ data['Y_state']
+    DtY_gamma = data['D_out'].T @ data['Y_Gamma'].T
+    
+    # Recompute operators for assigned models and save directly
+    local_models = []
+    
+    for params in my_params:
+        alpha_state_lin = params['alpha_state_lin']
+        alpha_state_quad = params['alpha_state_quad']
+        alpha_out_lin = params['alpha_out_lin']
+        alpha_out_quad = params['alpha_out_quad']
+        
+        # State operators
+        regg = np.zeros(d_state)
+        regg[:r] = alpha_state_lin
+        regg[r:r + s] = alpha_state_quad
+        D_state_reg = data['D_state_2'] + np.diag(regg)
+        
+        O = np.linalg.solve(D_state_reg, DtY_state).T
+        A = O[:, :r]
+        F = O[:, r:r + s]
+        
+        # Output operators
+        regg_out = np.zeros(d_out)
+        regg_out[:r] = alpha_out_lin
+        regg_out[r:r + s] = alpha_out_quad
+        regg_out[r + s:] = alpha_out_lin
+        D_out_reg = data['D_out_2'] + np.diag(regg_out)
+        
+        O_out = np.linalg.solve(D_out_reg, DtY_gamma).T
+        C = O_out[:, :r]
+        G = O_out[:, r:r + s]
+        c = O_out[:, r + s]
+        
+        # Build model with operators
+        model = {
+            'A': A,
+            'F': F,
+            'C': C,
+            'G': G,
+            'c': c,
+            'alpha_state_lin': alpha_state_lin,
+            'alpha_state_quad': alpha_state_quad,
+            'alpha_out_lin': alpha_out_lin,
+            'alpha_out_quad': alpha_out_quad,
+            'total_error': params['total_error'],
+            'mean_err_Gamma_n': params['mean_err_Gamma_n'],
+            'std_err_Gamma_n': params['std_err_Gamma_n'],
+            'mean_err_Gamma_c': params['mean_err_Gamma_c'],
+            'std_err_Gamma_c': params['std_err_Gamma_c'],
+        }
+        local_models.append((params['total_error'], model))
+    
+    # Each rank saves its chunk directly (if it has any models)
+    if len(local_models) > 0:
+        # Create chunks subdirectory to avoid polluting output dir
+        chunks_dir = os.path.join(output_dir, "ensemble_chunks")
+        os.makedirs(chunks_dir, exist_ok=True)
+        chunk_path = os.path.join(chunks_dir, f"chunk_rank{rank:04d}.npz")
+        
+        chunk_data = {
+            'num_models': len(local_models),
+            'rank': rank,
+            'start_idx': start_idx,
+            'end_idx': end_idx,
+        }
+        
+        for i, (score, model) in enumerate(local_models):
+            prefix = f'model_{i}_'
+            for key in ['A', 'F', 'C', 'G', 'c',
+                        'alpha_state_lin', 'alpha_state_quad',
+                        'alpha_out_lin', 'alpha_out_quad',
+                        'total_error', 'mean_err_Gamma_n', 'std_err_Gamma_n',
+                        'mean_err_Gamma_c', 'std_err_Gamma_c']:
+                chunk_data[prefix + key] = model[key]
+        
+        np.savez(chunk_path, **chunk_data)
+    
+    # Barrier to ensure all ranks have saved
+    comm.Barrier()
+    
+    # Gather counts to rank 0 for reporting
+    local_count = len(local_models)
+    all_counts = comm.gather(local_count, root=0)
+    
+    if rank == 0:
+        total_saved = sum(all_counts)
+        
+        # Create an index file listing all chunks and global metadata
+        chunk_files = [f"chunk_rank{r:04d}.npz" 
+                       for r, count in enumerate(all_counts) if count > 0]
+        
+        chunks_dir = os.path.join(output_dir, "ensemble_chunks")
+        index_path = os.path.join(chunks_dir, "index.npz")
+        np.savez(
+            index_path,
+            num_chunks=len(chunk_files),
+            chunk_files=np.array(chunk_files, dtype=object),
+            models_per_chunk=np.array([c for c in all_counts if c > 0]),
+            total_models=total_saved,
+            selection_method=cfg.selection_method,
+            r=cfg.r,
+            threshold_mean=cfg.threshold_mean,
+            threshold_std=cfg.threshold_std,
+            num_top_models=cfg.num_top_models,
+        )
+        
+        if logger:
+            logger.info(f"  Saved {total_saved} models across {len(chunk_files)} chunk files")
+            logger.info(f"  Index file: {index_path}")
+        
+        return total_saved
+    
+    return 0
+
+
 # =============================================================================
 # SAVE ENSEMBLE
 # =============================================================================
+
+def load_ensemble(ensemble_dir: str, logger=None) -> list:
+    """
+    Load ensemble models from either single file or parallel chunks.
+    
+    Automatically detects format based on presence of ensemble_chunks/index.npz.
+    
+    Parameters
+    ----------
+    ensemble_dir : str
+        Directory containing ensemble files.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    list
+        List of (score, model_dict) tuples sorted by error.
+    """
+    chunks_dir = os.path.join(ensemble_dir, "ensemble_chunks")
+    index_path = os.path.join(chunks_dir, "index.npz")
+    single_path = os.path.join(ensemble_dir, "ensemble_models.npz")
+    
+    if os.path.exists(index_path):
+        # Load from parallel chunks
+        if logger:
+            logger.info(f"Loading ensemble from parallel chunks...")
+        
+        index = np.load(index_path, allow_pickle=True)
+        chunk_files = index['chunk_files']
+        total_models = int(index['total_models'])
+        
+        if logger:
+            logger.info(f"  {len(chunk_files)} chunks, {total_models} total models")
+        
+        all_models = []
+        for chunk_file in chunk_files:
+            chunk_path = os.path.join(chunks_dir, str(chunk_file))
+            chunk = np.load(chunk_path)
+            n_models = int(chunk['num_models'])
+            
+            for i in range(n_models):
+                prefix = f'model_{i}_'
+                model = {}
+                for key in ['A', 'F', 'C', 'G', 'c',
+                           'alpha_state_lin', 'alpha_state_quad',
+                           'alpha_out_lin', 'alpha_out_quad',
+                           'total_error', 'mean_err_Gamma_n', 'std_err_Gamma_n',
+                           'mean_err_Gamma_c', 'std_err_Gamma_c']:
+                    val = chunk[prefix + key]
+                    model[key] = float(val) if val.ndim == 0 else val
+                
+                all_models.append((model['total_error'], model))
+            
+            chunk.close()
+        
+        # Sort by total_error
+        all_models.sort(key=lambda x: x[0])
+        
+        if logger:
+            logger.info(f"  Loaded {len(all_models)} models")
+        
+        return all_models
+    
+    elif os.path.exists(single_path):
+        # Load from single file
+        if logger:
+            logger.info(f"Loading ensemble from single file...")
+        
+        data = np.load(single_path)
+        n_models = int(data['num_models'])
+        
+        all_models = []
+        for i in range(n_models):
+            prefix = f'model_{i}_'
+            model = {}
+            for key in ['A', 'F', 'C', 'G', 'c',
+                       'alpha_state_lin', 'alpha_state_quad',
+                       'alpha_out_lin', 'alpha_out_quad',
+                       'total_error', 'mean_err_Gamma_n', 'std_err_Gamma_n',
+                       'mean_err_Gamma_c', 'std_err_Gamma_c']:
+                val = data[prefix + key]
+                model[key] = float(val) if val.ndim == 0 else val
+            
+            all_models.append((model['total_error'], model))
+        
+        data.close()
+        
+        # Already sorted
+        if logger:
+            logger.info(f"  Loaded {len(all_models)} models")
+        
+        return all_models
+    
+    else:
+        raise FileNotFoundError(
+            f"No ensemble found in {ensemble_dir}. "
+            f"Expected either ensemble_index.npz or ensemble_models.npz"
+        )
+
 
 def save_ensemble(
     models: list,
@@ -943,6 +1258,10 @@ def main():
                 logger.info("Review the statistics above and adjust threshold_mean/threshold_std in your config.")
                 logger.info("=" * 70)
                 print_header("STATS-ONLY MODE COMPLETE")
+                # Signal other ranks to exit cleanly
+                if parallel:
+                    n_selected = -1  # Special signal for stats-only exit
+                    comm.bcast(n_selected, root=0)
                 return
             
             # Show current threshold settings
@@ -964,29 +1283,85 @@ def main():
                 logger.error("Tip: Run with --stats-only to see error distributions and tune thresholds")
                 save_step_status(args.run_dir, "step_2", "failed",
                                {"error": "No models met criteria"})
+                # Signal other ranks to exit
+                if parallel:
+                    n_selected = 0
+                    comm.bcast(n_selected, root=0)
                 return
             
-            # Recompute operators
-            models_with_ops = recompute_operators(selected, data, cfg.r, logger)
+            n_selected = len(selected)
+        else:
+            # Non-rank-0 in parallel mode
+            selected = None
+            n_selected = None
+        
+        # For parallel + threshold method with many models, use parallel recomputation
+        # For top_k or serial, use sequential recomputation
+        if parallel:
+            # Broadcast number of selected models so all ranks know what to expect
+            n_selected = comm.bcast(n_selected if rank == 0 else None, root=0)
             
-            # Save ensemble
-            save_ensemble(models_with_ops, paths["ensemble_models"], cfg, logger)
+            if n_selected <= 0:
+                # No models selected (0) or stats-only mode (-1), exit cleanly
+                return
+            
+            # Use parallel recomputation for threshold method with many models
+            # (for top_k with ~20 models, parallel overhead isn't worth it)
+            use_parallel_recompute = (cfg.selection_method == "threshold" and n_selected > 50)
+            
+            if use_parallel_recompute:
+                recompute_start = time.time()
+                # Each rank saves directly to avoid memory bottleneck on rank 0
+                total_saved = parallel_recompute_and_save(
+                    selected if rank == 0 else [],
+                    data,
+                    cfg.r,
+                    os.path.dirname(paths["ensemble_models"]),
+                    cfg,
+                    comm,
+                    logger if rank == 0 else None,
+                )
+                if rank == 0:
+                    recompute_elapsed = time.time() - recompute_start
+                    logger.info(f"  Parallel recomputation completed in {recompute_elapsed:.1f}s")
+                    models_with_ops = None  # Models saved directly to chunks
+            else:
+                # Sequential recomputation (only on rank 0)
+                if rank == 0:
+                    models_with_ops = recompute_operators(selected, data, cfg.r, logger)
+                else:
+                    models_with_ops = []
+        else:
+            # Serial mode
+            models_with_ops = recompute_operators(selected, data, cfg.r, logger)
+        
+        # Only rank 0 saves results
+        if rank == 0:
+            # Save ensemble (unless already saved in parallel chunks)
+            if models_with_ops is not None:
+                save_ensemble(models_with_ops, paths["ensemble_models"], cfg, logger)
+            # else: parallel_recompute_and_save already saved to chunk files
             
             # Save sweep summary
             np.savez(
                 paths["sweep_results"],
                 n_total=len(results),
-                n_selected=len(selected),
+                n_selected=n_selected,
                 best_error=selected[0]['total_error'] if selected else np.nan,
                 worst_selected=selected[-1]['total_error'] if selected else np.nan,
+                parallel_chunks=(models_with_ops is None),  # Flag for step 3
             )
             
             # Print summary
             print_header("MODEL SELECTION SUMMARY")
             print(f"  Total valid models: {len(results)}")
-            print(f"  Selected models: {len(selected)}")
+            print(f"  Selected models: {n_selected}")
             print(f"  Best total error: {selected[0]['total_error']:.6e}")
             print(f"  Worst selected: {selected[-1]['total_error']:.6e}")
+            if models_with_ops is None:
+                print(f"  Storage: Parallel chunks (see ensemble_chunks/)")
+            else:
+                print(f"  Storage: Single file ({paths['ensemble_models']})")
             
             print(f"\n  {'Model':>6} | {'Total Err':>10} | {'Mean Γn':>8} | {'Std Γn':>8}")
             print(f"  {'-'*50}")
@@ -995,9 +1370,10 @@ def main():
                       f"{params['mean_err_Gamma_n']:>8.4f} | {params['std_err_Gamma_n']:>8.4f}")
             
             save_step_status(args.run_dir, "step_2", "completed", {
-                "n_models": len(selected),
+                "n_models": n_selected,
                 "best_error": float(selected[0]['total_error']),
                 "sweep_time_seconds": elapsed,
+                "parallel_chunks": (models_with_ops is None),
             })
             
             print_header("STEP 2 COMPLETE")
