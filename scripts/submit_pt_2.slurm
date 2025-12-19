@@ -35,11 +35,10 @@ module load phdf5/1.10.4
 # source /path/to/venv/bin/activate
 
 # Navigate to project directory
-cd $WORK/repos/SciML_ROMs_Hasegawa_Wakatani
+cd $WORK/repos/IEEE
 
 # Install package in development mode (if not already done)
-pip install -e . --no-deps
-pip install -c constraints.txt h5netcdf
+pip install -c frontera_pip_constraints.txt h5netcdf
 
 # Print job info
 echo "=============================================="
@@ -53,17 +52,9 @@ echo "=============================================="
 
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
-ibrun python3 scripts_anthony/parallel_sweep.py \
-    --config cluster \
-    --method threshold \
-    --threshold-mean 0.05 \
-    --threshold-std 0.30
-
-# Alternative: top-k selection
-# ibrun python -m scripts_anthony.parallel_sweep \
-#     --config cluster \
-#     --method top_k \
-#     --num-top-models 20
+ibrun python3 opinf/step_2_train_rom.py \
+    --config config/opinf/config_2and2.yaml \
+    --run-dir $SCRATCH/IEEE/output/20251218_150416_hw_rom_experiment 
 
 echo "=============================================="
 echo "End time: $(date)"
