@@ -383,6 +383,119 @@ def parallel_hyperparameter_sweep(
 # MODEL SELECTION
 # =============================================================================
 
+def log_error_statistics(results: list, logger) -> dict:
+    """
+    Log detailed statistics about sweep results to help with threshold tuning.
+    
+    Parameters
+    ----------
+    results : list
+        List of result dictionaries from sweep.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    dict
+        Statistics dictionary.
+    """
+    if not results:
+        logger.warning("No results to analyze!")
+        return {}
+    
+    # Extract error arrays
+    mean_err_n = np.array([r['mean_err_Gamma_n'] for r in results])
+    std_err_n = np.array([r['std_err_Gamma_n'] for r in results])
+    mean_err_c = np.array([r['mean_err_Gamma_c'] for r in results])
+    std_err_c = np.array([r['std_err_Gamma_c'] for r in results])
+    total_err = np.array([r['total_error'] for r in results])
+    
+    logger.info("")
+    logger.info("=" * 70)
+    logger.info("ERROR DISTRIBUTION STATISTICS (for threshold tuning)")
+    logger.info("=" * 70)
+    
+    # Per-metric statistics
+    metrics = {
+        'mean_err_Gamma_n': mean_err_n,
+        'std_err_Gamma_n': std_err_n,
+        'mean_err_Gamma_c': mean_err_c,
+        'std_err_Gamma_c': std_err_c,
+        'total_error': total_err,
+    }
+    
+    percentiles = [1, 5, 10, 25, 50, 75, 90, 95, 99]
+    
+    logger.info("")
+    logger.info(f"{'Metric':<20} | {'Min':>10} | {'P10':>10} | {'P25':>10} | {'P50':>10} | {'P75':>10} | {'P90':>10} | {'Max':>10}")
+    logger.info("-" * 105)
+    
+    stats = {}
+    for name, arr in metrics.items():
+        pcts = np.percentile(arr, percentiles)
+        stats[name] = {
+            'min': np.min(arr),
+            'max': np.max(arr),
+            'mean': np.mean(arr),
+            'std': np.std(arr),
+            'percentiles': dict(zip(percentiles, pcts)),
+        }
+        logger.info(f"{name:<20} | {np.min(arr):>10.4f} | {pcts[2]:>10.4f} | {pcts[3]:>10.4f} | {pcts[4]:>10.4f} | {pcts[5]:>10.4f} | {pcts[6]:>10.4f} | {np.max(arr):>10.4f}")
+    
+    # Threshold sensitivity analysis
+    logger.info("")
+    logger.info("THRESHOLD SENSITIVITY ANALYSIS")
+    logger.info("(Models passing at different threshold combinations)")
+    logger.info("")
+    
+    mean_thresholds = [0.01, 0.02, 0.03, 0.05, 0.10, 0.15, 0.20, 0.30, 0.50]
+    std_thresholds = [0.05, 0.10, 0.15, 0.20, 0.30, 0.50, 0.75, 1.00]
+    
+    # Header
+    header = f"{'mean\\std':<10}"
+    for st in std_thresholds:
+        header += f" | {st:>6.2f}"
+    logger.info(header)
+    logger.info("-" * (12 + 9 * len(std_thresholds)))
+    
+    # Count models for each threshold combo
+    for mt in mean_thresholds:
+        row = f"{mt:<10.2f}"
+        for st in std_thresholds:
+            count = sum(1 for r in results 
+                       if r['mean_err_Gamma_n'] < mt 
+                       and r['std_err_Gamma_n'] < st
+                       and r['mean_err_Gamma_c'] < mt 
+                       and r['std_err_Gamma_c'] < st)
+            row += f" | {count:>6}"
+        logger.info(row)
+    
+    # Best models summary
+    logger.info("")
+    logger.info("TOP 10 MODELS BY TOTAL ERROR:")
+    logger.info(f"{'Rank':<6} | {'Total':>10} | {'Mean Γn':>10} | {'Std Γn':>10} | {'Mean Γc':>10} | {'Std Γc':>10}")
+    logger.info("-" * 75)
+    
+    sorted_results = sorted(results, key=lambda x: x['total_error'])
+    for i, r in enumerate(sorted_results[:10]):
+        logger.info(f"{i+1:<6} | {r['total_error']:>10.4f} | {r['mean_err_Gamma_n']:>10.4f} | "
+                   f"{r['std_err_Gamma_n']:>10.4f} | {r['mean_err_Gamma_c']:>10.4f} | {r['std_err_Gamma_c']:>10.4f}")
+    
+    # Suggested thresholds
+    logger.info("")
+    logger.info("SUGGESTED THRESHOLDS (based on percentiles):")
+    logger.info(f"  Conservative (P10): mean_threshold={stats['mean_err_Gamma_n']['percentiles'][10]:.3f}, "
+               f"std_threshold={stats['std_err_Gamma_n']['percentiles'][10]:.3f}")
+    logger.info(f"  Moderate (P25):     mean_threshold={stats['mean_err_Gamma_n']['percentiles'][25]:.3f}, "
+               f"std_threshold={stats['std_err_Gamma_n']['percentiles'][25]:.3f}")
+    logger.info(f"  Relaxed (P50):      mean_threshold={stats['mean_err_Gamma_n']['percentiles'][50]:.3f}, "
+               f"std_threshold={stats['std_err_Gamma_n']['percentiles'][50]:.3f}")
+    logger.info("=" * 70)
+    logger.info("")
+    
+    return stats
+
+
 def select_models(
     results: list,
     method: str,
@@ -603,6 +716,11 @@ def main():
         "--run-dir", type=str, required=True,
         help="Run directory from Step 1"
     )
+    parser.add_argument(
+        "--stats-only", action="store_true",
+        help="Only compute and display error statistics (no model saving). "
+             "Useful for tuning thresholds."
+    )
     args = parser.parse_args()
     
     # Initialize MPI if available
@@ -814,6 +932,23 @@ def main():
                                {"error": "No valid models"})
                 return
             
+            # Log detailed statistics to help with threshold tuning
+            error_stats = log_error_statistics(results, logger)
+            
+            # Stats-only mode: just show statistics and exit
+            if args.stats_only:
+                logger.info("")
+                logger.info("=" * 70)
+                logger.info("STATS-ONLY MODE: Exiting without saving models.")
+                logger.info("Review the statistics above and adjust threshold_mean/threshold_std in your config.")
+                logger.info("=" * 70)
+                print_header("STATS-ONLY MODE COMPLETE")
+                return
+            
+            # Show current threshold settings
+            logger.info(f"Current threshold settings: mean={cfg.threshold_mean}, std={cfg.threshold_std}")
+            logger.info(f"Selection method: {cfg.selection_method}")
+            
             # Select best models
             selected = select_models(
                 results,
@@ -826,6 +961,7 @@ def main():
             
             if len(selected) == 0:
                 logger.error("No models met selection criteria!")
+                logger.error("Tip: Run with --stats-only to see error distributions and tune thresholds")
                 save_step_status(args.run_dir, "step_2", "failed",
                                {"error": "No models met criteria"})
                 return
