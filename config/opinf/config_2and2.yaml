@@ -25,7 +25,7 @@ paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/"
   
   # Raw simulation data directory
-  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_raw/"
+  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/"
   
   # Training data files (list of h5 files)
   training_files: ["hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5",  "hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316085602_1116_2.h5"]
@@ -105,8 +105,8 @@ model_selection:
   num_top_models: 20            # Number of top models to keep
   
   # threshold parameters
-  threshold_mean: 0.05          # Maximum relative error in mean (5%)
-  threshold_std: 0.30           # Maximum relative error in std (30%)
+  threshold_mean: 0.20          # Maximum relative error in mean (5%)
+  threshold_std: 0.70           # Maximum relative error in std (30%)
 
 # -----------------------------------------------------------------------------
 # Evaluation parameters

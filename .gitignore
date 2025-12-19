@@ -208,3 +208,7 @@ __marimo__/
 
 # Storage files
 *h5
+
+# Output files
+*.err
+*.out
