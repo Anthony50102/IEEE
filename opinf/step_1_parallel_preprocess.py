@@ -317,6 +317,119 @@ def load_all_data_distributed(
 
 
 # =============================================================================
+# DATA PREPROCESSING (DISTRIBUTED)
+# =============================================================================
+
+def center_data_distributed(
+    Q_local: np.ndarray,
+    comm,
+    rank: int,
+    logger,
+) -> tuple:
+    """
+    Center data by subtracting temporal mean at each spatial location.
+    
+    This is CRITICAL for POD - without centering, the Gram matrix is
+    dominated by the mean and produces numerically unstable eigenvalues.
+    
+    Parameters
+    ----------
+    Q_local : np.ndarray
+        Local data (n_local, n_time).
+    comm : MPI.Comm
+        MPI communicator.
+    rank : int
+        MPI rank.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    tuple
+        (Q_centered, temporal_mean_local) - centered data and the mean that was subtracted.
+    """
+    if rank == 0:
+        logger.info("Centering data (subtracting temporal mean)...")
+    
+    # Compute temporal mean at each spatial location (on this rank)
+    temporal_mean_local = np.mean(Q_local, axis=1, keepdims=True)
+    
+    # Center the data
+    Q_centered = Q_local - temporal_mean_local
+    
+    if rank == 0:
+        logger.info(f"  Local mean range: [{temporal_mean_local.min():.2e}, {temporal_mean_local.max():.2e}]")
+        logger.info(f"  Centered data range: [{Q_centered.min():.2e}, {Q_centered.max():.2e}]")
+    
+    return Q_centered, temporal_mean_local.squeeze()
+
+
+def scale_data_distributed(
+    Q_local: np.ndarray,
+    n_fields: int,
+    n_local_per_field: int,
+    comm,
+    rank: int,
+    logger,
+) -> tuple:
+    """
+    Scale data so each field's values are in [-1, 1].
+    
+    Uses global max absolute value across all ranks for each field.
+    
+    Parameters
+    ----------
+    Q_local : np.ndarray
+        Local data (n_local, n_time). Should already be centered.
+    n_fields : int
+        Number of state variables (e.g., 2 for density and phi).
+    n_local_per_field : int
+        Local spatial DOF per field.
+    comm : MPI.Comm
+        MPI communicator.
+    rank : int
+        MPI rank.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    tuple
+        (Q_scaled, scaling_factors) - scaled data and the factors used.
+    """
+    if rank == 0:
+        logger.info("Scaling data (normalizing each field to [-1, 1])...")
+    
+    scaling_factors = np.zeros(n_fields)
+    Q_scaled = Q_local.copy()
+    
+    for j in range(n_fields):
+        start = j * n_local_per_field
+        end = (j + 1) * n_local_per_field
+        
+        # Local max absolute value
+        local_max = np.max(np.abs(Q_local[start:end, :]))
+        
+        # Global max via Allreduce
+        global_max = np.zeros(1)
+        comm.Allreduce(np.array([local_max]), global_max, op=MPI.MAX)
+        global_max = global_max[0]
+        
+        # Scale
+        if global_max > 0:
+            Q_scaled[start:end, :] /= global_max
+            scaling_factors[j] = global_max
+        else:
+            scaling_factors[j] = 1.0
+    
+    if rank == 0:
+        logger.info(f"  Scaling factors: {scaling_factors}")
+        logger.info(f"  Scaled data range: [{Q_scaled.min():.2e}, {Q_scaled.max():.2e}]")
+    
+    return Q_scaled, scaling_factors
+
+
+# =============================================================================
 # POD COMPUTATION (DISTRIBUTED)
 # =============================================================================
 
@@ -336,10 +449,12 @@ def compute_pod_distributed(
     3. Eigendecomposition of D_global
     4. Compute transformation matrix Tr = V @ diag(sqrt(1/eigs))
     
+    NOTE: Input data should already be centered (and optionally scaled)!
+    
     Parameters
     ----------
     Q_train_local : np.ndarray
-        Local training data (n_local, n_time).
+        Local training data (n_local, n_time). Should be centered!
     comm : MPI.Comm
         MPI communicator.
     rank : int
@@ -352,7 +467,7 @@ def compute_pod_distributed(
     Returns
     -------
     tuple
-        (eigs, eigv, Tr_global) - eigenvalues, eigenvectors, transformation matrix.
+        (eigs, eigv, D_global) - eigenvalues, eigenvectors, Gram matrix.
     """
     if rank == 0:
         logger.info("Computing POD basis via distributed Gram matrix...")
@@ -413,6 +528,15 @@ def compute_pod_distributed(
     
     if rank == 0:
         logger.info(f"  Eigendecomposition: {MPI.Wtime() - t_eig:.2f}s")
+        
+        # Diagnostic info for debugging
+        n_negative = np.sum(eigs < 0)
+        if n_negative > 0:
+            logger.warning(f"  WARNING: {n_negative} negative eigenvalues detected (numerical noise)")
+            logger.warning(f"  Most negative eigenvalue: {eigs[eigs < 0].min():.2e}")
+        
+        logger.info(f"  Eigenvalue range: [{eigs.min():.2e}, {eigs.max():.2e}]")
+        logger.info(f"  Top 5 eigenvalues: {eigs[:5]}")
     
     elapsed = MPI.Wtime() - start_time
     if rank == 0:
@@ -463,15 +587,25 @@ def save_pod_energy_plot(
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     
-    ret_energy = compute_retained_energy(eigs)
-    singular_values = np.sqrt(np.maximum(eigs, 0))
+    # Only use positive eigenvalues for energy calculations
+    eigs_positive = np.maximum(eigs, 0)
+    total_energy = np.sum(eigs_positive)
+    
+    if total_energy <= 0:
+        logger.error("Total energy is zero or negative - cannot compute retained energy!")
+        return
+    
+    ret_energy = np.cumsum(eigs_positive) / total_energy
+    singular_values = np.sqrt(eigs_positive)
     
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     
-    # Singular value decay
+    # Singular value decay (only plot positive values)
     ax = axes[0]
-    ax.semilogy(singular_values, 'b-', linewidth=1.5)
-    ax.axvline(x=r, color='r', linestyle='--', label=f'r = {r}')
+    sv_positive = singular_values[singular_values > 0]
+    ax.semilogy(range(len(sv_positive)), sv_positive, 'b-', linewidth=1.5)
+    if r < len(sv_positive):
+        ax.axvline(x=r, color='r', linestyle='--', label=f'r = {r}')
     ax.set_xlabel('Mode index')
     ax.set_ylabel('Singular value')
     ax.set_title('Singular Value Decay')
@@ -481,20 +615,27 @@ def save_pod_energy_plot(
     # Retained energy
     ax = axes[1]
     ax.plot(ret_energy * 100, 'b-', linewidth=1.5)
-    ax.axhline(y=ret_energy[r - 1] * 100, color='r', linestyle='--',
-               label=f'{ret_energy[r - 1] * 100:.4f}% at r={r}')
-    ax.axvline(x=r, color='r', linestyle='--')
+    if r > 0 and r <= len(ret_energy):
+        ax.axhline(y=ret_energy[r - 1] * 100, color='r', linestyle='--',
+                   label=f'{ret_energy[r - 1] * 100:.4f}% at r={r}')
+        ax.axvline(x=r, color='r', linestyle='--')
     ax.set_xlabel('Number of modes')
     ax.set_ylabel('Retained energy (%)')
     ax.set_title('Cumulative Retained Energy')
     ax.legend()
     ax.grid(True, alpha=0.3)
+    ax.set_ylim([0, 105])
     
     # Energy per mode
     ax = axes[2]
-    mode_energy = eigs / np.sum(eigs) * 100
-    ax.semilogy(mode_energy[:min(100, len(mode_energy))], 'b-', linewidth=1.5)
-    ax.axvline(x=r, color='r', linestyle='--', label=f'r = {r}')
+    mode_energy = eigs_positive / total_energy * 100
+    n_plot = min(100, len(mode_energy))
+    mode_energy_plot = mode_energy[:n_plot]
+    mode_energy_plot = mode_energy_plot[mode_energy_plot > 0]  # Only positive
+    if len(mode_energy_plot) > 0:
+        ax.semilogy(range(len(mode_energy_plot)), mode_energy_plot, 'b-', linewidth=1.5)
+        if r < len(mode_energy_plot):
+            ax.axvline(x=r, color='r', linestyle='--', label=f'r = {r}')
     ax.set_xlabel('Mode index')
     ax.set_ylabel('Energy contribution (%)')
     ax.set_title('Energy per Mode')
@@ -902,10 +1043,22 @@ def main():
         
         comm.Barrier()
         
-        # 2. Compute POD (distributed)
+        # 2. Center data (CRITICAL for POD numerical stability)
+        t_center = MPI.Wtime()
+        Q_train_centered, train_temporal_mean = center_data_distributed(
+            Q_train_local, comm, rank, logger
+        )
+        Q_test_centered, test_temporal_mean = center_data_distributed(
+            Q_test_local, comm, rank, logger
+        )
+        
+        if rank == 0:
+            logger.info(f"Centering time: {MPI.Wtime() - t_center:.1f}s")
+        
+        # 3. Compute POD on CENTERED data (distributed)
         t_pod = MPI.Wtime()
         eigs, eigv, D_global = compute_pod_distributed(
-            Q_train_local, comm, rank, size, logger
+            Q_train_centered, comm, rank, size, logger
         )
         
         if rank == 0:
@@ -920,10 +1073,10 @@ def main():
             if args.save_pod_energy:
                 save_pod_energy_plot(eigs, cfg.r, run_dir, logger)
         
-        # 3. Project data (distributed)
+        # 4. Project CENTERED data (distributed)
         t_proj = MPI.Wtime()
         Xhat_train, Xhat_test, Ur_local = project_data_distributed(
-            Q_train_local, Q_test_local, eigv, eigs, cfg.r, D_global,
+            Q_train_centered, Q_test_centered, eigv, eigs, cfg.r, D_global,
             comm, rank, logger
         )
         
@@ -934,7 +1087,7 @@ def main():
             np.save(paths["xhat_test"], Xhat_test)
             logger.info("Saved projected data")
         
-        # 4. Gather and save initial conditions
+        # 5. Gather and save initial conditions (use ORIGINAL data, not centered)
         t_ic = MPI.Wtime()
         ics = gather_initial_conditions(
             Q_train_local, Q_test_local, Xhat_train, Xhat_test,
@@ -943,24 +1096,34 @@ def main():
             n_spatial, comm, rank, size, logger
         )
         
+        # Also save the temporal means for reconstruction
+        train_means_gathered = comm.gather(train_temporal_mean, root=0)
+        test_means_gathered = comm.gather(test_temporal_mean, root=0)
+        
         if rank == 0:
+            # Reconstruct full temporal means
+            train_temporal_mean_full = np.concatenate(train_means_gathered)
+            test_temporal_mean_full = np.concatenate(test_means_gathered)
+            
             np.savez(
                 paths["initial_conditions"],
                 train_ICs=ics['train_ICs'],
                 test_ICs=ics['test_ICs'],
                 train_ICs_reduced=ics['train_ICs_reduced'],
                 test_ICs_reduced=ics['test_ICs_reduced'],
+                train_temporal_mean=train_temporal_mean_full,
+                test_temporal_mean=test_temporal_mean_full,
             )
-            logger.info("Saved initial conditions")
+            logger.info("Saved initial conditions and temporal means")
             logger.info(f"IC gathering time: {MPI.Wtime() - t_ic:.1f}s")
         
-        # 5. Prepare learning matrices (rank 0 only)
+        # 6. Prepare learning matrices (rank 0 only)
         t_learn = MPI.Wtime()
         learning = prepare_learning_matrices(
             Xhat_train, train_boundaries, cfg, rank, logger
         )
         
-        # 6. Load reference Gamma (rank 0 only)
+        # 7. Load reference Gamma (rank 0 only)
         gamma_ref = load_reference_gamma(cfg, rank, logger)
         
         if rank == 0:
@@ -991,7 +1154,7 @@ def main():
             logger.info(f"Learning matrix prep time: {MPI.Wtime() - t_learn:.1f}s")
         
         # Cleanup
-        del Q_train_local, Q_test_local
+        del Q_train_local, Q_test_local, Q_train_centered, Q_test_centered
         gc.collect()
         
         # Final timing and status
