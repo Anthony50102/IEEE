@@ -187,6 +187,16 @@ def load_distributed_snapshots(
     
     # Extract local portion
     Q_local = Q_full[start_idx:end_idx, :].copy()
+    
+    # DIAGNOSTIC: Check the loaded data
+    if rank == 0 and verbose:
+        print(f"    [DIAGNOSTIC] File: {os.path.basename(file_path)}")
+        print(f"    [DIAGNOSTIC] Q_full shape: {Q_full.shape}")
+        print(f"    [DIAGNOSTIC] Q_local shape: {Q_local.shape}")
+        print(f"    [DIAGNOSTIC] Q_local range: [{Q_local.min():.2e}, {Q_local.max():.2e}]")
+        print(f"    [DIAGNOSTIC] Q_local std: {Q_local.std():.2e}")
+        print(f"    [DIAGNOSTIC] Q_local has variation: {Q_local.std() > 1e-10}")
+    
     del Q_full
     
     if verbose and rank == 0:
@@ -351,6 +361,15 @@ def center_data_distributed(
     if rank == 0:
         logger.info("Centering data (subtracting temporal mean)...")
     
+    # DIAGNOSTIC: Check raw data before centering
+    if rank == 0:
+        logger.info(f"  [DIAGNOSTIC] Raw data shape: {Q_local.shape}")
+        logger.info(f"  [DIAGNOSTIC] Raw data range: [{Q_local.min():.2e}, {Q_local.max():.2e}]")
+        logger.info(f"  [DIAGNOSTIC] Raw data mean: {Q_local.mean():.2e}")
+        logger.info(f"  [DIAGNOSTIC] Raw data std: {Q_local.std():.2e}")
+        logger.info(f"  [DIAGNOSTIC] Any NaN: {np.any(np.isnan(Q_local))}")
+        logger.info(f"  [DIAGNOSTIC] Any Inf: {np.any(np.isinf(Q_local))}")
+    
     # Compute temporal mean at each spatial location (on this rank)
     temporal_mean_local = np.mean(Q_local, axis=1, keepdims=True)
     
@@ -360,6 +379,12 @@ def center_data_distributed(
     if rank == 0:
         logger.info(f"  Local mean range: [{temporal_mean_local.min():.2e}, {temporal_mean_local.max():.2e}]")
         logger.info(f"  Centered data range: [{Q_centered.min():.2e}, {Q_centered.max():.2e}]")
+        logger.info(f"  [DIAGNOSTIC] Centered std: {Q_centered.std():.2e}")
+        
+        # Check variance per spatial point
+        var_per_point = np.var(Q_local, axis=1)
+        logger.info(f"  [DIAGNOSTIC] Variance per point - min: {var_per_point.min():.2e}, max: {var_per_point.max():.2e}")
+        logger.info(f"  [DIAGNOSTIC] Points with zero variance: {np.sum(var_per_point == 0)}")
     
     return Q_centered, temporal_mean_local.squeeze()
 
@@ -531,12 +556,26 @@ def compute_pod_distributed(
         
         # Diagnostic info for debugging
         n_negative = np.sum(eigs < 0)
+        n_zero = np.sum(np.abs(eigs) < 1e-14)
+        n_positive = np.sum(eigs > 1e-14)
+        
+        logger.info(f"  [DIAGNOSTIC] Eigenvalue summary:")
+        logger.info(f"    Positive (>1e-14): {n_positive}")
+        logger.info(f"    Near-zero: {n_zero}")
+        logger.info(f"    Negative: {n_negative}")
+        
         if n_negative > 0:
             logger.warning(f"  WARNING: {n_negative} negative eigenvalues detected (numerical noise)")
             logger.warning(f"  Most negative eigenvalue: {eigs[eigs < 0].min():.2e}")
         
         logger.info(f"  Eigenvalue range: [{eigs.min():.2e}, {eigs.max():.2e}]")
-        logger.info(f"  Top 5 eigenvalues: {eigs[:5]}")
+        logger.info(f"  Top 10 eigenvalues: {eigs[:10]}")
+        logger.info(f"  Last 5 eigenvalues: {eigs[-5:]}")
+        
+        # Compute effective rank (eigenvalues above threshold)
+        threshold = 1e-10 * eigs.max() if eigs.max() > 0 else 1e-14
+        effective_rank = np.sum(eigs > threshold)
+        logger.info(f"  Effective rank (eig > {threshold:.2e}): {effective_rank}")
     
     elapsed = MPI.Wtime() - start_time
     if rank == 0:
@@ -721,9 +760,22 @@ def project_data_distributed(
     eigs_r = eigs[:r]
     eigv_r = eigv[:, :r]
     
-    # Avoid division by zero for small eigenvalues
-    eigs_r_safe = np.maximum(eigs_r, 1e-14)
+    # Check for problematic eigenvalues
+    if rank == 0:
+        n_problematic = np.sum(eigs_r <= 0)
+        if n_problematic > 0:
+            logger.warning(f"  WARNING: {n_problematic} of first {r} eigenvalues are <= 0!")
+            logger.warning(f"  Problematic eigenvalues: {eigs_r[eigs_r <= 0]}")
+    
+    # Only use positive eigenvalues - replace negative/zero with a small positive value
+    # This is more robust than just clipping
+    eigs_r_safe = np.where(eigs_r > 1e-14, eigs_r, 1e-14)
+    
+    # Compute transformation matrix
     Tr = eigv_r @ np.diag(eigs_r_safe ** (-0.5))
+    
+    if rank == 0:
+        logger.info(f"  Tr matrix: shape={Tr.shape}, has_nan={np.any(np.isnan(Tr))}, has_inf={np.any(np.isinf(Tr))}")
     
     # Reduced training coordinates: Xhat_train = Tr.T @ D_global
     # Shape: (r, n_time) -> transpose to (n_time, r)
@@ -803,10 +855,21 @@ def prepare_learning_matrices(
     K = X_out.shape[0]
     E = np.ones((K, 1))
     
+    # Check for NaN/Inf in Xhat_train
+    if np.any(np.isnan(X_out)) or np.any(np.isinf(X_out)):
+        logger.error(f"  ERROR: Xhat_train contains NaN or Inf!")
+        logger.error(f"    NaN count: {np.sum(np.isnan(X_out))}")
+        logger.error(f"    Inf count: {np.sum(np.isinf(X_out))}")
+    
     mean_Xhat = np.mean(X_out, axis=0)
     Xhat_out = X_out - mean_Xhat[np.newaxis, :]
     
+    # Robust scaling - handle zero/near-zero case
     scaling_Xhat = np.maximum(np.abs(np.min(X_out)), np.abs(np.max(X_out)))
+    if scaling_Xhat < 1e-14 or np.isnan(scaling_Xhat):
+        logger.warning(f"  WARNING: scaling_Xhat is {scaling_Xhat}, setting to 1.0")
+        scaling_Xhat = 1.0
+    
     Xhat_out /= scaling_Xhat
     Xhat_out2 = get_x_sq(Xhat_out)
     
@@ -977,6 +1040,10 @@ def main():
         "--save-pod-energy", action="store_true",
         help="Save POD energy plot and data"
     )
+    parser.add_argument(
+        "--no-centering", action="store_true",
+        help="Skip data centering (for debugging)"
+    )
     args = parser.parse_args()
     
     # Load configuration (all ranks)
@@ -1041,19 +1108,44 @@ def main():
             )
             logger.info(f"Saved boundaries to {paths['boundaries']}")
         
+        # DIAGNOSTIC: Check data variation across all ranks
+        local_var = np.var(Q_train_local)
+        local_mean = np.mean(Q_train_local)
+        local_std = np.std(Q_train_local)
+        
+        # Gather statistics
+        all_vars = comm.gather(local_var, root=0)
+        all_means = comm.gather(local_mean, root=0)
+        all_stds = comm.gather(local_std, root=0)
+        
+        if rank == 0:
+            logger.info(f"  [DIAGNOSTIC] Q_train global stats:")
+            logger.info(f"    Mean across ranks: {np.mean(all_means):.2e}")
+            logger.info(f"    Std across ranks: {np.mean(all_stds):.2e}")
+            logger.info(f"    Var across ranks: {np.mean(all_vars):.2e}")
+            logger.info(f"    Train boundaries: {train_boundaries}")
+        
         comm.Barrier()
         
         # 2. Center data (CRITICAL for POD numerical stability)
-        t_center = MPI.Wtime()
-        Q_train_centered, train_temporal_mean = center_data_distributed(
-            Q_train_local, comm, rank, logger
-        )
-        Q_test_centered, test_temporal_mean = center_data_distributed(
-            Q_test_local, comm, rank, logger
-        )
-        
-        if rank == 0:
-            logger.info(f"Centering time: {MPI.Wtime() - t_center:.1f}s")
+        if args.no_centering:
+            if rank == 0:
+                logger.info("SKIPPING centering (--no-centering flag set)")
+            Q_train_centered = Q_train_local
+            Q_test_centered = Q_test_local
+            train_temporal_mean = np.zeros(n_local)
+            test_temporal_mean = np.zeros(n_local)
+        else:
+            t_center = MPI.Wtime()
+            Q_train_centered, train_temporal_mean = center_data_distributed(
+                Q_train_local, comm, rank, logger
+            )
+            Q_test_centered, test_temporal_mean = center_data_distributed(
+                Q_test_local, comm, rank, logger
+            )
+            
+            if rank == 0:
+                logger.info(f"Centering time: {MPI.Wtime() - t_center:.1f}s")
         
         # 3. Compute POD on CENTERED data (distributed)
         t_pod = MPI.Wtime()
