@@ -701,11 +701,6 @@ def compute_pod_distributed(
         logger.info(f"  POD completed in {elapsed:.1f} seconds")
         logger.info(f"  Eigenvalues shape: {eigs.shape}")
     
-    # Sort eigenvalues descending
-    sorted_indices = np.argsort(eigs)[::-1]
-    eigs = eigs[sorted_indices]
-    eigv = eigv[:, sorted_indices]
-    
     # Only consider positive eigenvalues for energy calculation
     eigs_positive = np.maximum(eigs, 0)
     total_energy = np.sum(eigs_positive)
