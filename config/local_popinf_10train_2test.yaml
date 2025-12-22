@@ -22,28 +22,29 @@ run_name: "hw_rom_experiment_10and2_parallel_step1"  # Used for output directory
 # -----------------------------------------------------------------------------
 paths:
   # Base output directory - a timestamped subdirectory will be created here
-  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+  output_base: "/Users/anthonypoole/Repositories/IEEE/local_output"
   
   # Raw simulation data directory
-  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/"
+  data_dir: "/Users/anthonypoole/Repositories/IEEE/data/hw2d"
   
   # Training data files (list of h5 files)
   training_files: 
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316085602_1116_2.h5
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142045_4677_2.h5   
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316135022_18808_2.h5
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142047_27930_0.h5  
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316135023_30926_3.h5
-        #      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315151019_22903_1.h5  
-        #      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316140021_29723_0.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5     
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315171533_30878_0.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142045_4677_2.h5      
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315221115_13688_1.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142047_27930_0.h5     
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315230232_31225_0.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315151019_22903_1.h5     
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315230233_24771_1.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315165458_9483_0.h5      
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315230235_27329_3.h5
 
   
   # Test data files (list of h5 files)
   test_files:
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315165458_9483_0.h5
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316151310_7580_0.h5
-
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315165459_26121_3.h5     
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315234810_19315_1.h5
 # -----------------------------------------------------------------------------
 # Physics parameters
 # -----------------------------------------------------------------------------

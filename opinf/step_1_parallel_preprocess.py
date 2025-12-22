@@ -464,6 +464,7 @@ def compute_pod_distributed(
     rank: int,
     size: int,
     logger,
+    target_energy=0.9999,
 ) -> tuple:
     """
     Compute POD basis via distributed Gram matrix eigendecomposition.
@@ -520,7 +521,8 @@ def compute_pod_distributed(
     # MPI count limit is ~2^31 - 1 (~2.1 billion elements)
     # Chunk the reduction if matrix is too large
     total_elements = D_local.size
-    max_chunk_size = 2**30  # ~1 billion elements per chunk (safe margin)
+    # max_chunk_size = 2**30  # ~1 billion elements per chunk (safe margin)
+    max_chunk_size = 250
     
     if total_elements > max_chunk_size:
         if rank == 0:
@@ -662,7 +664,30 @@ def compute_pod_distributed(
         logger.info(f"  POD completed in {elapsed:.1f} seconds")
         logger.info(f"  Eigenvalues shape: {eigs.shape}")
     
-    return eigs, eigv, D_global
+    # Sort eigenvalues descending
+    sorted_indices = np.argsort(eigs)[::-1]
+    eigs = eigs[sorted_indices]
+    eigv = eigv[:, sorted_indices]
+    
+    # Only consider positive eigenvalues for energy calculation
+    eigs_positive = np.maximum(eigs, 0)
+    total_energy = np.sum(eigs_positive)
+    
+    # Compute retained energy
+    ret_energy = np.cumsum(eigs_positive) / total_energy
+    
+    # Find r that captures target energy
+    r_energy = np.argmax(ret_energy >= target_energy) + 1
+    
+    if rank == 0:
+        logger.info(f"  Eigenvalue analysis:")
+        logger.info(f"    Total eigenvalues: {len(eigs)}")
+        logger.info(f"    Positive eigenvalues: {np.sum(eigs > 1e-10)}")
+        logger.info(f"    r for {target_energy*100:.2f}% energy: {r_energy}")
+        logger.info(f"    Top 10 eigenvalues: {eigs[:10]}")
+        logger.info(f"    Eigenvalue at r={r_energy}: {eigs[r_energy-1]:.2e}")
+    
+    return eigs, eigv, D_global, r_energy  # Return the computed r!
 
 
 def compute_retained_energy(eigs: np.ndarray) -> np.ndarray:
@@ -1229,9 +1254,14 @@ def main():
         
         # 3. Compute POD on CENTERED data (distributed)
         t_pod = MPI.Wtime()
-        eigs, eigv, D_global = compute_pod_distributed(
+        eigs, eigv, D_global, r_from_energy = compute_pod_distributed(
             Q_train_centered, comm, rank, size, logger
         )
+        # Use the smaller of config r and energy-based r
+        r_actual = min(cfg.r, r_from_energy)
+
+        if rank == 0:
+            logger.info(f"  Config r: {cfg.r}, Energy-based r: {r_from_energy}, Using: {r_actual}")
         
         if rank == 0:
             logger.info(f"POD computation time: {MPI.Wtime() - t_pod:.1f}s")
@@ -1243,12 +1273,12 @@ def main():
             
             # Optionally save energy plot
             if args.save_pod_energy:
-                save_pod_energy_plot(eigs, cfg.r, run_dir, logger)
+                save_pod_energy_plot(eigs, r_actual, run_dir, logger)
         
         # 4. Project CENTERED data (distributed)
         t_proj = MPI.Wtime()
         Xhat_train, Xhat_test, Ur_local = project_data_distributed(
-            Q_train_centered, Q_test_centered, eigv, eigs, cfg.r, D_global,
+            Q_train_centered, Q_test_centered, eigv, eigs, r_actual, D_global,
             comm, rank, logger
         )
         
