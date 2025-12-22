@@ -521,8 +521,7 @@ def compute_pod_distributed(
     # MPI count limit is ~2^31 - 1 (~2.1 billion elements)
     # Chunk the reduction if matrix is too large
     total_elements = D_local.size
-    # max_chunk_size = 2**30  # ~1 billion elements per chunk (safe margin)
-    max_chunk_size = 250
+    max_chunk_size = 2**30  # ~1 billion elements per chunk (safe margin)
     
     if total_elements > max_chunk_size:
         if rank == 0:
