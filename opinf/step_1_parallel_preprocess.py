@@ -606,13 +606,14 @@ def compute_pod_distributed(
         logger.info(f"  [DIAGNOSTIC] D_for_eig copy created, is C-contiguous: {D_for_eig.flags['C_CONTIGUOUS']}")
         
         # Use scipy for more robust eigendecomposition
-        try:
-            from scipy.linalg import eigh as scipy_eigh
-            logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
-            eigs, eigv = scipy_eigh(D_for_eig)
-        except ImportError:
-            logger.info("  Using numpy.linalg.eigh for eigendecomposition...")
-            eigs, eigv = np.linalg.eigh(D_for_eig)
+        # try:
+        #     from scipy.linalg import eigh as scipy_eigh
+        #     logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
+        #     eigs, eigv = scipy_eigh(D_for_eig)
+        # except ImportError:
+        #     logger.info("  Using numpy.linalg.eigh for eigendecomposition...")
+        #     eigs, eigv = np.linalg.eigh(D_for_eig)
+        eigs, eigv = np.linalg.eigh(D_for_eig)
         
         del D_for_eig
         
