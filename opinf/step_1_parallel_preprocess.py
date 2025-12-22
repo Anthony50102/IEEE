@@ -567,7 +567,13 @@ def compute_pod_distributed(
             logger.info(f"  [DIAGNOSTIC] After symmetrization, error: {np.max(np.abs(D_global - D_global.T)):.2e}")
     
     # Broadcast the (possibly symmetrized) D_global to all ranks
-    comm.Bcast(D_global, root=0)
+    # This doesn't work due to size limit
+    # comm.Bcast(D_global, root=0)
+    if rank == 0:
+        for i in range(1, size):
+            comm.send(D_global, dest=i, tag=12345)
+    else:
+        D_global = comm.recv(source=0, tag=12345)
     
     if rank == 0:
         logger.info(f"  Allreduce: {MPI.Wtime() - t_reduce:.2f}s")
