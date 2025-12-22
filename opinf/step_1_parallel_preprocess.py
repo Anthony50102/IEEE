@@ -636,9 +636,34 @@ def compute_pod_distributed(
         eigs = np.empty(n_time, dtype=np.float64)
         eigv = np.empty((n_time, n_time), dtype=np.float64)
     
-    # Broadcast eigenvalues and eigenvectors from rank 0
+    # Broadcast eigenvalues (small array - OK as single message)
     comm.Bcast(eigs, root=0)
-    comm.Bcast(eigv, root=0)
+    
+    # Broadcast eigenvectors in chunks to avoid MPI 32-bit count overflow
+    # eigv is (n_time, n_time) which can exceed 2^31 elements
+    n_time = eigv.shape[0]
+    total_eigv_elements = n_time * n_time
+    max_elements_per_chunk = 2**30  # ~1 billion elements per chunk
+    
+    if total_eigv_elements > max_elements_per_chunk:
+        max_rows_per_chunk = max(1, max_elements_per_chunk // n_time)
+        
+        if rank == 0:
+            logger.info(f"  Large eigenvector matrix ({total_eigv_elements:,} elements), "
+                       f"broadcasting in {(n_time + max_rows_per_chunk - 1) // max_rows_per_chunk} chunks...")
+        
+        for start_row in range(0, n_time, max_rows_per_chunk):
+            end_row = min(start_row + max_rows_per_chunk, n_time)
+            if rank == 0:
+                chunk = np.ascontiguousarray(eigv[start_row:end_row, :])
+            else:
+                chunk = np.empty((end_row - start_row, n_time), dtype=np.float64)
+            comm.Bcast(chunk, root=0)
+            if rank != 0:
+                eigv[start_row:end_row, :] = chunk
+    else:
+        # Small enough for single broadcast
+        comm.Bcast(eigv, root=0)
     
     # Sort by decreasing eigenvalue
     sorted_indices = np.argsort(eigs)[::-1]
