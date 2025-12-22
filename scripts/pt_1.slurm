@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH -J opinf_sweep           # Job name
-#SBATCH -o opinf_sweep_%j.out    # Output file (%j = job ID)
-#SBATCH -e opinf_sweep_%j.err    # Error file
+#SBATCH -J popinf_pod           # Job name
+#SBATCH -o popinf_%j.out    # Output file (%j = job ID)
+#SBATCH -e popinf_%j.err    # Error file
 #SBATCH -p development                # Queue (partition)
 #SBATCH -N 16                     # Number of nodes
 #SBATCH -n 32                   # Total MPI tasks (56 cores per node on Frontera)
@@ -40,8 +40,8 @@ echo "=============================================="
 
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
-ibrun -n 32 python3 opinf/step_2_train_rom.py \
-    --config config/opinf/config_2and2.yaml \
+ibrun -n 32 python3 opinf/step_1_parallel_preprocess.py \
+    --config config/popinf_10train_2test.yaml \
     --run-dir $SCRATCH/IEEE/output/20251218_150416_hw_rom_experiment 
 
 echo "=============================================="
