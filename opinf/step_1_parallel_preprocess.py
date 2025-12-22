@@ -564,18 +564,24 @@ def compute_pod_distributed(
             logger.warning(f"  WARNING: Matrix not symmetric! Forcing symmetry...")
             D_global = (D_global + D_global.T) / 2.0
             logger.info(f"  [DIAGNOSTIC] After symmetrization, error: {np.max(np.abs(D_global - D_global.T)):.2e}")
-    
+
     # Broadcast the (possibly symmetrized) D_global to all ranks
-    # This doesn't work due to size limit
-    # comm.Bcast(D_global, root=0)
-    if rank == 0:
-        for i in range(1, size):
-            comm.send(D_global, dest=i, tag=12345)
-    else:
-        D_global = comm.recv(source=0, tag=12345)
+    # Use chunked communication to avoid MPI size limits (~2GB per message)
+    n_time = D_global.shape[0]
+    max_rows_per_chunk = max(1, (2**30) // (n_time * 8))  # 8 bytes per float64
     
     if rank == 0:
-        logger.info(f"  Allreduce: {MPI.Wtime() - t_reduce:.2f}s")
+        logger.info(f"  Broadcasting D_global in chunks ({n_time} rows, {max_rows_per_chunk} rows/chunk)...")
+    
+    for start_row in range(0, n_time, max_rows_per_chunk):
+        end_row = min(start_row + max_rows_per_chunk, n_time)
+        if rank == 0:
+            chunk = np.ascontiguousarray(D_global[start_row:end_row, :])
+        else:
+            chunk = np.empty((end_row - start_row, n_time), dtype=np.float64)
+        comm.Bcast(chunk, root=0)
+        if rank != 0:
+            D_global[start_row:end_row, :] = chunk
     
     del D_local
     gc.collect()
