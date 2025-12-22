@@ -212,3 +212,6 @@ __marimo__/
 # Output files
 *.err
 *.out
+
+# Local output
+local_output/
