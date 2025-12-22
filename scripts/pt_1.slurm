@@ -42,7 +42,6 @@ echo "=============================================="
 # Use ibrun for TACC systems (wrapper for mpirun)
 ibrun -n 32 python3 opinf/step_1_parallel_preprocess.py \
     --config config/popinf_10train_2test.yaml \
-    --run-dir $SCRATCH/IEEE/output/20251218_150416_hw_rom_experiment 
 
 echo "=============================================="
 echo "End time: $(date)"
