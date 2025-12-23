@@ -1,4 +1,4 @@
-run_name: "10train_2test"  # Used for output directory naming
+run_name: "8train_2test"  # Used for output directory naming
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/"
@@ -44,25 +44,25 @@ regularization:
   state_lin:
     min: 1.0e-2
     max: 1.0e6
-    num: 15
+    num: 8
     scale: "linear"             # "linear" or "log"
 
   state_quad:
     min: 1.0e7
     max: 1.0e15
-    num: 15
+    num: 8
     scale: "linear"
   
   output_lin:
     min: 1.0e-8
     max: 1.0e1
-    num: 15
+    num: 9
     scale: "linear"
   
   output_quad:
     min: 1.0e-10
     max: 1.0e1
-    num: 15
+    num: 9
     scale: "linear"
 
 model_selection:
