@@ -5,6 +5,7 @@
 #SBATCH -p development                # Queue (partition)
 #SBATCH -N 16                     # Number of nodes
 #SBATCH -n 32                   # Total MPI tasks (56 cores per node on Frontera)
+#SBATCH --cpus-per-task=28       # CPUs per task (28 threads per core on Frontera) 
 #SBATCH -t 02:00:00              # Time limit (HH:MM:SS)
 
 # =============================================================================
@@ -41,8 +42,8 @@ echo "=============================================="
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
 ibrun -n 32 python3 opinf/step_2_train_rom.py \
-    --config config/opinf/config_2and2.yaml \
-    --run-dir $SCRATCH/IEEE/output/20251218_150416_hw_rom_experiment 
+    --config config/opinf/config_10and2.yaml \
+    --run-dir $SCRATCH/IEEE/output/20251222_142905_hw_rom_experiment_4and2_parallel_step1 
 
 echo "=============================================="
 echo "End time: $(date)"
