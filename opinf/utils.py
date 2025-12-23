@@ -706,10 +706,12 @@ def get_output_paths(run_dir: str) -> dict:
         "initial_conditions": os.path.join(run_dir, "initial_conditions.npz"),
         "gamma_ref": os.path.join(run_dir, "gamma_reference.npz"),
         "learning_matrices": os.path.join(run_dir, "learning_matrices.npz"),
+        "preprocessing_info": os.path.join(run_dir, "preprocessing_info.npz"),
         
         # Step 2 outputs
         "ensemble_models": os.path.join(run_dir, "ensemble_models.npz"),
         "sweep_results": os.path.join(run_dir, "sweep_results.npz"),
+        "operators_dir": os.path.join(run_dir, "operators"),
         
         # Step 3 outputs
         "predictions": os.path.join(run_dir, "ensemble_predictions.npz"),
