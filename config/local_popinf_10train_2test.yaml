@@ -14,7 +14,7 @@
 # -----------------------------------------------------------------------------
 # Run identification
 # -----------------------------------------------------------------------------
-run_name: "hw_rom_experiment_10and2_parallel_step1"  # Used for output directory naming
+run_name: "10train_2test"  # Used for output directory naming
                                # Leave empty for auto-generated timestamp
 
 # -----------------------------------------------------------------------------
@@ -85,26 +85,26 @@ regularization:
   state_lin:
     min: 1.0e-2
     max: 1.0e6
-    num: 15
+    num: 7
     scale: "linear"             # "linear" or "log"
   
   state_quad:
     min: 1.0e7
     max: 1.0e15
-    num: 15
+    num: 7
     scale: "linear"
   
   # Output operator regularization
   output_lin:
     min: 1.0e-8
     max: 1.0e1
-    num: 15
+    num: 7
     scale: "linear"
   
   output_quad:
     min: 1.0e-10
     max: 1.0e1
-    num: 15
+    num: 7
     scale: "linear"
 
 # -----------------------------------------------------------------------------
