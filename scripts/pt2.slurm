@@ -4,8 +4,8 @@
 #SBATCH -e opinf_sweep_%j.err    # Error file
 #SBATCH -p development                # Queue (partition)
 #SBATCH -N 16                     # Number of nodes
-#SBATCH -n 32                   # Total MPI tasks (56 cores per node on Frontera)
-#SBATCH --cpus-per-task=28       # CPUs per task (28 threads per core on Frontera) 
+#SBATCH -n 896                   # Total MPI tasks (56 cores per node on Frontera)
+#SBATCH --cpus-per-task=1       # CPUs per task (28 threads per core on Frontera) 
 #SBATCH -t 02:00:00              # Time limit (HH:MM:SS)
 
 # =============================================================================
@@ -30,7 +30,7 @@ cd $WORK/repos/IEEE
 pip install -c frontera_pip_constraints.txt h5netcdf
 
 # Set OpenMP threads to match cpus-per-task
-export OMP_NUM_THREADS=28
+export OMP_NUM_THREADS=1
 
 # Print job info
 echo "=============================================="
@@ -44,8 +44,8 @@ echo "=============================================="
 
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
-ibrun -n 32 python3 opinf/step_2_train_rom.py \
-    --config config/popinf_10train_2test.yaml \
+ibrun -n 896 python3 opinf/step_2_train_rom.py \
+    --config config/popinf_4train_2test.yaml \
     --run-dir $SCRATCH/IEEE/output/20251222_142905_hw_rom_experiment_4and2_parallel_step1 
 
 echo "=============================================="
