@@ -41,7 +41,7 @@ echo "=============================================="
 
 # Run parallel sweep
 ibrun -n 32 python3 opinf/step_1_parallel_preprocess.py \
-        --config config/popinf_10train_2test.yaml \
+        --config config/popinf_8train_2test.yaml \
         --save-pod-energy
 
 
