@@ -1385,6 +1385,23 @@ def main():
                 std_Gamma_c=gamma_ref['std_Gamma_c'],
             )
             logger.info(f"Saved gamma reference to {paths['gamma_ref']}")
+            
+            # Save preprocessing info for consistency in later steps
+            # This ensures centering/scaling choices are carried through
+            np.savez(
+                paths["preprocessing_info"],
+                centering_applied=not args.no_centering,
+                r_actual=r_actual,
+                r_config=cfg.r,
+                r_from_energy=r_from_energy,
+                n_spatial=n_spatial,
+                n_fields=cfg.n_fields,
+                n_x=cfg.n_x,
+                n_y=cfg.n_y,
+                dt=cfg.dt,
+            )
+            logger.info(f"Saved preprocessing info to {paths['preprocessing_info']}")
+            
             logger.info(f"Learning matrix prep time: {MPI.Wtime() - t_learn:.1f}s")
         
         # Cleanup

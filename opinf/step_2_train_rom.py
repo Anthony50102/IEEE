@@ -40,13 +40,7 @@ from utils import (
     PipelineConfig,
 )
 
-# Try to import MPI - fall back to serial execution if not available
-try:
-    from mpi4py import MPI
-    HAS_MPI = True
-except ImportError:
-    HAS_MPI = False
-    MPI = None
+from mpi4py import MPI
 
 
 # =============================================================================
@@ -173,72 +167,6 @@ def evaluate_hyperparameters(
         'alpha_out_lin': alpha_out_lin,
         'alpha_out_quad': alpha_out_quad,
     }
-
-
-# =============================================================================
-# SERIAL SWEEP
-# =============================================================================
-
-def serial_hyperparameter_sweep(
-    cfg: PipelineConfig,
-    data: dict,
-    logger,
-) -> list:
-    """
-    Run hyperparameter sweep in serial (single process).
-    
-    Parameters
-    ----------
-    cfg : PipelineConfig
-        Configuration.
-    data : dict
-        Pre-loaded data matrices.
-    logger : logging.Logger
-        Logger instance.
-    
-    Returns
-    -------
-    list
-        List of result dictionaries.
-    """
-    # Build parameter grid
-    param_grid = list(product(
-        cfg.state_lin,
-        cfg.state_quad,
-        cfg.output_lin,
-        cfg.output_quad,
-    ))
-    
-    n_total = len(param_grid)
-    logger.info(f"Serial sweep: {n_total:,} combinations")
-    
-    results = []
-    n_nan = 0
-    best_error = float('inf')
-    
-    for i, (asl, asq, aol, aoq) in enumerate(param_grid):
-        if (i + 1) % 100 == 0:
-            logger.info(f"  Progress: {i + 1}/{n_total} (best: {best_error:.4e}, NaN: {n_nan})")
-        
-        result = evaluate_hyperparameters(
-            asl, asq, aol, aoq,
-            data['D_state'], data['D_state_2'], data['Y_state'],
-            data['D_out'], data['D_out_2'], data['Y_Gamma'],
-            data['X_state'], data['mean_Xhat'], data['scaling_Xhat'],
-            data['mean_Gamma_n'], data['std_Gamma_n'],
-            data['mean_Gamma_c'], data['std_Gamma_c'],
-            cfg.r, cfg.n_steps, cfg.training_end,
-        )
-        
-        if result['is_nan']:
-            n_nan += 1
-        else:
-            results.append(result)
-            if result['total_error'] < best_error:
-                best_error = result['total_error']
-    
-    logger.info(f"Sweep complete: {len(results)} valid, {n_nan} NaN")
-    return results
 
 
 # =============================================================================
@@ -552,8 +480,197 @@ def select_models(
 
 
 # =============================================================================
-# OPERATOR RECOMPUTATION
+# OPERATOR RECOMPUTATION (PARALLEL)
 # =============================================================================
+
+def compute_single_operator(
+    params: dict,
+    data: dict,
+    r: int,
+) -> dict:
+    """
+    Compute operators for a single set of hyperparameters.
+    
+    Parameters
+    ----------
+    params : dict
+        Hyperparameter dictionary.
+    data : dict
+        Pre-loaded data matrices.
+    r : int
+        Number of POD modes.
+    
+    Returns
+    -------
+    dict
+        Model with operator matrices (A, F, C, G, c).
+    """
+    s = int(r * (r + 1) / 2)
+    d_state = r + s
+    d_out = r + s + 1
+    
+    alpha_state_lin = params['alpha_state_lin']
+    alpha_state_quad = params['alpha_state_quad']
+    alpha_out_lin = params['alpha_out_lin']
+    alpha_out_quad = params['alpha_out_quad']
+    
+    # State operators
+    regg = np.zeros(d_state)
+    regg[:r] = alpha_state_lin
+    regg[r:r + s] = alpha_state_quad
+    regularizer = np.diag(regg)
+    D_state_reg = data['D_state_2'] + regularizer
+    
+    O = np.linalg.solve(D_state_reg, np.dot(data['D_state'].T, data['Y_state'])).T
+    A = O[:, :r]
+    F = O[:, r:r + s]
+    
+    # Output operators
+    regg_out = np.zeros(d_out)
+    regg_out[:r] = alpha_out_lin
+    regg_out[r:r + s] = alpha_out_quad
+    regg_out[r + s:] = alpha_out_lin
+    regularizer_out = np.diag(regg_out)
+    D_out_reg = data['D_out_2'] + regularizer_out
+    
+    O_out = np.linalg.solve(D_out_reg, np.dot(data['D_out'].T, data['Y_Gamma'].T)).T
+    C = O_out[:, :r]
+    G = O_out[:, r:r + s]
+    c = O_out[:, r + s]
+    
+    # Build model with operators
+    model = {
+        'A': A.copy(),
+        'F': F.copy(),
+        'C': C.copy(),
+        'G': G.copy(),
+        'c': c.copy(),
+        'alpha_state_lin': alpha_state_lin,
+        'alpha_state_quad': alpha_state_quad,
+        'alpha_out_lin': alpha_out_lin,
+        'alpha_out_quad': alpha_out_quad,
+        'total_error': params['total_error'],
+        'mean_err_Gamma_n': params['mean_err_Gamma_n'],
+        'std_err_Gamma_n': params['std_err_Gamma_n'],
+        'mean_err_Gamma_c': params['mean_err_Gamma_c'],
+        'std_err_Gamma_c': params['std_err_Gamma_c'],
+    }
+    
+    return model
+
+
+def save_model_file(
+    model: dict,
+    model_idx: int,
+    operators_dir: str,
+) -> str:
+    """
+    Save a single model to its own file.
+    
+    Parameters
+    ----------
+    model : dict
+        Model dictionary with operators.
+    model_idx : int
+        Model index (for filename).
+    operators_dir : str
+        Directory for operator files.
+    
+    Returns
+    -------
+    str
+        Path to saved file.
+    """
+    filepath = os.path.join(operators_dir, f"model_{model_idx:04d}.npz")
+    np.savez(filepath, **model)
+    return filepath
+
+
+def recompute_operators_parallel(
+    selected: list,
+    data: dict,
+    r: int,
+    operators_dir: str,
+    comm,
+    logger = None,
+) -> list:
+    """
+    Recompute operator matrices for selected models in parallel.
+    
+    Each rank computes a subset of models and saves them to individual files.
+    
+    Parameters
+    ----------
+    selected : list
+        Selected model parameter dictionaries.
+    data : dict
+        Pre-loaded data matrices.
+    r : int
+        Number of POD modes.
+    operators_dir : str
+        Directory to save individual operator files.
+    comm : MPI.Comm
+        MPI communicator.
+    logger : logging.Logger
+        Logger instance (rank 0 only).
+    
+    Returns
+    -------
+    list
+        On rank 0: list of (score, model) tuples.
+        On other ranks: empty list.
+    """
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    
+    n_models = len(selected)
+    
+    if rank == 0:
+        if logger:
+            logger.info(f"Recomputing operators for {n_models} models in parallel across {size} ranks...")
+        os.makedirs(operators_dir, exist_ok=True)
+    
+    # Synchronize after directory creation
+    comm.Barrier()
+    
+    # Distribute work
+    models_per_rank = n_models // size
+    remainder = n_models % size
+    
+    if rank < remainder:
+        start = rank * (models_per_rank + 1)
+        end = start + models_per_rank + 1
+    else:
+        start = rank * models_per_rank + remainder
+        end = start + models_per_rank
+    
+    my_params = selected[start:end]
+    my_indices = list(range(start, end))
+    
+    # Compute and save models for this rank
+    local_results = []
+    for local_idx, (model_idx, params) in enumerate(zip(my_indices, my_params)):
+        model = compute_single_operator(params, data, r)
+        filepath = save_model_file(model, model_idx, operators_dir)
+        local_results.append((model['total_error'], model))
+    
+    # Gather results to rank 0
+    all_results = comm.gather(local_results, root=0)
+    
+    if rank == 0:
+        # Flatten and sort by total_error
+        combined = []
+        for rank_results in all_results:
+            combined.extend(rank_results)
+        combined.sort(key=lambda x: x[0])
+        
+        if logger:
+            logger.info(f"  Computed and saved {len(combined)} operator files to {operators_dir}")
+        
+        return combined
+    else:
+        return []
+
 
 def recompute_operators(
     selected: list,
@@ -723,17 +840,10 @@ def main():
     )
     args = parser.parse_args()
     
-    # Initialize MPI if available
-    if HAS_MPI:
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        size = comm.Get_size()
-        parallel = size > 1
-    else:
-        comm = None
-        rank = 0
-        size = 1
-        parallel = False
+    # Initialize MPI (required)
+    comm = MPI.COMM_WORLD
+    rank = comm.Get_rank()
+    size = comm.Get_size()
     
     # Load configuration
     cfg = load_config(args.config)
@@ -743,22 +853,20 @@ def main():
     logger = setup_logging("step_2", args.run_dir, cfg.log_level, rank)
     
     if rank == 0:
-        print_header("STEP 2: ROM TRAINING VIA HYPERPARAMETER SWEEP")
+        print_header("STEP 2: ROM TRAINING VIA HYPERPARAMETER SWEEP (MPI PARALLEL)")
         print(f"  Run directory: {args.run_dir}")
-        print(f"  Parallel: {parallel} ({size} processes)")
+        print(f"  MPI ranks: {size}")
         print_config_summary(cfg)
         
         # Check Step 1 completed
         if not check_step_completed(args.run_dir, "step_1"):
             logger.error("Step 1 has not completed. Run step_1_preprocess.py first.")
-            if HAS_MPI:
-                comm.Abort(1)
+            comm.Abort(1)
             return
         
         save_step_status(args.run_dir, "step_2", "running")
     
-    if HAS_MPI:
-        comm.Barrier()
+    comm.Barrier()
     
     paths = get_output_paths(args.run_dir)
     
@@ -767,18 +875,17 @@ def main():
     
     try:
         # =====================================================================
-        # SHARED MEMORY DATA LOADING (like parallel_sweep.py)
+        # SHARED MEMORY DATA LOADING
         # Only rank 0 on each node loads data; other ranks share that memory
         # =====================================================================
         
-        if parallel:
-            # Create node-local communicator for shared memory
-            node_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)
-            node_rank = node_comm.Get_rank()
-            node_size = node_comm.Get_size()
-            
-            if rank == 0:
-                logger.info(f"Memory optimization: {node_size} ranks sharing memory per node")
+        # Create node-local communicator for shared memory
+        node_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)
+        node_rank = node_comm.Get_rank()
+        node_size = node_comm.Get_size()
+        
+        if rank == 0:
+            logger.info(f"Memory optimization: {node_size} ranks sharing memory per node")
             
             # Step 1: Rank 0 loads data and determines shapes
             if rank == 0:
@@ -881,44 +988,13 @@ def main():
             
             comm.Barrier()
         
-        else:
-            # Serial mode - load data directly
-            if rank == 0:
-                logger.info("Loading pre-computed data...")
-            
-            learning = np.load(paths["learning_matrices"])
-            gamma_ref = np.load(paths["gamma_ref"])
-            
-            data = {
-                'X_state': learning['X_state'],
-                'Y_state': learning['Y_state'],
-                'D_state': learning['D_state'],
-                'D_state_2': learning['D_state_2'],
-                'D_out': learning['D_out'],
-                'D_out_2': learning['D_out_2'],
-                'mean_Xhat': learning['mean_Xhat'],
-                'scaling_Xhat': float(learning['scaling_Xhat']),
-                'Y_Gamma': gamma_ref['Y_Gamma'],
-                'mean_Gamma_n': float(gamma_ref['mean_Gamma_n']),
-                'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
-                'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
-                'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
-            }
-            
-            if rank == 0:
-                logger.info(f"  X_state shape: {data['X_state'].shape}")
-                logger.info(f"  D_out shape: {data['D_out'].shape}")
-        
         # Run sweep
         if rank == 0:
             logger.info("Starting hyperparameter sweep...")
         
         start_time = time.time()
         
-        if parallel:
-            results = parallel_hyperparameter_sweep(cfg, data, logger, comm)
-        else:
-            results = serial_hyperparameter_sweep(cfg, data, logger)
+        results = parallel_hyperparameter_sweep(cfg, data, logger, comm)
         
         elapsed = time.time() - start_time
         
@@ -943,33 +1019,55 @@ def main():
                 logger.info("Review the statistics above and adjust threshold_mean/threshold_std in your config.")
                 logger.info("=" * 70)
                 print_header("STATS-ONLY MODE COMPLETE")
+                # Signal other ranks to exit
+                selected = None
+        
+        # Broadcast selected models to all ranks for parallel recomputation
+        if rank == 0:
+            if not args.stats_only:
+                # Show current threshold settings
+                logger.info(f"Current threshold settings: mean={cfg.threshold_mean}, std={cfg.threshold_std}")
+                logger.info(f"Selection method: {cfg.selection_method}")
+                
+                # Select best models
+                selected = select_models(
+                    results,
+                    cfg.selection_method,
+                    cfg.num_top_models,
+                    cfg.threshold_mean,
+                    cfg.threshold_std,
+                    logger,
+                )
+                
+                if len(selected) == 0:
+                    logger.error("No models met selection criteria!")
+                    logger.error("Tip: Run with --stats-only to see error distributions and tune thresholds")
+                    save_step_status(args.run_dir, "step_2", "failed",
+                                   {"error": "No models met criteria"})
+                    selected = None
+        else:
+            selected = None
+        
+        # Broadcast selection to all ranks
+        selected = comm.bcast(selected, root=0)
+        
+        # Exit if stats-only or no models selected
+        if selected is None:
+            if rank == 0 and not args.stats_only:
                 return
-            
-            # Show current threshold settings
-            logger.info(f"Current threshold settings: mean={cfg.threshold_mean}, std={cfg.threshold_std}")
-            logger.info(f"Selection method: {cfg.selection_method}")
-            
-            # Select best models
-            selected = select_models(
-                results,
-                cfg.selection_method,
-                cfg.num_top_models,
-                cfg.threshold_mean,
-                cfg.threshold_std,
-                logger,
-            )
-            
-            if len(selected) == 0:
-                logger.error("No models met selection criteria!")
-                logger.error("Tip: Run with --stats-only to see error distributions and tune thresholds")
-                save_step_status(args.run_dir, "step_2", "failed",
-                               {"error": "No models met criteria"})
+            elif rank == 0:
                 return
-            
-            # Recompute operators
-            models_with_ops = recompute_operators(selected, data, cfg.r, logger)
-            
-            # Save ensemble
+            else:
+                return
+        
+        # Parallel recomputation of operators
+        models_with_ops = recompute_operators_parallel(
+            selected, data, cfg.r, paths["operators_dir"], comm, logger if rank == 0 else None
+        )
+        
+        # Rank 0 saves ensemble and summary
+        if rank == 0:
+            # Save ensemble (also save to single file for backward compatibility)
             save_ensemble(models_with_ops, paths["ensemble_models"], cfg, logger)
             
             # Save sweep summary
@@ -979,6 +1077,7 @@ def main():
                 n_selected=len(selected),
                 best_error=selected[0]['total_error'] if selected else np.nan,
                 worst_selected=selected[-1]['total_error'] if selected else np.nan,
+                operators_dir=paths["operators_dir"],
             )
             
             # Print summary
@@ -987,6 +1086,7 @@ def main():
             print(f"  Selected models: {len(selected)}")
             print(f"  Best total error: {selected[0]['total_error']:.6e}")
             print(f"  Worst selected: {selected[-1]['total_error']:.6e}")
+            print(f"  Operators saved to: {paths['operators_dir']}")
             
             print(f"\n  {'Model':>6} | {'Total Err':>10} | {'Mean Γn':>8} | {'Std Γn':>8}")
             print(f"  {'-'*50}")
@@ -1011,7 +1111,7 @@ def main():
     
     finally:
         # Cleanup shared memory windows
-        if parallel and shared_windows:
+        if shared_windows:
             comm.Barrier()
             for win in shared_windows:
                 win.Free()

@@ -35,12 +35,146 @@ from utils import (
 
 
 # =============================================================================
+# PREPROCESSING VERIFICATION
+# =============================================================================
+
+def load_preprocessing_info(filepath: str, logger) -> dict:
+    """
+    Load preprocessing information from Step 1.
+    
+    Parameters
+    ----------
+    filepath : str
+        Path to preprocessing_info.npz file.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    dict
+        Preprocessing settings dictionary.
+    """
+    if not os.path.exists(filepath):
+        logger.warning(f"Preprocessing info file not found: {filepath}")
+        logger.warning("  Assuming default settings (centering applied)")
+        return {
+            'centering_applied': True,
+            'r_actual': None,
+        }
+    
+    data = np.load(filepath, allow_pickle=True)
+    info = {
+        'centering_applied': bool(data['centering_applied']),
+        'r_actual': int(data['r_actual']),
+        'r_config': int(data['r_config']),
+        'r_from_energy': int(data['r_from_energy']),
+        'n_spatial': int(data['n_spatial']),
+        'n_fields': int(data['n_fields']),
+        'n_x': int(data['n_x']),
+        'n_y': int(data['n_y']),
+        'dt': float(data['dt']),
+    }
+    
+    logger.info("Preprocessing info:")
+    logger.info(f"  Centering applied: {info['centering_applied']}")
+    logger.info(f"  POD modes (r): {info['r_actual']} (config: {info['r_config']}, energy-based: {info['r_from_energy']})")
+    logger.info(f"  Spatial DOF: {info['n_spatial']} ({info['n_fields']} fields, {info['n_x']}x{info['n_y']} grid)")
+    
+    return info
+
+
+# =============================================================================
 # MODEL LOADING
 # =============================================================================
 
-def load_ensemble(filepath: str, logger) -> list:
+def load_model_from_file(filepath: str) -> dict:
     """
-    Load ensemble models from NPZ file.
+    Load a single model from an individual NPZ file.
+    
+    Parameters
+    ----------
+    filepath : str
+        Path to model NPZ file.
+    
+    Returns
+    -------
+    dict
+        Model dictionary with operators and metadata.
+    """
+    data = np.load(filepath, allow_pickle=True)
+    model = {
+        'A': data['A'],
+        'F': data['F'],
+        'C': data['C'],
+        'G': data['G'],
+        'c': data['c'],
+        'total_error': float(data['total_error']),
+        'mean_err_Gamma_n': float(data['mean_err_Gamma_n']),
+        'std_err_Gamma_n': float(data['std_err_Gamma_n']),
+        'mean_err_Gamma_c': float(data['mean_err_Gamma_c']),
+        'std_err_Gamma_c': float(data['std_err_Gamma_c']),
+        'alpha_state_lin': float(data['alpha_state_lin']),
+        'alpha_state_quad': float(data['alpha_state_quad']),
+        'alpha_out_lin': float(data['alpha_out_lin']),
+        'alpha_out_quad': float(data['alpha_out_quad']),
+    }
+    return model
+
+
+def load_ensemble_from_directory(operators_dir: str, logger) -> list:
+    """
+    Load ensemble models from individual files in a directory.
+    
+    Parameters
+    ----------
+    operators_dir : str
+        Path to directory containing model files.
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    list
+        List of (score, model) tuples, sorted by score.
+    """
+    if not os.path.exists(operators_dir):
+        logger.warning(f"Operators directory not found: {operators_dir}")
+        return []
+    
+    # Find all model files
+    model_files = sorted([
+        f for f in os.listdir(operators_dir) 
+        if f.startswith('model_') and f.endswith('.npz')
+    ])
+    
+    if not model_files:
+        logger.warning(f"No model files found in {operators_dir}")
+        return []
+    
+    logger.info(f"Loading {len(model_files)} models from {operators_dir}")
+    
+    models = []
+    for filename in model_files:
+        filepath = os.path.join(operators_dir, filename)
+        try:
+            model = load_model_from_file(filepath)
+            models.append((model['total_error'], model))
+        except Exception as e:
+            logger.warning(f"  Failed to load {filename}: {e}")
+    
+    # Sort by total_error
+    models.sort(key=lambda x: x[0])
+    
+    logger.info(f"  Loaded {len(models)} models successfully")
+    return models
+
+
+def load_ensemble(filepath: str, logger, operators_dir: str = None) -> list:
+    """
+    Load ensemble models from NPZ file or directory.
+    
+    First tries to load from individual files in operators_dir if provided,
+    falls back to the single NPZ file.
     
     Parameters
     ----------
@@ -48,12 +182,22 @@ def load_ensemble(filepath: str, logger) -> list:
         Path to ensemble NPZ file.
     logger : logging.Logger
         Logger instance.
+    operators_dir : str, optional
+        Path to directory with individual model files.
     
     Returns
     -------
     list
         List of (score, model) tuples.
     """
+    # Try loading from individual files first (new format)
+    if operators_dir and os.path.exists(operators_dir):
+        models = load_ensemble_from_directory(operators_dir, logger)
+        if models:
+            return models
+        logger.info("  Falling back to single ensemble file...")
+    
+    # Fall back to single NPZ file (backward compatibility)
     logger.info(f"Loading ensemble from {filepath}")
     
     data = np.load(filepath, allow_pickle=True)
@@ -500,8 +644,15 @@ def main():
     paths = get_output_paths(args.run_dir)
     
     try:
-        # Load models
-        models = load_ensemble(paths["ensemble_models"], logger)
+        # Load and verify preprocessing settings
+        preproc_info = load_preprocessing_info(paths["preprocessing_info"], logger)
+        
+        # Load models (try individual files first, fall back to ensemble file)
+        models = load_ensemble(
+            paths["ensemble_models"], 
+            logger, 
+            operators_dir=paths["operators_dir"]
+        )
         
         if len(models) == 0:
             logger.error("No models loaded!")
