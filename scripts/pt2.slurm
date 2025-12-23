@@ -29,6 +29,9 @@ cd $WORK/repos/IEEE
 # Install package in development mode (if not already done)
 pip install -c frontera_pip_constraints.txt h5netcdf
 
+# Set OpenMP threads to match cpus-per-task
+export OMP_NUM_THREADS=28
+
 # Print job info
 echo "=============================================="
 echo "OpInf Parallel Hyperparameter Sweep"
@@ -42,7 +45,7 @@ echo "=============================================="
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
 ibrun -n 32 python3 opinf/step_2_train_rom.py \
-    --config config/opinf/config_10and2.yaml \
+    --config config/popinf_10train_2test.yaml \
     --run-dir $SCRATCH/IEEE/output/20251222_142905_hw_rom_experiment_4and2_parallel_step1 
 
 echo "=============================================="
