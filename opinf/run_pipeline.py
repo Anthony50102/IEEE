@@ -49,7 +49,7 @@ except ImportError:
     MPI = None
 
 
-def run_step_1(config_path: str, run_dir: str, logger) -> bool:
+def run_step_1(config_path: str, run_dir: str, logger, save_pod_energy: bool = True) -> bool:
     """
     Run Step 1: Data Preprocessing and POD.
     
@@ -77,9 +77,10 @@ def run_step_1(config_path: str, run_dir: str, logger) -> bool:
     # Modify sys.argv for step 1
     original_argv = sys.argv.copy()
     sys.argv = [
-        'step_1_preprocess.py',
+        'step_1_parallel_preprocess.py',
         '--config', config_path,
         '--run-dir', run_dir,
+        '--save-pod-energy' if save_pod_energy else '',
     ]
     
     try:
@@ -205,6 +206,10 @@ def main():
         "--steps", type=str, default="1,2,3",
         help="Comma-separated list of steps to run (default: 1,2,3)"
     )
+    parser.add_argument(
+        "--save-pod-energy", action="store_true", default=True,
+        help="Save POD energy (default: True)"
+    )
     args = parser.parse_args()
     
     # Parse steps to run
@@ -258,7 +263,7 @@ def main():
     # Run requested steps
     if 1 in steps:
         if rank == 0:
-            success = run_step_1(args.config, run_dir, logger)
+            success = run_step_1(args.config, run_dir, logger, save_pod_energy=args.save_pod_energy)
             if not success:
                 all_success = False
                 logger.error("Step 1 failed, aborting pipeline")

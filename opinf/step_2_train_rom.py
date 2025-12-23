@@ -988,6 +988,9 @@ def main():
             
             comm.Barrier()
         
+        # All ranks load data from shared memory
+        comm.Barrier()
+        
         # Run sweep
         if rank == 0:
             logger.info("Starting hyperparameter sweep...")
