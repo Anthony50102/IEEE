@@ -2,9 +2,9 @@
 #SBATCH -J popinf_pod           # Job name
 #SBATCH -o popinf_%j.out        # Output file (%j = job ID)
 #SBATCH -e popinf_%j.err        # Error file
-#SBATCH -p development          # Queue (partition)
-#SBATCH -N 32                   # Number of nodes
-#SBATCH -n 32                   # Total MPI tasks
+#SBATCH -p normal          # Queue (partition)
+#SBATCH -N 64                   # Number of nodes
+#SBATCH -n 64                   # Total MPI tasks
 #SBATCH --cpus-per-task=56      # Cores per task (56 cores/node ÷ 2 ranks/node)
 #SBATCH -t 02:00:00             # Time limit (HH:MM:SS)
 
@@ -42,7 +42,7 @@ echo "Start time: $(date)"
 echo "=============================================="
 
 # Run parallel sweep
-ibrun -n 32 python3 opinf/step_1_parallel_preprocess.py \
+ibrun -n 64 python3 opinf/step_1_parallel_preprocess.py \
         --config config/popinf_8train_2test.yaml \
         --save-pod-energy
 
