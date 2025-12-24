@@ -608,8 +608,8 @@ def compute_pod_distributed(
         # Use scipy for more robust eigendecomposition
         try:
             from scipy.linalg import eigh as scipy_eigh
-             logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
-             eigs, eigv = scipy_eigh(D_for_eig, overwrite_a = True, overwrite_b = True)
+            logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
+            eigs, eigv = scipy_eigh(D_for_eig, overwrite_a = True, overwrite_b = True)
         except ImportError:
             logger.info("  Using numpy.linalg.eigh for eigendecomposition...")
             eigs, eigv = np.linalg.eigh(D_for_eig)
