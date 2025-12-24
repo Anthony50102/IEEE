@@ -3,14 +3,16 @@
 #SBATCH -o popinf_%j.out        # Output file (%j = job ID)
 #SBATCH -e popinf_%j.err        # Error file
 #SBATCH -p development          # Queue (partition)
-#SBATCH -N 16                   # Number of nodes
+#SBATCH -N 32                   # Number of nodes
 #SBATCH -n 32                   # Total MPI tasks
-#SBATCH --cpus-per-task=28      # Cores per task (56 cores/node ÷ 2 ranks/node)
+#SBATCH --cpus-per-task=56      # Cores per task (56 cores/node ÷ 2 ranks/node)
 #SBATCH -t 02:00:00             # Time limit (HH:MM:SS)
 
 # =============================================================================
 # OpInf Parallel Hyperparameter Sweep - TACC Frontera
 # =============================================================================
+
+set -e
 
 # Load required modules
 module load intel/19.1.1 
@@ -19,7 +21,7 @@ module load python3/3.9.2
 module load phdf5/1.10.4
 
 # Set OpenMP threads to match cpus-per-task
-export OMP_NUM_THREADS=28
+export OMP_NUM_THREADS=56
 
 # Navigate to project directory
 cd $WORK/repos/IEEE

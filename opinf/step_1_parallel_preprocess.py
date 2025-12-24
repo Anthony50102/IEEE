@@ -561,9 +561,9 @@ def compute_pod_distributed(
         
         # Force symmetry if needed (numerical fix)
         if symmetry_error > 1e-10:
-            logger.warning(f"  WARNING: Matrix not symmetric! Forcing symmetry...")
-            D_global = (D_global + D_global.T) / 2.0
-            logger.info(f"  [DIAGNOSTIC] After symmetrization, error: {np.max(np.abs(D_global - D_global.T)):.2e}")
+            logger.warning(f"  WARNING: Matrix not symmetric! NOT forcing symmetry...")
+            # D_global = (D_global + D_global.T) / 2.0
+            # logger.info(f"  [DIAGNOSTIC] After symmetrization, error: {np.max(np.abs(D_global - D_global.T)):.2e}")
 
     # Broadcast the (possibly symmetrized) D_global to all ranks
     # Use chunked communication to avoid MPI size limits (~2GB per message)
@@ -606,14 +606,14 @@ def compute_pod_distributed(
         logger.info(f"  [DIAGNOSTIC] D_for_eig copy created, is C-contiguous: {D_for_eig.flags['C_CONTIGUOUS']}")
         
         # Use scipy for more robust eigendecomposition
-        # try:
-        #     from scipy.linalg import eigh as scipy_eigh
-        #     logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
-        #     eigs, eigv = scipy_eigh(D_for_eig)
-        # except ImportError:
-        #     logger.info("  Using numpy.linalg.eigh for eigendecomposition...")
-        #     eigs, eigv = np.linalg.eigh(D_for_eig)
-        eigs, eigv = np.linalg.eigh(D_for_eig)
+        try:
+            from scipy.linalg import eigh as scipy_eigh
+             logger.info("  Using scipy.linalg.eigh for eigendecomposition...")
+             eigs, eigv = scipy_eigh(D_for_eig, overwrite_a = True, overwrite_b = True)
+        except ImportError:
+            logger.info("  Using numpy.linalg.eigh for eigendecomposition...")
+            eigs, eigv = np.linalg.eigh(D_for_eig)
+        #eigs, eigv = np.linalg.eigh(D_for_eig)
         
         del D_for_eig
         
