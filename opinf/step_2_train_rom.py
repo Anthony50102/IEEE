@@ -200,6 +200,79 @@ def create_shared_array(node_comm, shape, dtype=np.float64):
     return arr, win
 
 
+def chunked_bcast(comm, data, root=0, max_bytes=2**30):
+    """
+    Broadcast a numpy array in chunks to avoid MPI's 32-bit integer overflow.
+    
+    MPI's Bcast uses a 32-bit signed integer for count, limiting messages to
+    ~2.1GB. This function breaks large arrays into smaller chunks.
+    
+    Parameters
+    ----------
+    comm : MPI.Comm
+        MPI communicator.
+    data : np.ndarray or None
+        Data to broadcast (only needs to be valid on root rank).
+    root : int
+        Root rank for broadcast.
+    max_bytes : int
+        Maximum bytes per chunk (default ~1GB for safety margin).
+    
+    Returns
+    -------
+    np.ndarray
+        Broadcasted data on all ranks.
+    """
+    rank = comm.Get_rank()
+    
+    # Broadcast shape and dtype first
+    if rank == root:
+        shape = data.shape
+        dtype = data.dtype
+    else:
+        shape = None
+        dtype = None
+    
+    shape = comm.bcast(shape, root=root)
+    dtype = comm.bcast(dtype, root=root)
+    
+    # Allocate on non-root ranks
+    if rank != root:
+        data = np.empty(shape, dtype=dtype)
+    
+    # Calculate chunk size
+    itemsize = np.dtype(dtype).itemsize
+    total_elements = int(np.prod(shape))
+    total_bytes = total_elements * itemsize
+    
+    # If small enough, do single broadcast
+    if total_bytes <= max_bytes:
+        comm.Bcast(data, root=root)
+        return data
+    
+    # Large array - need chunked broadcast
+    # Note: Chunking is needed to avoid MPI overflow when total_bytes > 2^31
+    n_rows = shape[0]
+    elements_per_row = total_elements // n_rows
+    bytes_per_row = elements_per_row * itemsize
+    rows_per_chunk = max(1, max_bytes // bytes_per_row)
+    
+    # Flatten view for chunked broadcast
+    data_flat = data.reshape(n_rows, -1) if len(shape) > 1 else data.reshape(n_rows, 1)
+    
+    for start_row in range(0, n_rows, rows_per_chunk):
+        end_row = min(start_row + rows_per_chunk, n_rows)
+        if rank == root:
+            chunk = np.ascontiguousarray(data_flat[start_row:end_row, :])
+        else:
+            chunk = np.empty((end_row - start_row, data_flat.shape[1]), dtype=dtype)
+        comm.Bcast(chunk, root=root)
+        if rank != root:
+            data_flat[start_row:end_row, :] = chunk
+    
+    return data
+
+
 def parallel_hyperparameter_sweep(
     cfg: PipelineConfig,
     data: dict,
@@ -946,15 +1019,52 @@ def main():
         
         if node_rank == 0:
             # Broadcast data from global rank 0 to all node-rank-0s
+            # Use chunked broadcast to avoid MPI's 32-bit integer overflow (~2GB limit)
             if node_root_comm != MPI.COMM_NULL:
-                X_state_shared[:] = node_root_comm.bcast(data_local['X_state'] if rank == 0 else None, root=0)
-                Y_state_shared[:] = node_root_comm.bcast(data_local['Y_state'] if rank == 0 else None, root=0)
-                D_state_shared[:] = node_root_comm.bcast(data_local['D_state'] if rank == 0 else None, root=0)
-                D_state_2_shared[:] = node_root_comm.bcast(data_local['D_state_2'] if rank == 0 else None, root=0)
-                D_out_shared[:] = node_root_comm.bcast(data_local['D_out'] if rank == 0 else None, root=0)
-                D_out_2_shared[:] = node_root_comm.bcast(data_local['D_out_2'] if rank == 0 else None, root=0)
-                mean_Xhat_shared[:] = node_root_comm.bcast(data_local['mean_Xhat'] if rank == 0 else None, root=0)
-                Y_Gamma_shared[:] = node_root_comm.bcast(data_local['Y_Gamma'] if rank == 0 else None, root=0)
+                # Get node_root rank within node_root_comm
+                node_root_rank = node_root_comm.Get_rank()
+                is_source = (node_root_rank == 0)  # Global rank 0 is the source
+                
+                X_state_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['X_state'] if is_source else None, 
+                    root=0
+                )
+                Y_state_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['Y_state'] if is_source else None, 
+                    root=0
+                )
+                D_state_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['D_state'] if is_source else None, 
+                    root=0
+                )
+                D_state_2_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['D_state_2'] if is_source else None, 
+                    root=0
+                )
+                D_out_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['D_out'] if is_source else None, 
+                    root=0
+                )
+                D_out_2_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['D_out_2'] if is_source else None, 
+                    root=0
+                )
+                mean_Xhat_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['mean_Xhat'] if is_source else None, 
+                    root=0
+                )
+                Y_Gamma_shared[:] = chunked_bcast(
+                    node_root_comm, 
+                    data_local['Y_Gamma'] if is_source else None, 
+                    root=0
+                )
         
         # Synchronize within node so all ranks see the data
         node_comm.Barrier()
