@@ -45,7 +45,7 @@ echo "=============================================="
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
 ibrun -n 896 python3 opinf/step_2_train_rom.py \
-    --config config/popinf_8train_2test.yaml \
+    --config config/opinf_8train_2test.yaml \
     --run-dir $SCRATCH/IEEE/output/20251223_212257_8train_2test 
 
 echo "=============================================="
