@@ -2,9 +2,9 @@
 #SBATCH -J mani_step_1           # Job name
 #SBATCH -o mani_step1_%j.out        # Output file (%j = job ID)
 #SBATCH -e mani_step1_%j.err        # Error file
-#SBATCH -p development          # Queue (partition)
+#SBATCH -p nvdimm          # Queue (partition)
 #SBATCH -N 1                   # Number of nodes
-#SBATCH -t 02:00:00             # Time limit (HH:MM:SS)
+#SBATCH -t 10:00:00             # Time limit (HH:MM:SS)
 
 # =============================================================================
 # OpInf Parallel Hyperparameter Sweep - TACC Frontera
