@@ -40,30 +40,33 @@ training:
   n_steps: 8000                # Number of time steps for integration
 
 regularization:
-  # State operator regularization
-  state_lin:
-    min: 1.0e-4
-    max: 1.0e6
-    num: 10
-    scale: "linear"             # "linear" or "log"
+        # Ionut Defined 
+         # If still not good then try 100 timesteps?
+    state_lin:
+        min: 1.0e0
+        max: 1.0e7
+        num: 20
+        scale: "linear" 
 
-  state_quad:
-    min: 1.0e5
-    max: 1.0e15
-    num: 10
+    state_quad:
+        min: 1.0e4
+        max: 1.0e12
+        num: 20
     scale: "linear"
-  
-  output_lin:
-    min: 1.0e-10
-    max: 1.0e1
-    num: 11
+
+      # If going to change stuff change state bounds
+    output_lin:
+        min: 1.0e-2
+        max: 1.0e4
+        num: 20
     scale: "linear"
-  
-  output_quad:
-    min: 1.0e-12
-    max: 1.0e1
-    num: 11
-    scale: "linear"
+                                                                  
+    output_quad:
+        min: 1.0e-2
+        max: 1.0e6
+        num: 20
+        scale: "linear"
+
 
 model_selection:
   method: "threshold"           # "top_k" or "threshold"
@@ -73,7 +76,7 @@ model_selection:
   
   # threshold parameters
   threshold_mean: 0.05          # Maximum relative error in mean (5%)
-  threshold_std: 0.4           # Maximum relative error in std (30%)
+  threshold_std: 0.2           # Maximum relative error in std (30%)
 
 evaluation:
   compute_full_state: false     # Reconstruct full-order state (memory intensive)

@@ -17,6 +17,7 @@ set -e
 # Load required modules
 module load intel/19.1.1 
 module load impi/19.0.9
+# Try 3.7 
 module load python3/3.9.2
 module load phdf5/1.10.4
 
@@ -44,7 +45,8 @@ echo "=============================================="
 # Run parallel sweep
 ibrun -n 7 python3 opinf/step_1_parallel_preprocess.py \
         --config config/opinf_1train_5test.yaml \
-        --save-pod-energy
+        --save-pod-energy \
+        --no-centering
 
 
 echo "=============================================="
