@@ -17,6 +17,7 @@ Author: [Your name]
 """
 
 import numpy as np
+import gc
 from dataclasses import dataclass
 from typing import Optional, Callable, Tuple
 import time
@@ -259,15 +260,35 @@ def quadmani_greedy(
     )
 
 
-def compute_shifted_svd(data: np.ndarray) -> ShiftedSVD:
+def compute_shifted_svd(data: np.ndarray, copy: bool = True) -> ShiftedSVD:
     """
     Compute and return the shifted SVD for later use with from_svd.
     
     Useful when you want to try multiple r values without recomputing SVD.
+    
+    Parameters
+    ----------
+    data : ndarray
+        Snapshot matrix (n_spatial, n_snapshots).
+    copy : bool
+        If False, modifies data in-place to save memory.
     """
     shift = np.mean(data, axis=1)
-    data_centered = data - shift[:, None]
+    
+    if copy:
+        data_centered = data - shift[:, None]
+    else:
+        # In-place subtraction to save memory
+        data -= shift[:, None]
+        data_centered = data
+    
     U, s, VT = np.linalg.svd(data_centered, full_matrices=False)
+    
+    # Clean up intermediate arrays
+    if not copy:
+        del data_centered
+    gc.collect()
+    
     return ShiftedSVD(U=U, S=s, VT=VT, shift=shift)
 
 
@@ -300,41 +321,56 @@ def reconstruction_error(qm: QuadraticManifold, data: np.ndarray,
 # Comparison and I/O
 # =============================================================================
 
-def compare_with_linear_pod(qm: QuadraticManifold, data: np.ndarray,
-                            verbose: bool = True, logger=None) -> dict:
-    """Compare quadratic manifold vs standard linear POD."""
+def compute_energy_metrics(qm: QuadraticManifold, verbose: bool = True, 
+                           logger=None) -> dict:
+    """
+    Compute energy conservation metrics for the quadratic manifold.
+    
+    Uses pre-computed singular values from the manifold to avoid
+    expensive recomputation.
+    
+    Parameters
+    ----------
+    qm : QuadraticManifold
+        Computed quadratic manifold.
+    verbose : bool
+        Print progress.
+    logger : Logger, optional
+    
+    Returns
+    -------
+    dict
+        Energy metrics including total, captured, and percentage.
+    """
     def log(msg):
         if logger: logger.info(msg)
         elif verbose: print(msg)
     
-    r = qm.r
-    
-    # QM error
-    _, qm_rel = reconstruction_error(qm, data)
-    
-    # Linear POD error
-    shift = np.mean(data, axis=1)
-    U, s, _ = np.linalg.svd(data - shift[:, None], full_matrices=False)
-    V_pod = U[:, :r]
-    recon_pod = V_pod @ (V_pod.T @ (data - shift[:, None])) + shift[:, None]
-    pod_rel = np.linalg.norm(recon_pod - data, 'fro') / np.linalg.norm(data, 'fro')
-    
-    # Energy
+    s = qm.singular_values
     total_energy = np.sum(s**2)
-    pod_energy = np.sum(s[:r]**2) / total_energy
-    qm_energy = np.sum(s[qm.selected_indices]**2) / total_energy
     
-    improvement = (pod_rel - qm_rel) / pod_rel * 100
+    # Energy from selected modes (linear part)
+    selected_energy = np.sum(s[qm.selected_indices]**2)
+    linear_energy_pct = selected_energy / total_energy * 100
     
-    log(f"Comparison (r={r}):")
-    log(f"  POD:  rel_err={pod_rel:.6e}, energy={pod_energy*100:.2f}%")
-    log(f"  QM:   rel_err={qm_rel:.6e}, energy={qm_energy*100:.2f}%")
-    log(f"  Improvement: {improvement:.2f}%")
+    # Energy from first r modes (standard POD would capture this)
+    top_r_energy = np.sum(s[:qm.r]**2)
+    top_r_energy_pct = top_r_energy / total_energy * 100
+    
+    log(f"Energy conservation (r={qm.r}):")
+    log(f"  Selected modes energy: {linear_energy_pct:.4f}%")
+    log(f"  Top-{qm.r} modes energy: {top_r_energy_pct:.4f}%")
+    log(f"  Selected indices: {qm.selected_indices[:10]}..." if len(qm.selected_indices) > 10 
+        else f"  Selected indices: {qm.selected_indices}")
     
     return {
-        'pod_rel_error': pod_rel, 'qm_rel_error': qm_rel,
-        'pod_energy': pod_energy, 'qm_linear_energy': qm_energy,
-        'improvement_percent': improvement
+        'total_energy': float(total_energy),
+        'selected_modes_energy': float(selected_energy),
+        'selected_modes_energy_pct': float(linear_energy_pct),
+        'top_r_modes_energy': float(top_r_energy),
+        'top_r_modes_energy_pct': float(top_r_energy_pct),
+        'n_modes': qm.r,
+        'selected_indices': qm.selected_indices.tolist()
     }
 
 

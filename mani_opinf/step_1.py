@@ -29,7 +29,7 @@ from quadratic_manifold import (
     ShiftedSVD, QuadraticManifold,
     linear_reduce, lift_quadratic, compute_shifted_svd,
     save_quadratic_manifold, save_shifted_svd, load_shifted_svd,
-    compare_with_linear_pod, get_num_quadratic_features
+    compute_energy_metrics, get_num_quadratic_features
 )
 
 
@@ -54,7 +54,6 @@ class Config:
     r: int
     n_vectors_to_check: int
     reg_magnitude: float
-    compare_with_pod: bool
     initial_indices: List[int]
     use_precomputed_svd: bool
     svd_file: Optional[str]
@@ -89,7 +88,6 @@ class Config:
             r=qm.get('r', cfg.get('pod', {}).get('r', 100)),
             n_vectors_to_check=qm.get('n_vectors_to_check', 200),
             reg_magnitude=float(qm.get('reg_magnitude', 1e-6)),
-            compare_with_pod=qm.get('compare_with_pod', True),
             initial_indices=qm.get('initial_indices', []),
             use_precomputed_svd=qm.get('use_precomputed_svd', False),
             svd_file=qm.get('svd_file', None),
@@ -156,6 +154,22 @@ def save_status(run_dir: str, step: str, status: str, details: dict = None):
 
 
 # =============================================================================
+# Memory Management Helpers
+# =============================================================================
+
+def get_memmap_path(run_dir: str, name: str) -> str:
+    """Get path for memory-mapped file."""
+    return os.path.join(run_dir, f"{name}.dat")
+
+
+def cleanup_memmap(run_dir: str, name: str):
+    """Remove memory-mapped file if it exists."""
+    path = get_memmap_path(run_dir, name)
+    if os.path.exists(path):
+        os.remove(path)
+
+
+# =============================================================================
 # Data Loading
 # =============================================================================
 
@@ -188,47 +202,85 @@ def load_snapshots(file_path: str, cfg: Config, max_snaps: Optional[int]) -> np.
     return Q.reshape(-1, n_time)
 
 
-def load_all_data(cfg: Config, logger) -> Tuple[np.ndarray, np.ndarray, list, list, int]:
-    """Load training and test data."""
+def load_all_data(cfg: Config, run_dir: str, logger) -> Tuple[np.ndarray, np.ndarray, list, list, int]:
+    """Load training and test data using memory-mapped arrays for efficiency."""
     logger.info("Loading simulation data...")
     
     max_snaps = get_truncation_snapshots(cfg) if cfg.truncation_enabled else None
     
-    # Get dimensions from first file
-    with xr.open_dataset(cfg.training_files[0], engine=cfg.engine, phony_dims="sort") as fh:
-        shape = fh["density"].shape
-        n_time_raw = shape[0]
-        if len(shape) == 3:
-            n_spatial = 2 * shape[1] * shape[2]
-        else:
-            n_spatial = 2 * shape[1]
+    # First pass: determine shapes and timesteps
+    train_timesteps = []
+    test_timesteps = []
+    n_spatial = None
     
-    # Count timesteps per file
-    def count_timesteps(file_path):
+    for file_path in cfg.training_files:
         with xr.open_dataset(file_path, engine=cfg.engine, phony_dims="sort") as fh:
-            nt = fh["density"].shape[0]
-        return min(nt, max_snaps) if max_snaps else nt
+            shape = fh["density"].shape
+            n_time_raw = shape[0]
+            if n_spatial is None:
+                if len(shape) == 3:
+                    n_spatial = 2 * shape[1] * shape[2]
+                else:
+                    n_spatial = 2 * shape[1]
+        n_time = min(n_time_raw, max_snaps) if max_snaps else n_time_raw
+        train_timesteps.append(n_time)
     
-    train_ts = [count_timesteps(f) for f in cfg.training_files]
-    test_ts = [count_timesteps(f) for f in cfg.test_files]
+    for file_path in cfg.test_files:
+        with xr.open_dataset(file_path, engine=cfg.engine, phony_dims="sort") as fh:
+            n_time_raw = fh["density"].shape[0]
+        n_time = min(n_time_raw, max_snaps) if max_snaps else n_time_raw
+        test_timesteps.append(n_time)
     
-    # Allocate
-    Q_train = np.zeros((n_spatial, sum(train_ts)), dtype=np.float64)
-    Q_test = np.zeros((n_spatial, sum(test_ts)), dtype=np.float64)
+    total_train = sum(train_timesteps)
+    total_test = sum(test_timesteps)
     
-    train_bounds = [0] + list(np.cumsum(train_ts))
-    test_bounds = [0] + list(np.cumsum(test_ts))
+    logger.info(f"  Spatial DOF: {n_spatial:,}")
+    logger.info(f"  Total train snapshots: {total_train:,}")
+    logger.info(f"  Total test snapshots: {total_test:,}")
     
-    # Load
+    # Cleanup any existing memmap files
+    cleanup_memmap(run_dir, "Q_train")
+    cleanup_memmap(run_dir, "Q_test")
+    
+    # Create memory-mapped arrays
+    Q_train = np.memmap(
+        get_memmap_path(run_dir, "Q_train"),
+        dtype='float64',
+        mode='w+',
+        shape=(n_spatial, total_train)
+    )
+    Q_test = np.memmap(
+        get_memmap_path(run_dir, "Q_test"),
+        dtype='float64',
+        mode='w+',
+        shape=(n_spatial, total_test)
+    )
+    
+    # Compute boundaries
+    train_bounds = [0] + list(np.cumsum(train_timesteps))
+    test_bounds = [0] + list(np.cumsum(test_timesteps))
+    
+    # Load training data incrementally
+    logger.info("Loading training trajectories...")
     for i, f in enumerate(cfg.training_files):
-        Q_train[:, train_bounds[i]:train_bounds[i+1]] = load_snapshots(f, cfg, max_snaps)
+        t0 = time.time()
+        Q_ic = load_snapshots(f, cfg, max_snaps)
+        Q_train[:, train_bounds[i]:train_bounds[i+1]] = Q_ic
+        del Q_ic
+        gc.collect()
         if cfg.verbose:
-            logger.info(f"  Loaded {os.path.basename(f)}")
+            logger.info(f"  Loaded {os.path.basename(f)} ({time.time()-t0:.1f}s)")
     
+    # Load test data incrementally
+    logger.info("Loading test trajectories...")
     for i, f in enumerate(cfg.test_files):
-        Q_test[:, test_bounds[i]:test_bounds[i+1]] = load_snapshots(f, cfg, max_snaps)
+        t0 = time.time()
+        Q_ic = load_snapshots(f, cfg, max_snaps)
+        Q_test[:, test_bounds[i]:test_bounds[i+1]] = Q_ic
+        del Q_ic
+        gc.collect()
         if cfg.verbose:
-            logger.info(f"  Loaded {os.path.basename(f)}")
+            logger.info(f"  Loaded {os.path.basename(f)} ({time.time()-t0:.1f}s)")
     
     logger.info(f"  Train: {Q_train.shape}, Test: {Q_test.shape}")
     return Q_train, Q_test, train_bounds, test_bounds, n_spatial
@@ -338,8 +390,8 @@ def main():
     start_time = time.time()
     
     try:
-        # 1. Load data
-        Q_train, Q_test, train_bounds, test_bounds, n_spatial = load_all_data(cfg, logger)
+        # 1. Load data (now uses memmap)
+        Q_train, Q_test, train_bounds, test_bounds, n_spatial = load_all_data(cfg, run_dir, logger)
         np.savez(paths["boundaries"], train_boundaries=train_bounds,
                  test_boundaries=test_bounds, n_spatial=n_spatial)
         
@@ -355,15 +407,18 @@ def main():
                 verbose=cfg.verbose, logger=logger
             )
         else:
+            # Use copy=False to save memory during SVD computation
             qm = quadmani_greedy(
                 Q_train, r=cfg.r, n_vectors_to_check=cfg.n_vectors_to_check,
                 reg_magnitude=cfg.reg_magnitude, idx_in_initial=initial_idx,
                 verbose=cfg.verbose, logger=logger
             )
-            # Save SVD for potential reuse
-            svd = compute_shifted_svd(Q_train)
+            # Save SVD for potential reuse (compute from manifold's singular values)
+            svd = compute_shifted_svd(np.asarray(Q_train), copy=False)
             save_shifted_svd(svd, paths["svd_file"])
             logger.info(f"Saved SVD to {paths['svd_file']}")
+            del svd
+            gc.collect()
         
         logger.info(f"Selected modes: {qm.selected_indices}")
         
@@ -373,20 +428,26 @@ def main():
                  shift=qm.shift, selected_indices=qm.selected_indices,
                  is_quadratic_manifold=True)
         
-        # 3. Compare with POD
-        if cfg.compare_with_pod:
-            comparison = compare_with_linear_pod(qm, Q_test, verbose=cfg.verbose, logger=logger)
-            np.savez(paths["comparison"], **comparison)
+        # 3. Compute energy metrics (replaces expensive POD comparison)
+        energy_metrics = compute_energy_metrics(qm, verbose=cfg.verbose, logger=logger)
+        np.savez(paths["comparison"], **energy_metrics)
         
         # 4. Project data
         Xhat_train = linear_reduce(qm, Q_train).T  # (n_time, r)
         Xhat_test = linear_reduce(qm, Q_test).T
         
-        # Reconstruction errors
+        # Reconstruction errors (compute on smaller batches if needed)
+        logger.info("Computing reconstruction errors...")
         recon_train = lift_quadratic(qm, Xhat_train.T)
-        recon_test = lift_quadratic(qm, Xhat_test.T)
         train_err = np.linalg.norm(recon_train - Q_train, 'fro') / np.linalg.norm(Q_train, 'fro')
+        del recon_train
+        gc.collect()
+        
+        recon_test = lift_quadratic(qm, Xhat_test.T)
         test_err = np.linalg.norm(recon_test - Q_test, 'fro') / np.linalg.norm(Q_test, 'fro')
+        del recon_test
+        gc.collect()
+        
         logger.info(f"Reconstruction: train={train_err:.6e}, test={test_err:.6e}")
         
         np.save(paths["xhat_train"], Xhat_train)
@@ -425,16 +486,23 @@ def main():
         del Q_train, Q_test
         gc.collect()
         
+        # Cleanup memmap files
+        cleanup_memmap(run_dir, "Q_train")
+        cleanup_memmap(run_dir, "Q_test")
+        logger.info("Cleaned up temporary memmap files")
+        
         total_time = time.time() - start_time
         save_status(run_dir, "step_1_qm", "completed", {
             "r": cfg.r, "selected_indices": qm.selected_indices.tolist(),
             "train_error": float(train_err), "test_error": float(test_err),
+            "energy_pct": energy_metrics['selected_modes_energy_pct'],
             "total_time_seconds": total_time
         })
         
         print("=" * 70)
         print(f"  COMPLETE: {total_time:.1f}s")
         print(f"  Selected modes: {qm.selected_indices}")
+        print(f"  Energy conserved: {energy_metrics['selected_modes_energy_pct']:.4f}%")
         print("=" * 70)
         
     except Exception as e:
