@@ -504,8 +504,8 @@ def main():
     logger.info(f"Run directory: {run_dir}")
     save_step_status(run_dir, "step_1", "running")
     
-    # Save configuration
-    save_config(cfg, run_dir)
+    # Save configuration with step-specific name
+    save_config(cfg, run_dir, step_name="step_1")
     logger.info("Configuration saved to run directory")
     
     paths = get_output_paths(run_dir)

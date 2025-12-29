@@ -394,9 +394,12 @@ def load_config(config_path: str) -> PipelineConfig:
     return cfg
 
 
-def save_config(cfg: PipelineConfig, output_path: str) -> str:
+def save_config(cfg: PipelineConfig, output_path: str, step_name: str = None) -> str:
     """
     Save configuration to YAML file.
+    
+    Each step should save its own version of the config with a step-specific
+    filename so we can track exactly which config was used for each step.
     
     Parameters
     ----------
@@ -404,6 +407,10 @@ def save_config(cfg: PipelineConfig, output_path: str) -> str:
         Configuration object.
     output_path : str
         Directory to save configuration.
+    step_name : str, optional
+        Name of the step (e.g., "step_1", "step_2", "step_3").
+        If provided, saves to config_<step_name>.yaml.
+        If None, saves to config.yaml for backward compatibility.
     
     Returns
     -------
@@ -463,7 +470,13 @@ def save_config(cfg: PipelineConfig, output_path: str) -> str:
         },
     }
     
-    filepath = os.path.join(output_path, "config.yaml")
+    # Determine filename based on step_name
+    if step_name:
+        filename = f"config_{step_name}.yaml"
+    else:
+        filename = "config.yaml"
+    
+    filepath = os.path.join(output_path, filename)
     with open(filepath, 'w') as f:
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
     

@@ -37,6 +37,7 @@ from dmd.utils import (
 # Import shared utilities from opinf
 from opinf.utils import (
     setup_logging,
+    save_config,
     save_step_status,
     check_step_completed,
     print_header,
@@ -836,6 +837,10 @@ def main():
         return
     
     save_step_status(args.run_dir, "step_3_dmd", "running")
+    
+    # Save configuration with step-specific name
+    save_config(cfg, args.run_dir, step_name="step_3_dmd")
+    logger.info("Configuration saved to run directory")
     
     paths = get_dmd_output_paths(args.run_dir)
     

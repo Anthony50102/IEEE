@@ -938,6 +938,10 @@ def main():
             return
         
         save_step_status(args.run_dir, "step_2", "running")
+        
+        # Save configuration with step-specific name
+        save_config(cfg, args.run_dir, step_name="step_2")
+        logger.info("Configuration saved to run directory")
     
     comm.Barrier()
     
@@ -1197,6 +1201,28 @@ def main():
             print(f"  Best total error: {selected[0]['total_error']:.6e}")
             print(f"  Worst selected: {selected[-1]['total_error']:.6e}")
             print(f"  Operators saved to: {paths['operators_dir']}")
+            
+            # Log regularization parameter statistics for selected models
+            reg_params = ['alpha_state_lin', 'alpha_state_quad', 'alpha_out_lin', 'alpha_out_quad']
+            logger.info("")
+            logger.info("=" * 70)
+            logger.info("REGULARIZATION PARAMETER STATISTICS (Selected Models)")
+            logger.info("=" * 70)
+            print(f"\n  REGULARIZATION PARAMETERS (Selected Models):")
+            print(f"  {'Parameter':<18} | {'Min':>12} | {'Median':>12} | {'Max':>12}")
+            print(f"  {'-'*60}")
+            
+            for param in reg_params:
+                values = np.array([m[param] for m in selected])
+                param_min = np.min(values)
+                param_max = np.max(values)
+                param_median = np.median(values)
+                
+                logger.info(f"  {param}: min={param_min:.4e}, median={param_median:.4e}, max={param_max:.4e}")
+                print(f"  {param:<18} | {param_min:>12.4e} | {param_median:>12.4e} | {param_max:>12.4e}")
+            
+            logger.info("=" * 70)
+            print()
             
             print(f"\n  {'Model':>6} | {'Total Err':>10} | {'Mean Γn':>8} | {'Std Γn':>8}")
             print(f"  {'-'*50}")
