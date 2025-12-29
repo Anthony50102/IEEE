@@ -1,0 +1,82 @@
+run_name: "1train_5test"  # Used for output directory naming
+
+paths:
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+  
+  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/"
+  
+  training_files: 
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5
+
+  test_files:
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315165458_9483_0.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316151310_7580_0.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316085602_1116_2.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142045_4677_2.h5   
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316135022_18808_2.h5
+
+physics:
+  dt: 0.025                     # Simulation time step
+  n_fields: 2                   # Number of fields (density, phi)
+  n_x: 256                      # Grid points in x
+  n_y: 256                      # Grid points in y
+
+pod:
+  r: 75                        # Number of POD modes to retain
+  svd_save: 250                # Number of singular values to save
+  
+truncation:
+  enabled: true                 # Enable/disable truncation
+  method: "time"                # "snapshots" or "time"
+  snapshots: null               # Number of snapshots to keep (if method="snapshots")
+  time: 200.0                   # Simulation time to keep (if method="time")
+
+training:
+  training_end: 8000            # Index marking end of training region
+  n_steps: 8000                # Number of time steps for integration
+
+regularization:
+  # State operator regularization
+  state_lin:
+    min: 1.0e-2
+    max: 1.0e6
+    num: 8
+    scale: "linear"             # "linear" or "log"
+
+  state_quad:
+    min: 1.0e7
+    max: 1.0e15
+    num: 8
+    scale: "linear"
+  
+  output_lin:
+    min: 1.0e-8
+    max: 1.0e1
+    num: 9
+    scale: "linear"
+  
+  output_quad:
+    min: 1.0e-10
+    max: 1.0e1
+    num: 9
+    scale: "linear"
+
+model_selection:
+  method: "threshold"           # "top_k" or "threshold"
+  
+  # top_k parameters
+  num_top_models: 20            # Number of top models to keep
+  
+  # threshold parameters
+  threshold_mean: 0.08          # Maximum relative error in mean (5%)
+  threshold_std: 0.5           # Maximum relative error in std (30%)
+
+evaluation:
+  compute_full_state: false     # Reconstruct full-order state (memory intensive)
+  save_predictions: true        # Save ensemble predictions
+  generate_plots: true          # Generate diagnostic plots
+
+execution:
+  verbose: true                 # Print progress information
+  log_level: "INFO"             # Logging level: DEBUG, INFO, WARNING, ERROR
+  engine: "h5netcdf"            # HDF5 engine for xarray
