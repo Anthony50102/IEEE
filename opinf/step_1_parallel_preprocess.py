@@ -1362,10 +1362,7 @@ def main():
         "--save-pod-energy", action="store_true",
         help="Save POD energy plot and data"
     )
-    parser.add_argument(
-        "--no-centering", action="store_true",
-        help="Skip data centering (for debugging)"
-    )
+    # Note: centering and scaling are now controlled via config.yaml preprocessing section
     args = parser.parse_args()
     
     # Load configuration (all ranks)
@@ -1450,9 +1447,9 @@ def main():
         comm.Barrier()
         
         # 2. Center data (CRITICAL for POD numerical stability)
-        if args.no_centering:
+        if not cfg.centering_enabled:
             if rank == 0:
-                logger.info("SKIPPING centering (--no-centering flag set)")
+                logger.info("SKIPPING centering (disabled in config)")
             Q_train_centered = Q_train_local
             Q_test_centered = Q_test_local
             train_temporal_mean = np.zeros(n_local)
@@ -1468,6 +1465,25 @@ def main():
             
             if rank == 0:
                 logger.info(f"Centering time: {MPI.Wtime() - t_center:.1f}s")
+        
+        # 2b. Scale data (optional, normalizes each field to [-1, 1])
+        n_local_per_field = n_local // cfg.n_fields
+        scaling_factors = None
+        if cfg.scaling_enabled:
+            t_scale = MPI.Wtime()
+            Q_train_centered, scaling_factors = scale_data_distributed(
+                Q_train_centered, cfg.n_fields, n_local_per_field,
+                comm, rank, logger
+            )
+            Q_test_centered, _ = scale_data_distributed(
+                Q_test_centered, cfg.n_fields, n_local_per_field,
+                comm, rank, logger
+            )
+            if rank == 0:
+                logger.info(f"Scaling time: {MPI.Wtime() - t_scale:.1f}s")
+        else:
+            if rank == 0:
+                logger.info("SKIPPING scaling (disabled in config)")
         
         # 3. Compute POD on CENTERED data (distributed)
         t_pod = MPI.Wtime()
@@ -1573,19 +1589,26 @@ def main():
             
             # Save preprocessing info for consistency in later steps
             # This ensures centering/scaling choices are carried through
-            np.savez(
-                paths["preprocessing_info"],
-                centering_applied=not args.no_centering,
-                r_actual=r_actual,
-                r_config=cfg.r,
-                r_from_energy=r_from_energy,
-                n_spatial=n_spatial,
-                n_fields=cfg.n_fields,
-                n_x=cfg.n_x,
-                n_y=cfg.n_y,
-                dt=cfg.dt,
-            )
+            preproc_data = {
+                'centering_applied': cfg.centering_enabled,
+                'scaling_applied': cfg.scaling_enabled,
+                'r_actual': r_actual,
+                'r_config': cfg.r,
+                'r_from_energy': r_from_energy,
+                'n_spatial': n_spatial,
+                'n_fields': cfg.n_fields,
+                'n_x': cfg.n_x,
+                'n_y': cfg.n_y,
+                'dt': cfg.dt,
+            }
+            # Add scaling factors if scaling was applied
+            if scaling_factors is not None:
+                preproc_data['scaling_factors'] = scaling_factors
+            
+            np.savez(paths["preprocessing_info"], **preproc_data)
             logger.info(f"Saved preprocessing info to {paths['preprocessing_info']}")
+            logger.info(f"  Centering applied: {cfg.centering_enabled}")
+            logger.info(f"  Scaling applied: {cfg.scaling_enabled}")
             
             logger.info(f"Learning matrix prep time: {MPI.Wtime() - t_learn:.1f}s")
         

@@ -244,6 +244,96 @@ def load_all_data(
 
 
 # =============================================================================
+# DATA PREPROCESSING (CENTERING AND SCALING)
+# =============================================================================
+
+def center_data(
+    Q: np.ndarray,
+    logger,
+) -> tuple:
+    """
+    Center data by subtracting temporal mean at each spatial location.
+    
+    This is CRITICAL for POD - without centering, the Gram matrix is
+    dominated by the mean and produces numerically unstable eigenvalues.
+    
+    Parameters
+    ----------
+    Q : np.ndarray
+        Data matrix (n_spatial, n_time).
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    tuple
+        (Q_centered, temporal_mean) - centered data and the mean that was subtracted.
+    """
+    logger.info("Centering data (subtracting temporal mean)...")
+    
+    # Compute temporal mean at each spatial location
+    temporal_mean = np.mean(Q, axis=1, keepdims=True)
+    
+    # Center the data
+    Q_centered = Q - temporal_mean
+    
+    logger.info(f"  Original data range: [{Q.min():.2e}, {Q.max():.2e}]")
+    logger.info(f"  Centered data range: [{Q_centered.min():.2e}, {Q_centered.max():.2e}]")
+    logger.info(f"  Mean range: [{temporal_mean.min():.2e}, {temporal_mean.max():.2e}]")
+    
+    return Q_centered, temporal_mean.squeeze()
+
+
+def scale_data(
+    Q: np.ndarray,
+    n_fields: int,
+    logger,
+) -> tuple:
+    """
+    Scale data so each field's values are in [-1, 1].
+    
+    Parameters
+    ----------
+    Q : np.ndarray
+        Data matrix (n_spatial, n_time). Should already be centered.
+    n_fields : int
+        Number of state variables (e.g., 2 for density and phi).
+    logger : logging.Logger
+        Logger instance.
+    
+    Returns
+    -------
+    tuple
+        (Q_scaled, scaling_factors) - scaled data and the factors used.
+    """
+    logger.info("Scaling data (normalizing each field to [-1, 1])...")
+    
+    n_spatial = Q.shape[0]
+    n_spatial_per_field = n_spatial // n_fields
+    
+    scaling_factors = np.zeros(n_fields)
+    Q_scaled = Q.copy()
+    
+    for j in range(n_fields):
+        start = j * n_spatial_per_field
+        end = (j + 1) * n_spatial_per_field
+        
+        # Max absolute value for this field
+        field_max = np.max(np.abs(Q[start:end, :]))
+        
+        if field_max > 0:
+            Q_scaled[start:end, :] /= field_max
+            scaling_factors[j] = field_max
+        else:
+            scaling_factors[j] = 1.0
+    
+    logger.info(f"  Scaling factors: {scaling_factors}")
+    logger.info(f"  Scaled data range: [{Q_scaled.min():.2e}, {Q_scaled.max():.2e}]")
+    
+    return Q_scaled, scaling_factors
+
+
+# =============================================================================
 # POD COMPUTATION
 # =============================================================================
 
@@ -525,20 +615,40 @@ def main():
         )
         logger.info(f"Saved boundaries to {paths['boundaries']}")
         
-        # 2. Compute POD
-        U, S = compute_pod(Q_train, logger)
+        # 2. Center data (CRITICAL for POD numerical stability)
+        train_temporal_mean = None
+        test_temporal_mean = None
+        scaling_factors = None
+        
+        if cfg.centering_enabled:
+            Q_train_processed, train_temporal_mean = center_data(Q_train, logger)
+            Q_test_processed, test_temporal_mean = center_data(Q_test, logger)
+        else:
+            logger.info("SKIPPING centering (disabled in config)")
+            Q_train_processed = Q_train
+            Q_test_processed = Q_test
+        
+        # 2b. Scale data (optional, normalizes each field to [-1, 1])
+        if cfg.scaling_enabled:
+            Q_train_processed, scaling_factors = scale_data(Q_train_processed, cfg.n_fields, logger)
+            Q_test_processed, _ = scale_data(Q_test_processed, cfg.n_fields, logger)
+        else:
+            logger.info("SKIPPING scaling (disabled in config)")
+        
+        # 3. Compute POD (on preprocessed data)
+        U, S = compute_pod(Q_train_processed, logger)
         
         np.savez(paths["pod_file"], U=U, S=S)
         logger.info(f"Saved POD to {paths['pod_file']}")
         
-        # 3. Project data
-        Xhat_train, Xhat_test = project_data(Q_train, Q_test, U, cfg.r, logger)
+        # 4. Project data (on preprocessed data)
+        Xhat_train, Xhat_test = project_data(Q_train_processed, Q_test_processed, U, cfg.r, logger)
         
         np.save(paths["xhat_train"], Xhat_train)
         np.save(paths["xhat_test"], Xhat_test)
         logger.info("Saved projected data")
         
-        # 4. Save initial conditions
+        # 5. Save initial conditions (use ORIGINAL data, not preprocessed)
         train_ICs = np.array([Q_train[:, train_boundaries[i]] 
                              for i in range(len(cfg.training_files))])
         test_ICs = np.array([Q_test[:, test_boundaries[i]] 
@@ -548,22 +658,27 @@ def main():
         test_ICs_reduced = np.array([Xhat_test[test_boundaries[i], :] 
                                      for i in range(len(cfg.test_files))])
         
-        np.savez(
-            paths["initial_conditions"],
-            train_ICs=train_ICs,
-            test_ICs=test_ICs,
-            train_ICs_reduced=train_ICs_reduced,
-            test_ICs_reduced=test_ICs_reduced,
-        )
+        # Build initial conditions dict with optional temporal means
+        ic_data = {
+            'train_ICs': train_ICs,
+            'test_ICs': test_ICs,
+            'train_ICs_reduced': train_ICs_reduced,
+            'test_ICs_reduced': test_ICs_reduced,
+        }
+        if train_temporal_mean is not None:
+            ic_data['train_temporal_mean'] = train_temporal_mean
+            ic_data['test_temporal_mean'] = test_temporal_mean
+        
+        np.savez(paths["initial_conditions"], **ic_data)
         logger.info("Saved initial conditions")
         
         del train_ICs, test_ICs
         gc.collect()
         
-        # 5. Prepare learning matrices
+        # 6. Prepare learning matrices
         learning = prepare_learning_matrices(Xhat_train, train_boundaries, cfg, logger)
         
-        # 6. Load reference Gamma
+        # 7. Load reference Gamma
         gamma_ref = load_reference_gamma(cfg, logger)
         
         # Save learning matrices
@@ -591,8 +706,29 @@ def main():
         )
         logger.info(f"Saved gamma reference to {paths['gamma_ref']}")
         
+        # Save preprocessing info for consistency in later steps
+        preproc_data = {
+            'centering_applied': cfg.centering_enabled,
+            'scaling_applied': cfg.scaling_enabled,
+            'r_actual': cfg.r,
+            'r_config': cfg.r,
+            'r_from_energy': cfg.r,  # Serial version doesn't compute energy-based r
+            'n_spatial': n_spatial,
+            'n_fields': cfg.n_fields,
+            'n_x': cfg.n_x,
+            'n_y': cfg.n_y,
+            'dt': cfg.dt,
+        }
+        if scaling_factors is not None:
+            preproc_data['scaling_factors'] = scaling_factors
+        
+        np.savez(paths["preprocessing_info"], **preproc_data)
+        logger.info(f"Saved preprocessing info to {paths['preprocessing_info']}")
+        logger.info(f"  Centering applied: {cfg.centering_enabled}")
+        logger.info(f"  Scaling applied: {cfg.scaling_enabled}")
+        
         # Cleanup
-        del Q_train, Q_test
+        del Q_train, Q_test, Q_train_processed, Q_test_processed
         gc.collect()
         cleanup_memmap(run_dir, "Q_train")
         cleanup_memmap(run_dir, "Q_test")

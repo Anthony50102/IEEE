@@ -32,6 +32,10 @@ truncation:
   snapshots: null               # Number of snapshots to keep (if method="snapshots")
   time: 200.0                   # Simulation time to keep (if method="time")
 
+preprocessing:
+  centering: true               # Center data before POD (subtract temporal mean) - RECOMMENDED
+  scaling: false                # Scale each field to [-1, 1] after centering
+
 training:
   training_end: 8000            # Index marking end of training region
   n_steps: 8000                # Number of time steps for integration
