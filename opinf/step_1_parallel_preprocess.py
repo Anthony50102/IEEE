@@ -1124,7 +1124,19 @@ def project_data_distributed(
         logger.info(f"  Xhat_train shape: {Xhat_train.shape}")
         logger.info(f"  Xhat_test shape: {Xhat_test.shape}")
     
-    return Xhat_train, Xhat_test, Ur_local
+    # Gather full POD basis Ur from all ranks for later use
+    # This allows projecting arbitrary new trajectories
+    t_gather_ur = MPI.Wtime()
+    Ur_gathered = comm.gather(Ur_local, root=0)
+    
+    if rank == 0:
+        Ur_full = np.vstack(Ur_gathered)  # (n_spatial, r)
+        logger.info(f"  Full POD basis Ur shape: {Ur_full.shape}")
+        logger.info(f"  Ur gather time: {MPI.Wtime() - t_gather_ur:.2f}s")
+    else:
+        Ur_full = None
+    
+    return Xhat_train, Xhat_test, Ur_local, Ur_full
 
 
 # =============================================================================
@@ -1510,7 +1522,7 @@ def main():
         
         # 4. Project CENTERED data (distributed)
         t_proj = MPI.Wtime()
-        Xhat_train, Xhat_test, Ur_local = project_data_distributed(
+        Xhat_train, Xhat_test, Ur_local, Ur_full = project_data_distributed(
             Q_train_centered, Q_test_centered, eigv, eigs, r_actual, D_global,
             comm, rank, logger
         )
@@ -1521,6 +1533,10 @@ def main():
             np.save(paths["xhat_train"], Xhat_train)
             np.save(paths["xhat_test"], Xhat_test)
             logger.info("Saved projected data")
+            
+            # Save POD basis for projecting arbitrary new trajectories
+            np.save(os.path.join(run_dir, "POD_basis_Ur.npy"), Ur_full)
+            logger.info(f"Saved POD basis Ur to POD_basis_Ur.npy (shape: {Ur_full.shape})")
         
         # 5. Gather and save initial conditions (use ORIGINAL data, not centered)
         t_ic = MPI.Wtime()
