@@ -4,7 +4,7 @@
 #SBATCH -e opinf_results_%j.err    # Error file
 #SBATCH -p normal                # Queue (partition)
 #SBATCH -N 1                     # Number of nodes
-#SBATCH -t 04:00:00              # Time limit (HH:MM:SS)
+#SBATCH -t 12:00:00              # Time limit (HH:MM:SS)
 
 # =============================================================================
 # OpInf Parallel Hyperparameter Sweep - TACC Frontera

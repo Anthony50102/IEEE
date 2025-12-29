@@ -22,9 +22,9 @@ physics:
   n_y: 256
 
 quadratic_manifold:
-  r: 15
-  n_vectors_to_check: 50
-  reg_magnitude: 1.0e8
+  r: 75
+  n_vectors_to_check: 200
+  reg_magnitude: 1.0e-2
   compare_with_pod: true
   initial_indices: []
   
