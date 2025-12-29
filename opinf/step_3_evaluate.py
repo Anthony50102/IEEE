@@ -57,15 +57,18 @@ def load_preprocessing_info(filepath: str, logger) -> dict:
     """
     if not os.path.exists(filepath):
         logger.warning(f"Preprocessing info file not found: {filepath}")
-        logger.warning("  Assuming default settings (centering applied)")
+        logger.warning("  Assuming default settings (centering applied, no scaling)")
         return {
             'centering_applied': True,
+            'scaling_applied': False,
+            'scaling_factors': None,
             'r_actual': None,
         }
     
     data = np.load(filepath, allow_pickle=True)
     info = {
         'centering_applied': bool(data['centering_applied']),
+        'scaling_applied': bool(data.get('scaling_applied', False)),
         'r_actual': int(data['r_actual']),
         'r_config': int(data['r_config']),
         'r_from_energy': int(data['r_from_energy']),
@@ -76,8 +79,17 @@ def load_preprocessing_info(filepath: str, logger) -> dict:
         'dt': float(data['dt']),
     }
     
+    # Load scaling factors if present
+    if 'scaling_factors' in data:
+        info['scaling_factors'] = data['scaling_factors']
+    else:
+        info['scaling_factors'] = None
+    
     logger.info("Preprocessing info:")
     logger.info(f"  Centering applied: {info['centering_applied']}")
+    logger.info(f"  Scaling applied: {info['scaling_applied']}")
+    if info['scaling_factors'] is not None:
+        logger.info(f"  Scaling factors: {info['scaling_factors']}")
     logger.info(f"  POD modes (r): {info['r_actual']} (config: {info['r_config']}, energy-based: {info['r_from_energy']})")
     logger.info(f"  Spatial DOF: {info['n_spatial']} ({info['n_fields']} fields, {info['n_x']}x{info['n_y']} grid)")
     

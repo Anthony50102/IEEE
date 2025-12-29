@@ -256,6 +256,10 @@ class PipelineConfig:
     truncation_snapshots: Optional[int] = None
     truncation_time: Optional[float] = None
     
+    # Preprocessing (centering and scaling)
+    centering_enabled: bool = True    # Center data before POD (subtract temporal mean)
+    scaling_enabled: bool = False     # Scale each field to [-1, 1] after centering
+    
     # Training
     training_end: int = 5000
     n_steps: int = 16001
@@ -360,6 +364,11 @@ def load_config(config_path: str) -> PipelineConfig:
     cfg.truncation_snapshots = trunc.get("snapshots")
     cfg.truncation_time = trunc.get("time")
     
+    # Preprocessing (centering and scaling)
+    preproc = raw.get("preprocessing", {})
+    cfg.centering_enabled = preproc.get("centering", True)  # Default: True (recommended for POD)
+    cfg.scaling_enabled = preproc.get("scaling", False)     # Default: False
+    
     # Training
     training = raw.get("training", {})
     cfg.training_end = training.get("training_end", 5000)
@@ -441,6 +450,10 @@ def save_config(cfg: PipelineConfig, output_path: str, step_name: str = None) ->
             "method": cfg.truncation_method,
             "snapshots": cfg.truncation_snapshots,
             "time": cfg.truncation_time,
+        },
+        "preprocessing": {
+            "centering": cfg.centering_enabled,
+            "scaling": cfg.scaling_enabled,
         },
         "training": {
             "training_end": cfg.training_end,
@@ -758,6 +771,9 @@ def print_config_summary(cfg: PipelineConfig):
             print(f"    Time: {cfg.truncation_time} units")
         else:
             print(f"    Snapshots: {cfg.truncation_snapshots}")
+    print(f"  Preprocessing:")
+    print(f"    Centering: {'enabled' if cfg.centering_enabled else 'disabled'}")
+    print(f"    Scaling: {'enabled' if cfg.scaling_enabled else 'disabled'}")
     print(f"  Selection method: {cfg.selection_method}")
     print(f"  Regularization grid: {len(cfg.state_lin)}x{len(cfg.state_quad)}x{len(cfg.output_lin)}x{len(cfg.output_quad)}")
     total = len(cfg.state_lin) * len(cfg.state_quad) * len(cfg.output_lin) * len(cfg.output_quad)
