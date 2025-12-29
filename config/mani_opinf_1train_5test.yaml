@@ -7,13 +7,13 @@ paths:
   
   training_files: 
       - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316085602_1116_2.h5
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142045_4677_2.h5   
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316135022_18808_2.h5
 
   test_files:
       - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315165458_9483_0.h5
       - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316151310_7580_0.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316085602_1116_2.h5
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142045_4677_2.h5   
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250316135022_18808_2.h5
 
 physics:
   dt: 0.025                     # Simulation time step
