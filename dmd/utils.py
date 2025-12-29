@@ -50,9 +50,9 @@ class DMDConfig(OpInfConfig):
     use_proj: bool = True  # Use POD projection in BOPDMD
     eig_sort: str = "real"  # Eigenvalue sorting method
     
-    # Output operator learning (optional, for Gamma prediction)
-    learn_output_operator: bool = True
-    output_reg: float = 1e-6  # Regularization for output operator
+    # Physics parameters for Gamma computation
+    k0: float = 0.15  # Wave number (dx = 2*pi/k0)
+    c1: float = 1.0   # Adiabaticity parameter
 
 
 def load_dmd_config(config_path: str) -> DMDConfig:
@@ -88,8 +88,8 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.num_trials = dmd_section.get("num_trials", 0)
     cfg.use_proj = dmd_section.get("use_proj", True)
     cfg.eig_sort = dmd_section.get("eig_sort", "real")
-    cfg.learn_output_operator = dmd_section.get("learn_output_operator", True)
-    cfg.output_reg = dmd_section.get("output_reg", 1e-6)
+    cfg.k0 = dmd_section.get("k0", 0.15)
+    cfg.c1 = dmd_section.get("c1", 1.0)
     
     return cfg
 
@@ -115,12 +115,14 @@ def get_dmd_output_paths(run_dir: str) -> dict:
     
     # Add DMD-specific paths
     paths.update({
+        # POD basis for reconstruction
+        "pod_basis": os.path.join(run_dir, "pod_basis.npz"),
+        
         # Step 2 outputs (DMD fitting)
         "dmd_model": os.path.join(run_dir, "dmd_model.npz"),
         "dmd_eigenvalues": os.path.join(run_dir, "dmd_eigenvalues.npy"),
         "dmd_modes": os.path.join(run_dir, "dmd_modes.npy"),
         "dmd_amplitudes": os.path.join(run_dir, "dmd_amplitudes.npy"),
-        "dmd_output_operator": os.path.join(run_dir, "dmd_output_operator.npz"),
         
         # Step 3 outputs (forecasts)
         "dmd_forecasts_dir": os.path.join(run_dir, "dmd_forecasts"),
@@ -142,7 +144,7 @@ def print_dmd_config_summary(cfg: DMDConfig):
     print(f"  DMD rank: {cfg.dmd_rank or 'same as POD r'}")
     print(f"  BOPDMD trials: {cfg.num_trials}")
     print(f"  Use projection: {cfg.use_proj}")
-    print(f"  Learn output operator: {cfg.learn_output_operator}")
+    print(f"  Physics: k0={cfg.k0}, c1={cfg.c1} (dx={2*np.pi/cfg.k0:.4f})")
     print(f"  Truncation: {'enabled' if cfg.truncation_enabled else 'disabled'}")
     if cfg.truncation_enabled:
         if cfg.truncation_method == "time":
@@ -302,124 +304,195 @@ def compute_initial_condition_reduced(
     return x0_reduced
 
 
-def solve_output_from_reduced_state(
-    X_hat: np.ndarray,
-    C: np.ndarray,
-    c: np.ndarray = None,
-    mean_Xhat: np.ndarray = None,
-    scaling_Xhat: float = 1.0,
-) -> np.ndarray:
+
+
+
+# =============================================================================
+# GAMMA COMPUTATION FROM FIELDS
+# =============================================================================
+
+def periodic_gradient(input_field: np.ndarray, dx: float, axis: int = 0) -> np.ndarray:
     """
-    Compute output quantities from reduced state trajectory.
+    Compute the gradient of a 2D array using finite differences with periodic boundary conditions.
+
+    Parameters
+    ----------
+    input_field : np.ndarray
+        Input array (can be 2D, 3D with time, etc.).
+    dx : float
+        The spacing between grid points.
+    axis : int
+        Axis along which the gradient is taken.
+
+    Returns
+    -------
+    np.ndarray
+        Gradient with periodic boundary conditions.
+    """
+    # Handle negative axis
+    if axis < 0:
+        axis = input_field.ndim + axis
     
-    Uses a linear output operator: y = C @ x_hat_scaled + c
+    # Pad with periodic boundary conditions
+    pad_width = [(0, 0)] * input_field.ndim
+    pad_width[axis] = (1, 1)
+    padded = np.pad(input_field, pad_width=pad_width, mode="wrap")
+    
+    # Compute central difference
+    slices_plus = [slice(None)] * padded.ndim
+    slices_minus = [slice(None)] * padded.ndim
+    slices_plus[axis] = slice(2, None)
+    slices_minus[axis] = slice(None, -2)
+    
+    gradient = (padded[tuple(slices_plus)] - padded[tuple(slices_minus)]) / (2 * dx)
+    
+    return gradient
+
+
+def get_gamma_n(n: np.ndarray, p: np.ndarray, dx: float, dy_p: np.ndarray = None) -> np.ndarray:
+    """
+    Compute the average particle flux (Γ_n) using the formula:
+    
+        Γ_n = - ∫ d²x  ñ ∂φ̃/∂y
     
     Parameters
     ----------
-    X_hat : np.ndarray, shape (r, m) or (m, r)
-        Reduced state trajectory.
-    C : np.ndarray, shape (n_outputs, r)
-        Output operator matrix.
-    c : np.ndarray, shape (n_outputs,), optional
-        Output bias term.
-    mean_Xhat : np.ndarray, shape (r,), optional
-        Mean for scaling reduced state.
-    scaling_Xhat : float
-        Scaling factor for reduced state.
-    
+    n : np.ndarray
+        Density field. Shape (..., n_y, n_x) where ... can be time dimension.
+    p : np.ndarray
+        Potential field. Shape (..., n_y, n_x).
+    dx : float
+        Grid spacing.
+    dy_p : np.ndarray, optional
+        Pre-computed gradient of potential in y-direction.
+
     Returns
     -------
-    Y : np.ndarray, shape (n_outputs, m)
-        Output trajectory.
+    np.ndarray
+        Computed average particle flux value(s). Scalar if no time dim, else (n_time,).
     """
-    # Ensure X_hat is (r, m)
-    if X_hat.shape[0] != C.shape[1]:
-        X_hat = X_hat.T
-    
-    # Scale reduced state
-    if mean_Xhat is not None:
-        X_hat_scaled = (X_hat - mean_Xhat[:, None]) / scaling_Xhat
-    else:
-        X_hat_scaled = X_hat / scaling_Xhat
-    
-    # Compute output
-    Y = C @ X_hat_scaled
-    
-    if c is not None:
-        Y = Y + c[:, None]
-    
-    return Y
+    if dy_p is None:
+        dy_p = periodic_gradient(p, dx=dx, axis=-2)  # gradient in y
+    gamma_n = -np.mean((n * dy_p), axis=(-1, -2))  # mean over y & x
+    return gamma_n
 
 
-# =============================================================================
-# OUTPUT OPERATOR LEARNING
-# =============================================================================
+def get_gamma_c(n: np.ndarray, p: np.ndarray, c1: float, dx: float) -> np.ndarray:
+    """
+    Compute the sink Γ_c using the formula:
+    
+        Γ_c = c1 ∫ d²x  (ñ - φ̃)²
+    
+    Parameters
+    ----------
+    n : np.ndarray
+        Density field. Shape (..., n_y, n_x).
+    p : np.ndarray
+        Potential field. Shape (..., n_y, n_x).
+    c1 : float
+        Adiabaticity parameter (typically 1.0 for HW2D).
+    dx : float
+        Grid spacing.
 
-def learn_linear_output_operator(
-    X_hat: np.ndarray,
-    Y_ref: np.ndarray,
-    regularization: float = 1e-6,
-    mean_Xhat: np.ndarray = None,
-    scaling_Xhat: float = 1.0,
+    Returns
+    -------
+    np.ndarray
+        Computed conductive flux value(s). Scalar if no time dim, else (n_time,).
+    """
+    gamma_c = c1 * np.mean((n - p) ** 2, axis=(-1, -2))  # mean over y & x
+    return gamma_c
+
+
+def compute_gamma_from_state(
+    Q: np.ndarray,
+    n_fields: int,
+    n_y: int,
+    n_x: int,
+    k0: float = 0.15,
+    c1: float = 1.0,
 ) -> tuple:
     """
-    Learn a linear output operator via regularized least squares.
-    
-    Solves: Y = C @ X_hat_scaled + c
+    Compute Gamma_n and Gamma_c from full state vector.
     
     Parameters
     ----------
-    X_hat : np.ndarray, shape (r, m) or (m, r)
-        Training reduced state trajectory.
-    Y_ref : np.ndarray, shape (n_outputs, m) or (m, n_outputs)
-        Reference output trajectory.
-    regularization : float
-        Tikhonov regularization parameter.
-    mean_Xhat : np.ndarray, shape (r,), optional
-        Mean for scaling.
-    scaling_Xhat : float
-        Scaling factor.
+    Q : np.ndarray, shape (n_spatial, n_time) or (n_spatial,)
+        Full state vector with density and potential stacked.
+        Layout: [density.flatten(), phi.flatten()]
+    n_fields : int
+        Number of fields (should be 2).
+    n_y : int
+        Number of grid points in y.
+    n_x : int
+        Number of grid points in x.
+    k0 : float
+        Wave number for grid spacing (dx = 2π/k0).
+    c1 : float
+        Adiabaticity parameter.
     
     Returns
     -------
-    C : np.ndarray, shape (n_outputs, r)
-        Output operator matrix.
-    c : np.ndarray, shape (n_outputs,)
-        Output bias term.
+    tuple
+        (Gamma_n, Gamma_c) arrays.
     """
-    # Ensure correct shapes: X_hat = (r, m), Y_ref = (n_outputs, m)
-    if X_hat.ndim == 1:
-        X_hat = X_hat.reshape(-1, 1)
-    if X_hat.shape[0] > X_hat.shape[1]:
+    dx = 2 * np.pi / k0
+    
+    # Handle 1D vs 2D input
+    if Q.ndim == 1:
+        Q = Q[:, np.newaxis]
+    
+    n_spatial, n_time = Q.shape
+    spatial_per_field = n_y * n_x
+    
+    # Extract density and potential
+    # Assuming layout: [density, phi] stacked
+    n_flat = Q[:spatial_per_field, :]  # (n_y*n_x, n_time)
+    p_flat = Q[spatial_per_field:2*spatial_per_field, :]  # (n_y*n_x, n_time)
+    
+    # Reshape to (n_time, n_y, n_x)
+    n_field = n_flat.T.reshape(n_time, n_y, n_x)  # (n_time, n_y, n_x)
+    p_field = p_flat.T.reshape(n_time, n_y, n_x)  # (n_time, n_y, n_x)
+    
+    # Compute Gamma
+    gamma_n = get_gamma_n(n_field, p_field, dx)  # (n_time,)
+    gamma_c = get_gamma_c(n_field, p_field, c1, dx)  # (n_time,)
+    
+    return gamma_n, gamma_c
+
+
+def reconstruct_full_state(
+    X_hat: np.ndarray,
+    pod_basis: np.ndarray,
+    temporal_mean: np.ndarray = None,
+) -> np.ndarray:
+    """
+    Reconstruct full state from reduced state using POD basis.
+    
+    Q_reconstructed = U @ X_hat + mean
+    
+    Parameters
+    ----------
+    X_hat : np.ndarray, shape (r, n_time) or (n_time, r)
+        Reduced state trajectory.
+    pod_basis : np.ndarray, shape (n_spatial, r)
+        POD basis matrix U.
+    temporal_mean : np.ndarray, shape (n_spatial,), optional
+        Temporal mean to add back.
+    
+    Returns
+    -------
+    Q : np.ndarray, shape (n_spatial, n_time)
+        Reconstructed full state.
+    """
+    # Ensure X_hat is (r, n_time)
+    if X_hat.shape[0] != pod_basis.shape[1]:
         X_hat = X_hat.T
     
-    if Y_ref.ndim == 1:
-        Y_ref = Y_ref.reshape(1, -1)
-    if Y_ref.shape[0] > Y_ref.shape[1]:
-        Y_ref = Y_ref.T
+    # Reconstruct
+    Q = pod_basis @ X_hat  # (n_spatial, n_time)
     
-    r, m = X_hat.shape
-    n_outputs = Y_ref.shape[0]
+    # Add back mean if provided
+    if temporal_mean is not None:
+        Q = Q + temporal_mean[:, np.newaxis]
     
-    # Scale reduced state
-    if mean_Xhat is not None:
-        X_hat_scaled = (X_hat - mean_Xhat[:, None]) / scaling_Xhat
-    else:
-        X_hat_scaled = X_hat / scaling_Xhat
-    
-    # Build design matrix: [X_hat_scaled; 1] to include bias
-    ones = np.ones((1, m))
-    D = np.vstack([X_hat_scaled, ones])  # (r+1, m)
-    
-    # Solve regularized least squares: Y = [C, c] @ D
-    # => [C, c]^T = (D @ D^T + reg*I)^{-1} @ D @ Y^T
-    DTD = D @ D.T  # (r+1, r+1)
-    reg_matrix = regularization * np.eye(r + 1)
-    DY = D @ Y_ref.T  # (r+1, n_outputs)
-    
-    Cc = np.linalg.solve(DTD + reg_matrix, DY).T  # (n_outputs, r+1)
-    
-    C = Cc[:, :r]
-    c = Cc[:, r]
-    
-    return C, c
+    return Q

@@ -29,7 +29,6 @@ from dmd.utils import (
     load_dmd_config,
     get_dmd_output_paths,
     print_dmd_config_summary,
-    learn_linear_output_operator,
     DMDConfig,
 )
 
@@ -239,184 +238,8 @@ def load_training_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
     return Xhat_train, train_boundaries, t_train
 
 
-def load_reference_gamma_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
-    """
-    Load reference Gamma data for output operator learning.
-    
-    Parameters
-    ----------
-    paths : dict
-        Output paths dictionary.
-    cfg : DMDConfig
-        Configuration.
-    logger : logging.Logger
-        Logger instance.
-    
-    Returns
-    -------
-    tuple
-        (Y_Gamma, mean_Gamma_n, std_Gamma_n, mean_Gamma_c, std_Gamma_c)
-    """
-    logger.info("Loading reference Gamma data...")
-    
-    gamma_ref = np.load(paths['gamma_ref'])
-    Y_Gamma = gamma_ref['Y_Gamma']
-    mean_Gamma_n = float(gamma_ref['mean_Gamma_n'])
-    std_Gamma_n = float(gamma_ref['std_Gamma_n'])
-    mean_Gamma_c = float(gamma_ref['mean_Gamma_c'])
-    std_Gamma_c = float(gamma_ref['std_Gamma_c'])
-    
-    logger.info(f"  Y_Gamma shape: {Y_Gamma.shape}")
-    logger.info(f"  Reference Γn: mean={mean_Gamma_n:.4e}, std={std_Gamma_n:.4e}")
-    logger.info(f"  Reference Γc: mean={mean_Gamma_c:.4e}, std={std_Gamma_c:.4e}")
-    
-    return Y_Gamma, mean_Gamma_n, std_Gamma_n, mean_Gamma_c, std_Gamma_c
-
-
-# def reconstruct_pod_basis(eigv: np.ndarray, eigs: np.ndarray, r: int, 
-#                           Xhat_train: np.ndarray, logger) -> np.ndarray:
-#     """
-#     Reconstruct the POD basis U from eigendecomposition data.
-    
-#     The POD basis is computed from:
-#     U = Q @ V @ Σ^{-1}
-    
-#     But since we only have the projected data Xhat = U^T @ Q,
-#     we need to use the transformation matrix from eigenvectors.
-    
-#     For DMD, we need the actual spatial modes, so we compute:
-#     V_global[:,j] = (1/sqrt(λ_j)) * Q @ v_j
-    
-#     Since we have Xhat = Q @ Tr where Tr = V @ diag(1/sqrt(λ)),
-#     we can compute U from the relationship with Xhat.
-    
-#     Parameters
-#     ----------
-#     eigv : np.ndarray
-#         Eigenvectors from POD (V in Q^T Q = V Λ V^T).
-#     eigs : np.ndarray
-#         Eigenvalues from POD (Λ).
-#     r : int
-#         Number of modes to use.
-#     Xhat_train : np.ndarray
-#         Projected training data.
-#     logger : logging.Logger
-#         Logger instance.
-    
-#     Returns
-#     -------
-#     V_global : np.ndarray, shape (n_snapshots, r)
-#         POD basis (actually the projection of full data onto modes).
-    
-#     Notes
-#     -----
-#     In the method of snapshots, the POD modes in full space are:
-#     U_j = (1/σ_j) * Q @ v_j
-    
-#     But since Q is very large, we work with the transformation matrix Tr.
-#     For BOPDMD with projection, we pass the POD basis as proj_basis.
-    
-#     The key insight is that Xhat = U^T @ Q, so:
-#     - Xhat^T = Q^T @ U
-#     - If we have U, then DMD modes in reduced coords are W = U^T @ Phi
-#     """
-#     logger.info("Computing POD basis from eigendecomposition...")
-    
-#     # Xhat has shape (n_time, r) - projected snapshots
-#     # The transformation is: Xhat = Q @ Tr, where Tr = V @ Σ^{-1}
-#     # So Xhat^T = Tr^T @ Q^T = Σ^{-1} @ V^T @ Q^T
-    
-#     # For BOPDMD proj_basis, we need something that represents the spatial modes
-#     # In the reduced space, the "basis" is effectively the transformation matrix
-    
-#     # The eigenvectors V have shape (n_time, n_time)
-#     # The reduced transformation is V[:, :r] @ diag(1/sqrt(eigs[:r]))
-    
-#     # For DMD in reduced coordinates, we can work directly with Xhat
-#     # The proj_basis should be the mapping from full space to reduced
-    
-#     # Since we only have Xhat, we construct an orthonormal basis from it
-#     # This is equivalent to the POD modes in the reduced coordinate system
-    
-#     # Actually, for BOPDMD we can pass proj_basis=None and use_proj=False
-#     # to work directly in the reduced space
-    
-#     # Or, we recognize that for the reduced data Xhat (n_time, r),
-#     # the "basis" is simply the identity in r-space
-    
-#     V_global = np.eye(r, dtype=np.float64)
-#     logger.info(f"  Using identity basis in reduced space: shape {V_global.shape}")
-    
-#     return V_global
-
-
-def fit_output_operator(
-    Xhat_train: np.ndarray,
-    Y_Gamma: np.ndarray,
-    cfg: DMDConfig,
-    logger,
-) -> dict:
-    """
-    Learn output operator for Gamma prediction.
-    
-    Parameters
-    ----------
-    Xhat_train : np.ndarray, shape (n_time, r)
-        Projected training data.
-    Y_Gamma : np.ndarray, shape (2, n_time)
-        Reference Gamma values [Gamma_n, Gamma_c].
-    cfg : DMDConfig
-        Configuration.
-    logger : logging.Logger
-        Logger instance.
-    
-    Returns
-    -------
-    dict
-        Output operator dictionary with C, c, scaling info.
-    """
-    logger.info("Learning linear output operator...")
-    
-    # Compute mean and scaling for Xhat
-    mean_Xhat = np.mean(Xhat_train, axis=0)
-    scaling_Xhat = np.max(np.abs(Xhat_train - mean_Xhat[np.newaxis, :]))
-    
-    logger.info(f"  mean_Xhat shape: {mean_Xhat.shape}")
-    logger.info(f"  scaling_Xhat: {scaling_Xhat:.4e}")
-    
-    # Learn operator
-    C, c = learn_linear_output_operator(
-        X_hat=Xhat_train.T,  # (r, n_time)
-        Y_ref=Y_Gamma,  # (2, n_time)
-        regularization=cfg.output_reg,
-        mean_Xhat=mean_Xhat,
-        scaling_Xhat=scaling_Xhat,
-    )
-    
-    logger.info(f"  C shape: {C.shape}")
-    logger.info(f"  c shape: {c.shape}")
-    
-    # Validate on training data
-    Xhat_scaled = (Xhat_train - mean_Xhat[np.newaxis, :]) / scaling_Xhat
-    Y_pred = C @ Xhat_scaled.T + c[:, np.newaxis]
-    
-    # Compute training error
-    rel_err_n = np.abs(np.mean(Y_pred[0, :]) - np.mean(Y_Gamma[0, :])) / np.abs(np.mean(Y_Gamma[0, :]))
-    rel_err_c = np.abs(np.mean(Y_pred[1, :]) - np.mean(Y_Gamma[1, :])) / np.abs(np.mean(Y_Gamma[1, :]))
-    
-    logger.info(f"  Training fit - Γn rel error: {rel_err_n:.4f}, Γc rel error: {rel_err_c:.4f}")
-    
-    return {
-        'C': C,
-        'c': c,
-        'mean_Xhat': mean_Xhat,
-        'scaling_Xhat': scaling_Xhat,
-    }
-
-
 def save_dmd_model(
     dmd_result: dict,
-    output_op: dict,
     paths: dict,
     cfg: DMDConfig,
     logger,
@@ -428,8 +251,6 @@ def save_dmd_model(
     ----------
     dmd_result : dict
         DMD fitting results.
-    output_op : dict
-        Output operator (if learned).
     paths : dict
         Output paths.
     cfg : DMDConfig
@@ -456,17 +277,6 @@ def save_dmd_model(
     np.save(paths['dmd_eigenvalues'], dmd_result['eigs'])
     np.save(paths['dmd_modes'], dmd_result['modes_reduced'])
     np.save(paths['dmd_amplitudes'], dmd_result['amplitudes'])
-    
-    # Save output operator if learned
-    if output_op is not None:
-        np.savez(
-            paths['dmd_output_operator'],
-            C=output_op['C'],
-            c=output_op['c'],
-            mean_Xhat=output_op['mean_Xhat'],
-            scaling_Xhat=output_op['scaling_Xhat'],
-        )
-        logger.info(f"  Saved output operator to {paths['dmd_output_operator']}")
     
     logger.info("DMD model saved successfully")
 
@@ -559,27 +369,8 @@ def main():
             logger=logger,
         )
         
-        # 5. Learn output operator (optional)
-        output_op = None
-        if cfg.learn_output_operator:
-            Y_Gamma, mean_Gamma_n, std_Gamma_n, mean_Gamma_c, std_Gamma_c = \
-                load_reference_gamma_data(paths, cfg, logger)
-            
-            # Use training portion only
-            if n_train_files > 1:
-                Y_Gamma_train = Y_Gamma[:, start_idx:end_idx]
-            else:
-                Y_Gamma_train = Y_Gamma
-            
-            output_op = fit_output_operator(
-                Xhat_train=Xhat_train_single[:, :dmd_rank],
-                Y_Gamma=Y_Gamma_train,
-                cfg=cfg,
-                logger=logger,
-            )
-        
-        # 6. Save model
-        save_dmd_model(dmd_result, output_op, paths, cfg, logger)
+        # 5. Save model
+        save_dmd_model(dmd_result, paths, cfg, logger)
         
         # Final timing
         total_time = time.time() - start_time
