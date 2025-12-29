@@ -3,9 +3,9 @@
 #SBATCH -o step_1_pod_%j.out        # Output file (%j = job ID)
 #SBATCH -e step_1_pod_%j.err        # Error file
 #SBATCH -p normal          # Queue (partition)
-#SBATCH -N 4                   # Number of nodes
-#SBATCH -n 32                   # Total MPI tasks
-#SBATCH --cpus-per-task=7      # Cores per task (56 cores/node ÷ 2 ranks/node)
+#SBATCH -N 1                   # Number of nodes
+#SBATCH -n 28                   # Total MPI tasks
+#SBATCH --cpus-per-task=2      # Cores per task (56 cores/node ÷ 2 ranks/node)
 #SBATCH -t 02:00:00             # Time limit (HH:MM:SS)
 
 # =============================================================================
@@ -21,7 +21,7 @@ module load python3/3.9.2
 module load phdf5/1.10.4
 
 # Set OpenMP threads to match cpus-per-task
-export OMP_NUM_THREADS=7
+export OMP_NUM_THREADS=2
 
 # Navigate to project directory
 cd $WORK/repos/IEEE
@@ -42,7 +42,7 @@ echo "Start time: $(date)"
 echo "=============================================="
 
 # Run parallel sweep
-ibrun -n 32 python3 opinf/step_1_parallel_preprocess.py \
+ibrun -n 28 python3 opinf/step_1_parallel_preprocess.py \
         --config config/opinf_1train_5test.yaml \
         --save-pod-energy
 
