@@ -29,7 +29,8 @@ from dmd.utils import (
     get_dmd_output_paths,
     print_dmd_config_summary,
     dmd_forecast_reduced,
-    solve_output_from_reduced_state,
+    compute_gamma_from_state,
+    reconstruct_full_state,
     DMDConfig,
 )
 
@@ -83,9 +84,9 @@ def load_dmd_model(paths: dict, logger) -> dict:
     return model
 
 
-def load_output_operator(paths: dict, logger) -> dict:
+def load_pod_basis(paths: dict, logger) -> dict:
     """
-    Load output operator from Step 2.
+    Load POD basis from Step 1 for full-state reconstruction.
     
     Parameters
     ----------
@@ -96,28 +97,31 @@ def load_output_operator(paths: dict, logger) -> dict:
     
     Returns
     -------
-    dict or None
-        Output operator dictionary, or None if not found.
+    dict
+        POD basis dictionary with U_r, mean, n_y, n_x.
     """
-    if not os.path.exists(paths['dmd_output_operator']):
-        logger.warning(f"Output operator not found at {paths['dmd_output_operator']}")
+    pod_basis_path = paths['pod_basis']
+    
+    if not os.path.exists(pod_basis_path):
+        logger.warning(f"POD basis not found at {pod_basis_path}")
+        logger.warning("Will not be able to compute physics-based Gamma")
         return None
     
-    logger.info(f"Loading output operator from {paths['dmd_output_operator']}")
+    logger.info(f"Loading POD basis from {pod_basis_path}")
     
-    op_data = np.load(paths['dmd_output_operator'])
+    basis_data = np.load(pod_basis_path)
     
-    output_op = {
-        'C': op_data['C'],
-        'c': op_data['c'],
-        'mean_Xhat': op_data['mean_Xhat'],
-        'scaling_Xhat': float(op_data['scaling_Xhat']),
+    pod_basis = {
+        'U_r': basis_data['U_r'],  # (n_spatial, r)
+        'mean': basis_data['mean'],  # (n_spatial,)
+        'n_y': int(basis_data['n_y']),
+        'n_x': int(basis_data['n_x']),
     }
     
-    logger.info(f"  C shape: {output_op['C'].shape}")
-    logger.info(f"  c shape: {output_op['c'].shape}")
+    logger.info(f"  U_r shape: {pod_basis['U_r'].shape}")
+    logger.info(f"  Grid: {pod_basis['n_y']} x {pod_basis['n_x']}")
     
-    return output_op
+    return pod_basis
 
 
 def load_initial_conditions(paths: dict, logger) -> dict:
@@ -221,7 +225,9 @@ def forecast_trajectory(
     x0_reduced: np.ndarray,
     n_steps: int,
     dt: float,
-    output_op: dict = None,
+    pod_basis: dict = None,
+    k0: float = 0.15,
+    c1: float = 1.0,
     logger = None,
 ) -> dict:
     """
@@ -237,8 +243,12 @@ def forecast_trajectory(
         Number of time steps.
     dt : float
         Time step.
-    output_op : dict, optional
-        Output operator for Gamma prediction.
+    pod_basis : dict, optional
+        POD basis for full-state reconstruction and Gamma computation.
+    k0 : float, optional
+        Wavenumber for grid spacing (default 0.15).
+    c1 : float, optional
+        Adiabaticity parameter (default 1.0).
     logger : logging.Logger, optional
         Logger instance.
     
@@ -283,18 +293,27 @@ def forecast_trajectory(
         'X_hat': X_hat_real,  # (r, n_steps)
     }
     
-    # Compute outputs if operator available
-    if output_op is not None:
-        Y = solve_output_from_reduced_state(
+    # Compute Gamma from physics if POD basis available
+    if pod_basis is not None:
+        # Reconstruct full state
+        Q_full = reconstruct_full_state(
             X_hat=X_hat_real,
-            C=output_op['C'],
-            c=output_op['c'],
-            mean_Xhat=output_op['mean_Xhat'],
-            scaling_Xhat=output_op['scaling_Xhat'],
+            pod_basis=pod_basis['U_r'],
+            temporal_mean=pod_basis.get('mean', None),
+        )  # (n_spatial, n_steps)
+        
+        # Compute Gamma from reconstructed state
+        Gamma_n, Gamma_c = compute_gamma_from_state(
+            Q=Q_full,
+            n_fields=2,  # density and phi
+            n_y=pod_basis['n_y'],
+            n_x=pod_basis['n_x'],
+            k0=k0,
+            c1=c1,
         )
         
-        result['Gamma_n'] = Y[0, :]
-        result['Gamma_c'] = Y[1, :]
+        result['Gamma_n'] = Gamma_n
+        result['Gamma_c'] = Gamma_c
     
     return result
 
@@ -304,7 +323,9 @@ def compute_all_forecasts(
     ics_reduced: np.ndarray,
     boundaries: np.ndarray,
     dt: float,
-    output_op: dict = None,
+    pod_basis: dict = None,
+    k0: float = 0.15,
+    c1: float = 1.0,
     logger = None,
     dataset_name: str = "trajectory",
 ) -> dict:
@@ -321,8 +342,12 @@ def compute_all_forecasts(
         Trajectory boundaries.
     dt : float
         Time step.
-    output_op : dict, optional
-        Output operator.
+    pod_basis : dict, optional
+        POD basis for full-state reconstruction.
+    k0 : float, optional
+        Wavenumber for grid spacing.
+    c1 : float, optional
+        Adiabaticity parameter.
     logger : logging.Logger, optional
         Logger instance.
     dataset_name : str
@@ -357,7 +382,9 @@ def compute_all_forecasts(
             x0_reduced=x0,
             n_steps=traj_length,
             dt=dt,
-            output_op=output_op,
+            pod_basis=pod_basis,
+            k0=k0,
+            c1=c1,
             logger=logger,
         )
         
@@ -817,13 +844,15 @@ def main():
     try:
         # 1. Load DMD model
         dmd_model = load_dmd_model(paths, logger)
-        output_op = load_output_operator(paths, logger)
         
-        # 2. Load initial conditions and boundaries
+        # 2. Load POD basis for full-state reconstruction
+        pod_basis = load_pod_basis(paths, logger)
+        
+        # 3. Load initial conditions and boundaries
         ics = load_initial_conditions(paths, logger)
         bounds = load_boundaries(paths, logger)
         
-        # 3. Compute training forecasts
+        # 4. Compute training forecasts
         logger.info("\n" + "="*50)
         logger.info("TRAINING TRAJECTORY FORECASTS")
         logger.info("="*50)
@@ -833,12 +862,14 @@ def main():
             ics_reduced=ics['train_ICs_reduced'],
             boundaries=bounds['train_boundaries'],
             dt=cfg.dt,
-            output_op=output_op,
+            pod_basis=pod_basis,
+            k0=cfg.k0,
+            c1=cfg.c1,
             logger=logger,
             dataset_name="training trajectory",
         )
         
-        # 4. Compute test forecasts
+        # 5. Compute test forecasts
         logger.info("\n" + "="*50)
         logger.info("TEST TRAJECTORY FORECASTS")
         logger.info("="*50)
@@ -848,7 +879,9 @@ def main():
             ics_reduced=ics['test_ICs_reduced'],
             boundaries=bounds['test_boundaries'],
             dt=cfg.dt,
-            output_op=output_op,
+            pod_basis=pod_basis,
+            k0=cfg.k0,
+            c1=cfg.c1,
             logger=logger,
             dataset_name="test trajectory",
         )

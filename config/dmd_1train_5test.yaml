@@ -31,8 +31,8 @@ dmd:
   num_trials: 0                 # Number of bagging trials (0 = no bagging, standard BOPDMD)
   use_proj: true                # Use POD projection in BOPDMD
   eig_sort: "real"              # Eigenvalue sorting: "real", "imag", "abs"
-  learn_output_operator: true   # Learn linear output operator for Gamma prediction
-  output_reg: 1.0e-6            # Regularization for output operator learning
+  k0: 0.15                      # Wavenumber for grid spacing (dx = 2*pi/k0)
+  c1: 1.0                       # Adiabaticity parameter for Gamma_c
   
 truncation:
   enabled: true                 # Enable/disable truncation
