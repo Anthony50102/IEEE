@@ -12,9 +12,6 @@ The method:
 4. Results in: x ≈ V @ z + W @ h(z) + shift
    where h(z) contains quadratic terms z_i * z_j
 
-Based on: Geelen et al., "Operator inference for non-intrusive model reduction 
-with quadratic manifolds" (2022)
-
 Usage:
     python quadratic_manifold.py --config config.yaml
     python quadratic_manifold.py --config config.yaml --n-vectors-check 200
