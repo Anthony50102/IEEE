@@ -739,6 +739,14 @@ def compute_retained_energy(eigs: np.ndarray) -> np.ndarray:
     return np.cumsum(eigs) / np.sum(eigs)
 
 
+"""
+Improved POD energy plotting function with adaptive zooming and inset plots.
+"""
+
+import os
+import numpy as np
+
+
 def save_pod_energy_plot(
     eigs: np.ndarray,
     r: int,
@@ -746,7 +754,11 @@ def save_pod_energy_plot(
     logger,
 ):
     """
-    Save POD energy plot.
+    Save POD energy plot with adaptive zooming for better visualization.
+    
+    Creates a 2-row layout:
+    - Top row: Full view of all modes (context)
+    - Bottom row: Zoomed view around truncation rank (detail)
     
     Parameters
     ----------
@@ -762,6 +774,7 @@ def save_pod_energy_plot(
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from mpl_toolkits.axes_grid1.inset_locator import inset_axes, mark_inset
     
     # Only use positive eigenvalues for energy calculations
     eigs_positive = np.maximum(eigs, 0)
@@ -773,53 +786,173 @@ def save_pod_energy_plot(
     
     ret_energy = np.cumsum(eigs_positive) / total_energy
     singular_values = np.sqrt(eigs_positive)
+    mode_energy = eigs_positive / total_energy * 100
     
-    fig, axes = plt.subplots(1, 3, figsize=(14, 4))
-    
-    # Singular value decay (only plot positive values)
-    ax = axes[0]
+    # Filter to positive values for plotting
     sv_positive = singular_values[singular_values > 0]
-    ax.semilogy(range(len(sv_positive)), sv_positive, 'b-', linewidth=1.5)
-    if r < len(sv_positive):
-        ax.axvline(x=r, color='r', linestyle='--', label=f'r = {r}')
+    n_modes = len(sv_positive)
+    
+    # Compute adaptive zoom range based on r and data characteristics
+    zoom_info = _compute_zoom_range(r, n_modes, ret_energy)
+    zoom_max = zoom_info['zoom_max']
+    energy_at_r = ret_energy[r - 1] * 100 if r > 0 and r <= len(ret_energy) else 0
+    
+    # Determine layout based on whether zooming is needed
+    needs_zoom = zoom_info['needs_zoom']
+    
+    if needs_zoom:
+        fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+        axes_full = axes[0]
+        axes_zoom = axes[1]
+    else:
+        fig, axes_full = plt.subplots(1, 3, figsize=(15, 4.5))
+        axes_zoom = None
+    
+    # Color scheme
+    color_main = '#1f77b4'
+    color_truncation = '#d62728'
+    color_fill = '#1f77b4'
+    
+    # =========================================================================
+    # PLOT 1: Singular Value Decay
+    # =========================================================================
+    ax = axes_full[0]
+    ax.semilogy(range(n_modes), sv_positive, color=color_main, linewidth=1.5)
+    if r < n_modes:
+        ax.axvline(x=r, color=color_truncation, linestyle='--', linewidth=1.5,
+                   label=f'r = {r}')
+        # Add marker at truncation point
+        ax.plot(r, sv_positive[r], 'o', color=color_truncation, markersize=8, zorder=5)
     ax.set_xlabel('Mode index')
     ax.set_ylabel('Singular value')
-    ax.set_title('Singular Value Decay')
-    ax.legend()
+    ax.set_title('Singular Value Decay (Full)', fontweight='bold')
+    ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
     
-    # Retained energy
-    ax = axes[1]
-    ax.plot(ret_energy * 100, 'b-', linewidth=1.5)
+    # Zoomed version
+    if needs_zoom:
+        ax = axes_zoom[0]
+        zoom_end = min(zoom_max, n_modes)
+        ax.semilogy(range(zoom_end), sv_positive[:zoom_end], color=color_main, linewidth=1.5)
+        if r < zoom_end:
+            ax.axvline(x=r, color=color_truncation, linestyle='--', linewidth=1.5,
+                       label=f'r = {r}')
+            ax.plot(r, sv_positive[r], 'o', color=color_truncation, markersize=8, zorder=5)
+            # Annotate the singular value at r
+            ax.annotate(f'σ_{r} = {sv_positive[r]:.2e}',
+                        xy=(r, sv_positive[r]), xytext=(r + zoom_max*0.1, sv_positive[r]),
+                        fontsize=9, color=color_truncation,
+                        arrowprops=dict(arrowstyle='->', color=color_truncation, lw=1))
+        ax.set_xlabel('Mode index')
+        ax.set_ylabel('Singular value')
+        ax.set_title(f'Singular Value Decay (Zoomed: 0-{zoom_end})', fontweight='bold')
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-zoom_max*0.02, zoom_end)
+    
+    # =========================================================================
+    # PLOT 2: Cumulative Retained Energy
+    # =========================================================================
+    ax = axes_full[1]
+    ax.plot(ret_energy * 100, color=color_main, linewidth=1.5)
+    ax.fill_between(range(len(ret_energy)), ret_energy * 100, alpha=0.2, color=color_fill)
     if r > 0 and r <= len(ret_energy):
-        ax.axhline(y=ret_energy[r - 1] * 100, color='r', linestyle='--',
-                   label=f'{ret_energy[r - 1] * 100:.4f}% at r={r}')
-        ax.axvline(x=r, color='r', linestyle='--')
+        ax.axhline(y=energy_at_r, color=color_truncation, linestyle='--', linewidth=1,
+                   alpha=0.7)
+        ax.axvline(x=r, color=color_truncation, linestyle='--', linewidth=1.5,
+                   label=f'{energy_at_r:.2f}% at r={r}')
+        ax.plot(r, energy_at_r, 'o', color=color_truncation, markersize=8, zorder=5)
     ax.set_xlabel('Number of modes')
     ax.set_ylabel('Retained energy (%)')
-    ax.set_title('Cumulative Retained Energy')
-    ax.legend()
+    ax.set_title('Cumulative Retained Energy (Full)', fontweight='bold')
+    ax.legend(loc='lower right')
     ax.grid(True, alpha=0.3)
     ax.set_ylim([0, 105])
     
-    # Energy per mode
-    ax = axes[2]
-    mode_energy = eigs_positive / total_energy * 100
-    n_plot = min(100, len(mode_energy))
-    mode_energy_plot = mode_energy[:n_plot]
-    mode_energy_plot = mode_energy_plot[mode_energy_plot > 0]  # Only positive
-    if len(mode_energy_plot) > 0:
-        ax.semilogy(range(len(mode_energy_plot)), mode_energy_plot, 'b-', linewidth=1.5)
-        if r < len(mode_energy_plot):
-            ax.axvline(x=r, color='r', linestyle='--', label=f'r = {r}')
+    # Zoomed version
+    if needs_zoom:
+        ax = axes_zoom[1]
+        zoom_end = min(zoom_max, len(ret_energy))
+        ax.plot(range(zoom_end), ret_energy[:zoom_end] * 100, color=color_main, linewidth=1.5)
+        ax.fill_between(range(zoom_end), ret_energy[:zoom_end] * 100, alpha=0.2, color=color_fill)
+        if r > 0 and r <= zoom_end:
+            ax.axhline(y=energy_at_r, color=color_truncation, linestyle='--', linewidth=1,
+                       alpha=0.7)
+            ax.axvline(x=r, color=color_truncation, linestyle='--', linewidth=1.5,
+                       label=f'{energy_at_r:.2f}% at r={r}')
+            ax.plot(r, energy_at_r, 'o', color=color_truncation, markersize=8, zorder=5)
+        
+        # Adaptive y-limits for zoomed view
+        y_min_zoom = max(0, ret_energy[0] * 100 - 5) if len(ret_energy) > 0 else 0
+        y_max_zoom = min(105, energy_at_r + 10) if r > 0 else 105
+        ax.set_ylim([y_min_zoom, y_max_zoom])
+        ax.set_xlim(-zoom_max*0.02, zoom_end)
+        
+        ax.set_xlabel('Number of modes')
+        ax.set_ylabel('Retained energy (%)')
+        ax.set_title(f'Cumulative Retained Energy (Zoomed: 0-{zoom_end})', fontweight='bold')
+        ax.legend(loc='lower right')
+        ax.grid(True, alpha=0.3)
+    
+    # =========================================================================
+    # PLOT 3: Energy per Mode
+    # =========================================================================
+    ax = axes_full[2]
+    mode_energy_positive = mode_energy[mode_energy > 0]
+    n_plot_full = len(mode_energy_positive)
+    if n_plot_full > 0:
+        ax.semilogy(range(n_plot_full), mode_energy_positive, color=color_main, linewidth=1.5)
+        if r < n_plot_full:
+            ax.axvline(x=r, color=color_truncation, linestyle='--', linewidth=1.5,
+                       label=f'r = {r}')
+            ax.plot(r, mode_energy_positive[r], 'o', color=color_truncation, markersize=8, zorder=5)
     ax.set_xlabel('Mode index')
     ax.set_ylabel('Energy contribution (%)')
-    ax.set_title('Energy per Mode')
-    ax.legend()
+    ax.set_title('Energy per Mode (Full)', fontweight='bold')
+    ax.legend(loc='upper right')
     ax.grid(True, alpha=0.3)
     
-    plt.tight_layout()
+    # Zoomed version
+    if needs_zoom:
+        ax = axes_zoom[2]
+        zoom_end = min(zoom_max, n_plot_full)
+        mode_energy_zoom = mode_energy_positive[:zoom_end]
+        if len(mode_energy_zoom) > 0:
+            ax.semilogy(range(len(mode_energy_zoom)), mode_energy_zoom, 
+                        color=color_main, linewidth=1.5)
+            if r < len(mode_energy_zoom):
+                ax.axvline(x=r, color=color_truncation, linestyle='--', linewidth=1.5,
+                           label=f'r = {r}')
+                ax.plot(r, mode_energy_zoom[r], 'o', color=color_truncation, markersize=8, zorder=5)
+                # Annotate
+                ax.annotate(f'{mode_energy_zoom[r]:.2e}%',
+                            xy=(r, mode_energy_zoom[r]), 
+                            xytext=(r + zoom_max*0.1, mode_energy_zoom[r]),
+                            fontsize=9, color=color_truncation,
+                            arrowprops=dict(arrowstyle='->', color=color_truncation, lw=1))
+        ax.set_xlabel('Mode index')
+        ax.set_ylabel('Energy contribution (%)')
+        ax.set_title(f'Energy per Mode (Zoomed: 0-{zoom_end})', fontweight='bold')
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+        ax.set_xlim(-zoom_max*0.02, zoom_end)
     
+    # =========================================================================
+    # Add summary statistics text box
+    # =========================================================================
+    stats_text = _generate_stats_text(eigs_positive, r, ret_energy, singular_values)
+    
+    # Position the text box
+    if needs_zoom:
+        fig.text(0.5, 0.02, stats_text, ha='center', va='bottom', fontsize=10,
+                 family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        plt.tight_layout(rect=[0, 0.08, 1, 1])
+    else:
+        fig.text(0.5, -0.02, stats_text, ha='center', va='top', fontsize=10,
+                 family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+        plt.tight_layout(rect=[0, 0.1, 1, 1])
+    
+    # Save plot
     plot_path = os.path.join(run_dir, "pod_energy.png")
     plt.savefig(plot_path, dpi=150, bbox_inches='tight')
     plt.close(fig)
@@ -836,6 +969,58 @@ def save_pod_energy_plot(
     
     logger.info(f"Saved POD energy plot to {plot_path}")
     logger.info(f"Saved POD energy data to {data_path}")
+
+
+def _compute_zoom_range(r: int, n_modes: int, ret_energy: np.ndarray) -> dict:
+    """
+    Compute adaptive zoom range based on truncation rank and data.
+    
+    Returns a zoom range that shows meaningful context around r.
+    """
+    # If r is already a large fraction of n_modes, no zoom needed
+    if n_modes <= 200 or r >= n_modes * 0.4:
+        return {'zoom_max': n_modes, 'needs_zoom': False}
+    
+    # Find where 99% energy is reached
+    idx_99 = np.searchsorted(ret_energy, 0.99) + 1
+    
+    # Zoom to show at least 2x truncation rank, or up to 99% energy point
+    # But cap at reasonable values
+    zoom_max = max(
+        int(r * 2.5),  # At least 2.5x truncation rank
+        min(idx_99, int(r * 5)),  # Up to 99% energy or 5x truncation
+        50  # Minimum zoom window
+    )
+    
+    # Don't zoom if it wouldn't help much
+    needs_zoom = zoom_max < n_modes * 0.7
+    
+    return {'zoom_max': zoom_max, 'needs_zoom': needs_zoom}
+
+
+def _generate_stats_text(eigs_positive, r, ret_energy, singular_values):
+    """Generate summary statistics text."""
+    n_modes = len(eigs_positive[eigs_positive > 0])
+    energy_at_r = ret_energy[r - 1] * 100 if r > 0 and r <= len(ret_energy) else 0
+    
+    # Find modes needed for various energy thresholds
+    thresholds = [0.90, 0.95, 0.99, 0.999]
+    modes_for_threshold = {}
+    for thresh in thresholds:
+        idx = np.searchsorted(ret_energy, thresh)
+        modes_for_threshold[thresh] = idx + 1 if idx < len(ret_energy) else '>'+str(len(ret_energy))
+    
+    stats_lines = [
+        f"Total modes: {n_modes}",
+        f"Truncation rank: r = {r}",
+        f"Energy at r={r}: {energy_at_r:.4f}%",
+        f"Modes for 90%: {modes_for_threshold[0.90]}",
+        f"Modes for 95%: {modes_for_threshold[0.95]}",
+        f"Modes for 99%: {modes_for_threshold[0.99]}",
+        f"Modes for 99.9%: {modes_for_threshold[0.999]}",
+    ]
+    
+    return "  |  ".join(stats_lines)
 
 
 # =============================================================================
