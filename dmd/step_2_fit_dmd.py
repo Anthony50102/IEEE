@@ -186,9 +186,10 @@ def load_pod_basis(paths: dict, logger) -> tuple:
     logger.info(f"Loading POD data from {paths['pod_file']}")
     
     pod_data = np.load(paths['pod_file'])
+    print(pod_data.files)
     singular_values = pod_data['S']
-    eigv = pod_data['eigv']
-    eigs = pod_data['eigs']
+    # eigv = pod_data['eigv']
+    # eigs = pod_data['eigs']
     
     # Load preprocessing info to get actual r used
     preproc_info = np.load(paths['preprocessing_info'])
@@ -197,7 +198,8 @@ def load_pod_basis(paths: dict, logger) -> tuple:
     logger.info(f"  Singular values shape: {singular_values.shape}")
     logger.info(f"  POD modes (r): {r_actual}")
     
-    return eigv, singular_values, eigs, r_actual
+    return  singular_values, r_actual
+    # return eigv, singular_values, eigs, r_actual
 
 
 def load_training_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
@@ -271,81 +273,81 @@ def load_reference_gamma_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
     return Y_Gamma, mean_Gamma_n, std_Gamma_n, mean_Gamma_c, std_Gamma_c
 
 
-def reconstruct_pod_basis(eigv: np.ndarray, eigs: np.ndarray, r: int, 
-                          Xhat_train: np.ndarray, logger) -> np.ndarray:
-    """
-    Reconstruct the POD basis U from eigendecomposition data.
+# def reconstruct_pod_basis(eigv: np.ndarray, eigs: np.ndarray, r: int, 
+#                           Xhat_train: np.ndarray, logger) -> np.ndarray:
+#     """
+#     Reconstruct the POD basis U from eigendecomposition data.
     
-    The POD basis is computed from:
-    U = Q @ V @ Σ^{-1}
+#     The POD basis is computed from:
+#     U = Q @ V @ Σ^{-1}
     
-    But since we only have the projected data Xhat = U^T @ Q,
-    we need to use the transformation matrix from eigenvectors.
+#     But since we only have the projected data Xhat = U^T @ Q,
+#     we need to use the transformation matrix from eigenvectors.
     
-    For DMD, we need the actual spatial modes, so we compute:
-    V_global[:,j] = (1/sqrt(λ_j)) * Q @ v_j
+#     For DMD, we need the actual spatial modes, so we compute:
+#     V_global[:,j] = (1/sqrt(λ_j)) * Q @ v_j
     
-    Since we have Xhat = Q @ Tr where Tr = V @ diag(1/sqrt(λ)),
-    we can compute U from the relationship with Xhat.
+#     Since we have Xhat = Q @ Tr where Tr = V @ diag(1/sqrt(λ)),
+#     we can compute U from the relationship with Xhat.
     
-    Parameters
-    ----------
-    eigv : np.ndarray
-        Eigenvectors from POD (V in Q^T Q = V Λ V^T).
-    eigs : np.ndarray
-        Eigenvalues from POD (Λ).
-    r : int
-        Number of modes to use.
-    Xhat_train : np.ndarray
-        Projected training data.
-    logger : logging.Logger
-        Logger instance.
+#     Parameters
+#     ----------
+#     eigv : np.ndarray
+#         Eigenvectors from POD (V in Q^T Q = V Λ V^T).
+#     eigs : np.ndarray
+#         Eigenvalues from POD (Λ).
+#     r : int
+#         Number of modes to use.
+#     Xhat_train : np.ndarray
+#         Projected training data.
+#     logger : logging.Logger
+#         Logger instance.
     
-    Returns
-    -------
-    V_global : np.ndarray, shape (n_snapshots, r)
-        POD basis (actually the projection of full data onto modes).
+#     Returns
+#     -------
+#     V_global : np.ndarray, shape (n_snapshots, r)
+#         POD basis (actually the projection of full data onto modes).
     
-    Notes
-    -----
-    In the method of snapshots, the POD modes in full space are:
-    U_j = (1/σ_j) * Q @ v_j
+#     Notes
+#     -----
+#     In the method of snapshots, the POD modes in full space are:
+#     U_j = (1/σ_j) * Q @ v_j
     
-    But since Q is very large, we work with the transformation matrix Tr.
-    For BOPDMD with projection, we pass the POD basis as proj_basis.
+#     But since Q is very large, we work with the transformation matrix Tr.
+#     For BOPDMD with projection, we pass the POD basis as proj_basis.
     
-    The key insight is that Xhat = U^T @ Q, so:
-    - Xhat^T = Q^T @ U
-    - If we have U, then DMD modes in reduced coords are W = U^T @ Phi
-    """
-    logger.info("Computing POD basis from eigendecomposition...")
+#     The key insight is that Xhat = U^T @ Q, so:
+#     - Xhat^T = Q^T @ U
+#     - If we have U, then DMD modes in reduced coords are W = U^T @ Phi
+#     """
+#     logger.info("Computing POD basis from eigendecomposition...")
     
-    # Xhat has shape (n_time, r) - projected snapshots
-    # The transformation is: Xhat = Q @ Tr, where Tr = V @ Σ^{-1}
-    # So Xhat^T = Tr^T @ Q^T = Σ^{-1} @ V^T @ Q^T
+#     # Xhat has shape (n_time, r) - projected snapshots
+#     # The transformation is: Xhat = Q @ Tr, where Tr = V @ Σ^{-1}
+#     # So Xhat^T = Tr^T @ Q^T = Σ^{-1} @ V^T @ Q^T
     
-    # For BOPDMD proj_basis, we need something that represents the spatial modes
-    # In the reduced space, the "basis" is effectively the transformation matrix
+#     # For BOPDMD proj_basis, we need something that represents the spatial modes
+#     # In the reduced space, the "basis" is effectively the transformation matrix
     
-    # The eigenvectors V have shape (n_time, n_time)
-    # The reduced transformation is V[:, :r] @ diag(1/sqrt(eigs[:r]))
+#     # The eigenvectors V have shape (n_time, n_time)
+#     # The reduced transformation is V[:, :r] @ diag(1/sqrt(eigs[:r]))
     
-    # For DMD in reduced coordinates, we can work directly with Xhat
-    # The proj_basis should be the mapping from full space to reduced
+#     # For DMD in reduced coordinates, we can work directly with Xhat
+#     # The proj_basis should be the mapping from full space to reduced
     
-    # Since we only have Xhat, we construct an orthonormal basis from it
-    # This is equivalent to the POD modes in the reduced coordinate system
+#     # Since we only have Xhat, we construct an orthonormal basis from it
+#     # This is equivalent to the POD modes in the reduced coordinate system
     
-    # Actually, for BOPDMD we can pass proj_basis=None and use_proj=False
-    # to work directly in the reduced space
+#     # Actually, for BOPDMD we can pass proj_basis=None and use_proj=False
+#     # to work directly in the reduced space
     
-    # Or, we recognize that for the reduced data Xhat (n_time, r),
-    # the "basis" is simply the identity in r-space
+#     # Or, we recognize that for the reduced data Xhat (n_time, r),
+#     # the "basis" is simply the identity in r-space
     
-    V_global = np.eye(r, dtype=np.float64)
-    logger.info(f"  Using identity basis in reduced space: shape {V_global.shape}")
+#     V_global = np.eye(r, dtype=np.float64)
+#     logger.info(f"  Using identity basis in reduced space: shape {V_global.shape}")
     
-    return V_global
+#     return V_global
 
 
 def fit_output_operator(
@@ -512,7 +514,7 @@ def main():
     
     try:
         # 1. Load POD basis from Step 1
-        eigv, singular_values, eigs_pod, r_actual = load_pod_basis(paths, logger)
+        singular_values, r_actual = load_pod_basis(paths, logger)
         
         # Determine DMD rank
         dmd_rank = cfg.dmd_rank if cfg.dmd_rank is not None else r_actual
@@ -542,7 +544,8 @@ def main():
         
         # 3. Construct POD basis for BOPDMD
         # In reduced space, the basis is identity
-        V_global = reconstruct_pod_basis(eigv, eigs_pod, dmd_rank, Xhat_train_single, logger)
+        # V_global = reconstruct_pod_basis(eigv, eigs_pod, dmd_rank, Xhat_train_single, logger)
+        V_global = np.eye(dmd_rank, dtype=np.float64)
         
         # 4. Fit BOPDMD
         # DMD expects data as (n_features, n_time)
