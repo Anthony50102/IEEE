@@ -22,6 +22,7 @@ import yaml
 
 from utils import (
     load_config,
+    save_config,
     setup_logging,
     save_step_status,
     check_step_completed,
@@ -640,6 +641,10 @@ def main():
         return
     
     save_step_status(args.run_dir, "step_3", "running")
+    
+    # Save configuration with step-specific name
+    save_config(cfg, args.run_dir, step_name="step_3")
+    logger.info("Configuration saved to run directory")
     
     paths = get_output_paths(args.run_dir)
     

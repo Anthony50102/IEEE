@@ -1391,7 +1391,7 @@ def main():
         logger.info(f"Run directory: {run_dir}")
         logger.info(f"MPI ranks: {size}")
         save_step_status(run_dir, "step_1", "running")
-        save_config(cfg, run_dir)
+        save_config(cfg, run_dir, step_name="step_1")
         logger.info("Configuration saved to run directory")
     else:
         logger = None

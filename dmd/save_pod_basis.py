@@ -35,6 +35,7 @@ from dmd.utils import (
 # Import shared utilities from opinf
 from opinf.utils import (
     setup_logging,
+    save_config,
     print_header,
     loader,
 )
@@ -283,6 +284,10 @@ def main():
     print_header("SAVING POD BASIS FOR DMD")
     print(f"  Run directory: {args.run_dir}")
     print(f"  POD modes (r): {cfg.r}")
+    
+    # Save configuration with step-specific name
+    save_config(cfg, args.run_dir, step_name="save_pod_basis")
+    logger.info("Configuration saved to run directory")
     
     paths = get_dmd_output_paths(args.run_dir)
     

@@ -236,8 +236,8 @@ def main():
         else:
             run_dir = create_run_directory(cfg)
         
-        # Save config to run directory
-        save_config(cfg, run_dir)
+        # Save config to run directory (pipeline uses generic name for initial save)
+        save_config(cfg, run_dir, step_name="pipeline")
     else:
         run_dir = None
     

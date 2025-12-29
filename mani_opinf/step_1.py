@@ -153,6 +153,65 @@ def save_status(run_dir: str, step: str, status: str, details: dict = None):
         json.dump(all_status, f, indent=2)
 
 
+def save_qm_config(cfg: Config, run_dir: str, step_name: str = None):
+    """
+    Save quadratic manifold configuration to YAML file.
+    
+    Each step should save its own version of the config with a step-specific
+    filename so we can track exactly which config was used for each step.
+    
+    Parameters
+    ----------
+    cfg : Config
+        Configuration object.
+    run_dir : str
+        Directory to save configuration.
+    step_name : str, optional
+        Name of the step. If provided, saves to config_<step_name>.yaml.
+    """
+    config_dict = {
+        "run_name": cfg.run_name,
+        "output_base": cfg.output_base,
+        "data_dir": cfg.data_dir,
+        "training_files": cfg.training_files,
+        "test_files": cfg.test_files,
+        "physics": {
+            "dt": cfg.dt,
+            "n_fields": cfg.n_fields,
+            "n_x": cfg.n_x,
+            "n_y": cfg.n_y,
+        },
+        "quadratic_manifold": {
+            "r": cfg.r,
+            "n_vectors_to_check": cfg.n_vectors_to_check,
+            "reg_magnitude": cfg.reg_magnitude,
+            "initial_indices": cfg.initial_indices,
+            "use_precomputed_svd": cfg.use_precomputed_svd,
+            "svd_file": cfg.svd_file,
+        },
+        "truncation": {
+            "enabled": cfg.truncation_enabled,
+            "method": cfg.truncation_method,
+            "snapshots": cfg.truncation_snapshots,
+            "time": cfg.truncation_time,
+        },
+        "execution": {
+            "verbose": cfg.verbose,
+            "log_level": cfg.log_level,
+            "engine": cfg.engine,
+        },
+    }
+    
+    if step_name:
+        filename = f"config_{step_name}.yaml"
+    else:
+        filename = "config.yaml"
+    
+    filepath = os.path.join(run_dir, filename)
+    with open(filepath, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+
+
 # =============================================================================
 # Memory Management Helpers
 # =============================================================================
@@ -387,6 +446,11 @@ def main():
     print(f"  use_precomputed_svd: {cfg.use_precomputed_svd}")
     
     save_status(run_dir, "step_1_qm", "running")
+    
+    # Save configuration with step-specific name
+    save_qm_config(cfg, run_dir, step_name="step_1_qm")
+    logger.info("Configuration saved to run directory")
+    
     start_time = time.time()
     
     try:
