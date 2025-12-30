@@ -212,6 +212,7 @@ __marimo__/
 # Output files
 *.err
 *.out
+*.png
 
 # Local output
 local_output/

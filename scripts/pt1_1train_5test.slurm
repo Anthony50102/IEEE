@@ -46,7 +46,6 @@ echo "=============================================="
 ibrun -n 7 python3 opinf/step_1_parallel_preprocess.py \
         --config config/opinf_1train_5test.yaml \
         --save-pod-energy \
-        --no-centering
 
 
 echo "=============================================="
