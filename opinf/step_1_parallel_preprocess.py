@@ -1098,6 +1098,26 @@ def project_data_distributed(
     
     if rank == 0:
         logger.info(f"  Tr matrix: shape={Tr.shape}, has_nan={np.any(np.isnan(Tr))}, has_inf={np.any(np.isinf(Tr))}")
+        
+        # =================================================================
+        # DIAGNOSTIC: Verify eigenvector orthonormality
+        # This should be ~machine precision if eigh worked correctly
+        # =================================================================
+        VtV = eigv_r.T @ eigv_r
+        eigv_ortho_error = np.linalg.norm(VtV - np.eye(r))
+        logger.info(f"  [DIAGNOSTIC] Eigenvector orthonormality ||V.T @ V - I||: {eigv_ortho_error:.6e}")
+        if eigv_ortho_error > 1e-10:
+            logger.warning(f"  WARNING: Eigenvectors are NOT orthonormal!")
+            logger.info(f"  Eigenvector diagonal range: [{np.diag(VtV).min():.6f}, {np.diag(VtV).max():.6f}]")
+        
+        # =================================================================
+        # DIAGNOSTIC: Verify eigenvalue/eigenvector relationship
+        # D @ V should equal V @ Lambda
+        # =================================================================
+        DV = D_global @ eigv_r
+        V_Lambda = eigv_r @ np.diag(eigs_r)
+        eigen_error = np.linalg.norm(DV - V_Lambda) / np.linalg.norm(V_Lambda)
+        logger.info(f"  [DIAGNOSTIC] Eigen equation relative error ||DV - VΛ||/||VΛ||: {eigen_error:.6e}")
     
     # Reduced training coordinates: Xhat_train = Tr.T @ D_global
     # Shape: (r, n_time) -> transpose to (n_time, r)
@@ -1111,6 +1131,26 @@ def project_data_distributed(
     if rank == 0:
         logger.info(f"  Local POD modes compute: {MPI.Wtime() - t_modes:.2f}s")
     
+    # =================================================================
+    # DIAGNOSTIC: Check if distributed Ur computation is correct
+    # Ur.T @ Ur = sum_i (Ur_local_i.T @ Ur_local_i) should equal I
+    # =================================================================
+    UtU_local = Ur_local.T @ Ur_local  # (r, r) local contribution
+    UtU_global = np.zeros((r, r), dtype=np.float64)
+    comm.Allreduce(UtU_local, UtU_global, op=MPI.SUM)
+    
+    if rank == 0:
+        ortho_error_distributed = np.linalg.norm(UtU_global - np.eye(r))
+        diag_dist = np.diag(UtU_global)
+        logger.info(f"  [DIAGNOSTIC] Distributed Ur.T @ Ur orthonormality error: {ortho_error_distributed:.6e}")
+        logger.info(f"  [DIAGNOSTIC] Distributed diagonal range: [{diag_dist.min():.6f}, {diag_dist.max():.6f}]")
+        
+        if ortho_error_distributed > 1e-6:
+            logger.warning(f"  WARNING: Distributed POD basis is NOT orthonormal!")
+            # Show sample diagonal values
+            logger.info(f"  [DIAGNOSTIC] Sample diagonal values: {diag_dist[:5]}")
+            logger.info(f"  [DIAGNOSTIC] Expected: [1, 1, 1, 1, 1]")
+
     # Project test data: Xhat_test = Q_test.T @ Ur
     # Need to reduce across ranks
     t_proj = MPI.Wtime()
