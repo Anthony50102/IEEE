@@ -104,7 +104,9 @@ k0 = .15
 c1 = 1
 dx = 2 * np.pi / k0
 dx = dx / 256
-centered = False
+
+# SET THESE TO MATCH YOUR POD TRAINING CONFIG!
+centered = True   # <-- Set to True if POD was trained with centering enabled
 scaled = False
 
 # Load saved POD
