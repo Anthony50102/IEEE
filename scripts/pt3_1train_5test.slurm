@@ -45,8 +45,8 @@ echo "=============================================="
 # Run parallel sweep
 # Use ibrun for TACC systems (wrapper for mpirun)
 python3 opinf/step_3_evaluate.py \
-    --config config/opinf_1train_5test.yaml \
-    --run-dir $SCRATCH/IEEE/output/20251229_073025_1train_5test
+     --config config/opinf_1train_5test.yaml \
+     --run-dir $SCRATCH/IEEE/output/20251230_200243_1train_5test
 
 echo "=============================================="
 echo "End time: $(date)"
