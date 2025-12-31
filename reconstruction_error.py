@@ -97,8 +97,8 @@ def get_gamma_c(n: np.ndarray, p: np.ndarray, c1: float, dx: float) -> float:
 
 
 # === CONFIGURE THESE ===
-run_dir = "/scratch2/10407/anthony50102/IEEE/output/20251229_144913_1train_5test"
-test_file = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315165458_9483_0.h5"
+run_dir = "/scratch2/10407/anthony50102/IEEE/output/20251230_200218_1train_5test"
+test_file = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
 r = 75  # number of modes to use
 k0 = .15
 c1 = 1

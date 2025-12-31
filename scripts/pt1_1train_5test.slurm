@@ -2,11 +2,11 @@
 #SBATCH -J step_1_pod           # Job name
 #SBATCH -o step_1_pod_%j.out        # Output file (%j = job ID)
 #SBATCH -e step_1_pod_%j.err        # Error file
-#SBATCH -p normal          # Queue (partition)
+#SBATCH -p development          # Queue (partition)
 #SBATCH -N 1                   # Number of nodes
 #SBATCH -n 7                   # Total MPI tasks
 #SBATCH --cpus-per-task=8      # Cores per task (56 cores/node ÷ 2 ranks/node)
-#SBATCH -t 02:00:00             # Time limit (HH:MM:SS)
+#SBATCH -t 00:30:00             # Time limit (HH:MM:SS)
 
 # =============================================================================
 # OpInf Parallel Hyperparameter Sweep - TACC Frontera
