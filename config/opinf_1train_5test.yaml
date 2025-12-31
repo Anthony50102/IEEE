@@ -32,7 +32,7 @@ truncation:
   time: 200.0                   # Simulation time to keep (if method="time")
 
 preprocessing:
-  centering: false               # Center data before POD (subtract temporal mean) - RECOMMENDED
+  centering: true               # Center data before POD (subtract temporal mean) - RECOMMENDED
   scaling: false                # Scale each field to [-1, 1] after centering
 
 training:

@@ -213,6 +213,7 @@ __marimo__/
 *.err
 *.out
 *.png
+*.gif
 
 # Local output
 local_output/
