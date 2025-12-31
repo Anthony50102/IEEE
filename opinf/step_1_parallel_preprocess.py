@@ -634,7 +634,9 @@ def compute_pod_distributed(
             logger.info(f"  [DIAGNOSTIC] SVD singular value sum: {actual_eig_sum:.2e}")
     else:
         eigs = np.empty(n_time, dtype=np.float64)
-        eigv = np.empty((n_time, n_time), dtype=np.float64)
+        # CRITICAL: Use zeros instead of empty to ensure clean memory,
+        # and ensure C-contiguous layout for MPI
+        eigv = np.zeros((n_time, n_time), dtype=np.float64, order='C')
     
     # Broadcast eigenvalues (small array - OK as single message)
     comm.Bcast(eigs, root=0)
@@ -663,7 +665,29 @@ def compute_pod_distributed(
                 eigv[start_row:end_row, :] = chunk
     else:
         # Small enough for single broadcast
+        # Ensure eigv is contiguous before broadcast
+        if rank == 0:
+            eigv = np.ascontiguousarray(eigv)
         comm.Bcast(eigv, root=0)
+    
+    # Ensure all ranks have completed the broadcast before proceeding
+    comm.Barrier()
+    
+    # =================================================================
+    # DIAGNOSTIC: Verify eigv broadcast was successful across all ranks
+    # =================================================================
+    eigv_checksum_local = np.array([np.sum(eigv), np.sum(eigv**2), eigv[0,0], eigv[100,50] if eigv.shape[0] > 100 else eigv[0,0]])
+    eigv_checksums = comm.gather(eigv_checksum_local, root=0)
+    
+    if rank == 0:
+        eigv_checksums = np.array(eigv_checksums)
+        eigv_variation = np.max(np.abs(eigv_checksums - eigv_checksums[0]), axis=0)
+        logger.info(f"  [DIAGNOSTIC] eigv checksum variation across ranks: {eigv_variation}")
+        if np.any(eigv_variation > 1e-10):
+            logger.error(f"  CRITICAL: eigv differs across MPI ranks after broadcast!")
+            logger.info(f"  [DIAGNOSTIC] eigv checksums per rank: {eigv_checksums[:, 0]}")  # Show sum from each rank
+        else:
+            logger.info(f"  [DIAGNOSTIC] eigv broadcast successful - identical across all ranks ✓")
     
     # Sort by decreasing eigenvalue
     sorted_indices = np.argsort(eigs)[::-1]
