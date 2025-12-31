@@ -1096,8 +1096,23 @@ def project_data_distributed(
     # Compute transformation matrix
     Tr = eigv_r @ np.diag(eigs_r_safe ** (-0.5))
     
+    # =================================================================
+    # DIAGNOSTIC: Verify Tr is identical across all ranks
+    # =================================================================
+    Tr_checksum_local = np.array([np.sum(Tr), np.sum(Tr**2), Tr[0,0], Tr[-1,-1]])
+    Tr_checksums = comm.gather(Tr_checksum_local, root=0)
+    
     if rank == 0:
         logger.info(f"  Tr matrix: shape={Tr.shape}, has_nan={np.any(np.isnan(Tr))}, has_inf={np.any(np.isinf(Tr))}")
+        
+        # Check if all ranks have the same Tr
+        Tr_checksums = np.array(Tr_checksums)
+        Tr_variation = np.max(np.abs(Tr_checksums - Tr_checksums[0]), axis=0)
+        logger.info(f"  [DIAGNOSTIC] Tr checksum variation across ranks: {Tr_variation}")
+        if np.any(Tr_variation > 1e-10):
+            logger.error(f"  CRITICAL: Tr differs across MPI ranks!")
+        else:
+            logger.info(f"  [DIAGNOSTIC] Tr is identical across all ranks ✓")
         
         # =================================================================
         # DIAGNOSTIC: Verify eigenvector orthonormality
@@ -1118,6 +1133,17 @@ def project_data_distributed(
         V_Lambda = eigv_r @ np.diag(eigs_r)
         eigen_error = np.linalg.norm(DV - V_Lambda) / np.linalg.norm(V_Lambda)
         logger.info(f"  [DIAGNOSTIC] Eigen equation relative error ||DV - VΛ||/||VΛ||: {eigen_error:.6e}")
+        
+        # =================================================================
+        # DIAGNOSTIC: Verify Tr.T @ D @ Tr should equal I
+        # This is the mathematical requirement for Ur to be orthonormal
+        # =================================================================
+        TrTDTr = Tr.T @ D_global @ Tr
+        TrTDTr_error = np.linalg.norm(TrTDTr - np.eye(r))
+        logger.info(f"  [DIAGNOSTIC] ||Tr.T @ D @ Tr - I||: {TrTDTr_error:.6e}")
+        logger.info(f"  [DIAGNOSTIC] Tr.T @ D @ Tr diagonal: {np.diag(TrTDTr)[:5]}")
+        if TrTDTr_error > 1e-6:
+            logger.error(f"  CRITICAL: Tr.T @ D @ Tr != I, POD math is broken!")
     
     # Reduced training coordinates: Xhat_train = Tr.T @ D_global
     # Shape: (r, n_time) -> transpose to (n_time, r)
