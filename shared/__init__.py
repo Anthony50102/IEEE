@@ -7,7 +7,7 @@ This package contains common functionality used across all ROM methods
     data_io     - HDF5 data loading and snapshot management
     plotting    - Standardized visualization functions
     physics     - Physical quantity computations (Gamma_n, Gamma_c)
-    mpi_utils   - MPI communication utilities
+    mpi_utils   - MPI communication utilities (import separately to avoid MPI init)
 
 Author: Anthony Poole
 """
@@ -25,8 +25,5 @@ from .physics import (
     periodic_gradient,
 )
 
-from .mpi_utils import (
-    distribute_indices,
-    chunked_bcast,
-    create_shared_array,
-)
+# NOTE: mpi_utils not imported here to avoid MPI initialization on import.
+# Import directly when needed: from shared.mpi_utils import distribute_indices

@@ -32,7 +32,9 @@ print("DEBUG: IMPORTS")
 print("importing numpy"); import numpy as np
 print("importing xarray"); import xarray as xr
 print("importing matplotlib"); import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
-print("importing shared.physics"); from shared.physics import periodic_gradient, compute_gamma_n, compute_gamma_c
+print("importing datetime"); from datetime import datetime
+# Import directly from module to avoid MPI init from shared/__init__.py
+print("importing physics"); from shared.physics import periodic_gradient, compute_gamma_n, compute_gamma_c
 print("done imports")
 print("DEBUG: FINISHED THE IMPORTS")
 
