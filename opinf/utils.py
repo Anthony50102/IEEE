@@ -48,9 +48,14 @@ class OpInfConfig:
     n_x: int = 512
     n_y: int = 512
     
-    # POD
+    # Dimensionality reduction
+    reduction_method: str = "linear"  # "linear" (POD) or "manifold" (quadratic)
     r: int = 100
     target_energy: float = 0.9999
+    
+    # Quadratic manifold settings (only used if reduction_method="manifold")
+    n_vectors_to_check: int = 200
+    reg_magnitude: float = 1e-6
     
     # Truncation
     truncation_enabled: bool = False
@@ -127,10 +132,13 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.n_x = physics.get("n_x", 512)
     cfg.n_y = physics.get("n_y", 512)
     
-    # POD
-    pod = raw.get("pod", {})
-    cfg.r = pod.get("r", 100)
-    cfg.target_energy = pod.get("target_energy", 0.9999)
+    # Dimensionality reduction
+    reduction = raw.get("reduction", raw.get("pod", {}))  # fallback to 'pod' for compatibility
+    cfg.reduction_method = reduction.get("method", "linear")
+    cfg.r = reduction.get("r", 100)
+    cfg.target_energy = reduction.get("target_energy", 0.9999)
+    cfg.n_vectors_to_check = reduction.get("n_vectors_to_check", 200)
+    cfg.reg_magnitude = float(reduction.get("reg_magnitude", 1e-6))
     
     # Truncation
     trunc = raw.get("truncation", {})
@@ -187,7 +195,13 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
             "test_files": cfg.test_files,
         },
         "physics": {"dt": cfg.dt, "n_fields": cfg.n_fields, "n_x": cfg.n_x, "n_y": cfg.n_y},
-        "pod": {"r": cfg.r, "target_energy": cfg.target_energy},
+        "reduction": {
+            "method": cfg.reduction_method,
+            "r": cfg.r,
+            "target_energy": cfg.target_energy,
+            "n_vectors_to_check": cfg.n_vectors_to_check,
+            "reg_magnitude": cfg.reg_magnitude,
+        },
         "truncation": {
             "enabled": cfg.truncation_enabled,
             "method": cfg.truncation_method,
@@ -482,7 +496,10 @@ def print_config_summary(cfg: OpInfConfig):
     print(f"  Run name: {cfg.run_name or '(auto)'}")
     print(f"  Training files: {len(cfg.training_files)}")
     print(f"  Test files: {len(cfg.test_files)}")
-    print(f"  POD modes (r): {cfg.r}")
+    print(f"  Reduction: {cfg.reduction_method}, r={cfg.r}")
+    if cfg.reduction_method == "manifold":
+        print(f"    n_vectors_to_check: {cfg.n_vectors_to_check}")
+        print(f"    reg_magnitude: {cfg.reg_magnitude:.1e}")
     print(f"  Truncation: {'enabled' if cfg.truncation_enabled else 'disabled'}")
     print(f"  Centering: {'enabled' if cfg.centering_enabled else 'disabled'}")
     print(f"  Scaling: {'enabled' if cfg.scaling_enabled else 'disabled'}")

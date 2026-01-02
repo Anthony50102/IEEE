@@ -36,11 +36,20 @@ physics:
   n_y: 256               # Grid points in y
 
 # =============================================================================
-# POD SETTINGS
+# DIMENSIONALITY REDUCTION
 # =============================================================================
-pod:
-  r: 75                  # Number of POD modes to retain
-  target_energy: 0.9999  # Target retained energy (alternative to fixed r)
+# Two methods available:
+#   "linear"   - Standard POD (default)
+#   "manifold" - Quadratic manifold via greedy mode selection
+# =============================================================================
+reduction:
+  method: "linear"       # "linear" or "manifold"
+  r: 75                  # Number of modes to retain
+  target_energy: 0.9999  # Alternative to fixed r (uses whichever is smaller)
+  
+  # Quadratic manifold settings (only used if method="manifold")
+  n_vectors_to_check: 200  # Max candidates per greedy step
+  reg_magnitude: 1.0e-6    # Tikhonov regularization for coefficient solve
 
 # =============================================================================
 # DATA TRUNCATION
