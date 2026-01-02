@@ -1,33 +1,43 @@
 """
-Simplified POD Reconstruction Analysis
-======================================
-Bare-bones implementation following the workflow:
-1. Load data (Q)
-2. Compute Gamma_n, Gamma_c and verify against saved values
-3. Compute POD basis (Vr)
-4. Compute Q_approx = Vr @ Vr.T @ Q for different r values
-5. Estimate Gamma_n, Gamma_c from Q_approx
+POD Reconstruction Analysis
+===========================
+Analyzes POD reconstruction quality as a function of the number of modes.
+
+This script:
+1. Loads HW2D simulation data
+2. Verifies Gamma_n, Gamma_c computations match saved values
+3. Computes POD basis via Gram matrix eigendecomposition
+4. Analyzes reconstruction error vs number of modes (r)
+5. Compares gamma estimation accuracy from reconstructed states
+
+Configuration:
+    Edit DATA_FILE, R_VALUES, and NT_MAX below to customize analysis.
+
+Outputs:
+    - pod_reconstruction_YYYYMMDD_HHMMSS.log: Detailed analysis log
+    - pod_error_vs_r.png: Error metrics vs number of modes
+    - pod_gamma_timeseries.png: Time series comparison
 """
+
+import sys
+from pathlib import Path
+
+# Add project root to path for shared imports
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-# =============================================================================
-# LOGGING SETUP
-# =============================================================================
-LOG_FILE = f"pod_reconstruction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
-_log_fh = open(LOG_FILE, 'w')
-
-def log(msg=""):
-    print(msg)
-    print(msg, file=_log_fh, flush=True)
+from shared.physics import periodic_gradient, compute_gamma_n, compute_gamma_c
 
 # =============================================================================
 # CONFIGURATION
 # =============================================================================
-DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5" 
+# Path to HW2D simulation HDF5 file
+DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
 
 # Physical parameters
 k0 = 0.15
@@ -43,30 +53,27 @@ R_VALUES = [10, 25, 50, 75, 100, 150, 200]
 NT_MAX = 4000
 
 # =============================================================================
-# HELPER FUNCTIONS: Gradient computations
+# LOGGING SETUP
 # =============================================================================
-def periodic_gradient(field, dx, axis):
-    """Compute gradient with periodic boundary conditions."""
-    if axis == -1:  # x-direction
-        padded = np.pad(field, ((0, 0), (1, 1)), mode='wrap')
-        return (padded[:, 2:] - padded[:, :-2]) / (2 * dx)
-    elif axis == -2:  # y-direction
-        padded = np.pad(field, ((1, 1), (0, 0)), mode='wrap')
-        return (padded[2:, :] - padded[:-2, :]) / (2 * dx)
-    else:
-        raise ValueError(f"Unsupported axis: {axis}")
+LOG_FILE = f"pod_reconstruction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
 
 
-def compute_gamma_n(n, phi, dx):
-    """Compute Gamma_n = -<n * d(phi)/dy>."""
-    dphi_dy = periodic_gradient(phi, dx, axis=-2)
-    return -np.mean(n * dphi_dy)
+class Logger:
+    """Simple logger that writes to both console and file."""
+    
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.fh = open(filepath, 'w')
+    
+    def __call__(self, msg=""):
+        print(msg)
+        print(msg, file=self.fh, flush=True)
+    
+    def close(self):
+        self.fh.close()
 
 
-def compute_gamma_c(n, phi, c1):
-    """Compute flux Gamma_c = c1 * <(n - phi)^2>."""
-    return c1 * np.mean((n - phi) ** 2)
-
+log = Logger(LOG_FILE)
 
 # =============================================================================
 # STEP 1: LOAD DATA
@@ -75,9 +82,10 @@ log("=" * 60)
 log("STEP 1: Loading data")
 log("=" * 60)
 log(f"Log file: {LOG_FILE}")
+log(f"Data file: {DATA_FILE}")
 
 with xr.open_dataset(DATA_FILE, engine="h5netcdf", phony_dims="sort") as fh:
-    # Load density and phi, reshape to (nx*ny, nt) and stack
+    # Load density and phi
     density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
     phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
     
@@ -122,21 +130,19 @@ log(f"Max error in Gamma_n: {gamma_n_error:.6e}")
 log(f"Max error in Gamma_c: {gamma_c_error:.6e}")
 
 if gamma_n_error < 1e-10 and gamma_c_error < 1e-10:
-    log("Gamma computations match saved values!")
+    log("✓ Gamma computations match saved values!")
 else:
-    log("Warning: Gamma computations differ from saved values")
+    log("⚠ Warning: Gamma computations differ from saved values")
 
 # =============================================================================
 # STEP 3: COMPUTE POD BASIS
 # =============================================================================
 log("")
 log("=" * 60)
-log("STEP 3: Computing POD basis")
+log("STEP 3: Computing POD basis via Gram matrix")
 log("=" * 60)
 
-# Method: SVD of Q directly, or eigendecomposition of Q^T Q (Gram matrix)
 # Using Gram matrix approach (more efficient when nx*ny >> nt)
-
 D = Q.T @ Q  # Gram matrix, shape (nt, nt)
 log(f"Gram matrix shape: {D.shape}")
 
@@ -153,9 +159,9 @@ total_energy = np.sum(eigs)
 cumulative_energy = np.cumsum(eigs) / total_energy
 
 log(f"Total energy (sum of eigenvalues): {total_energy:.6e}")
-log(f"Energy captured by first 10 modes: {cumulative_energy[9]*100:.2f}%")
-log(f"Energy captured by first 50 modes: {cumulative_energy[49]*100:.2f}%")
-log(f"Energy captured by first 100 modes: {cumulative_energy[99]*100:.2f}%")
+log(f"Energy captured by first 10 modes:  {cumulative_energy[9]*100:>8.4f}%")
+log(f"Energy captured by first 50 modes:  {cumulative_energy[49]*100:>8.4f}%")
+log(f"Energy captured by first 100 modes: {cumulative_energy[99]*100:>8.4f}%")
 
 # =============================================================================
 # STEP 4: RECONSTRUCTION FOR DIFFERENT r VALUES
@@ -272,8 +278,8 @@ axes1[0].set_ylabel('Reconstruction error (%)')
 axes1[0].set_title('State Reconstruction Error')
 axes1[0].grid(True, alpha=0.3)
 
-axes1[1].semilogy(r_vals, gamma_n_errors, 'o-', label='Gamma_n', linewidth=2, markersize=8)
-axes1[1].semilogy(r_vals, gamma_c_errors, 's-', label='Gamma_c', linewidth=2, markersize=8)
+axes1[1].semilogy(r_vals, gamma_n_errors, 'o-', label=r'$\Gamma_n$', linewidth=2, markersize=8)
+axes1[1].semilogy(r_vals, gamma_c_errors, 's-', label=r'$\Gamma_c$', linewidth=2, markersize=8)
 axes1[1].set_xlabel('Number of modes (r)')
 axes1[1].set_ylabel('Relative error (%)')
 axes1[1].set_title('Gamma Estimation Error')
@@ -298,17 +304,17 @@ fig2, axes2 = plt.subplots(2, 1, figsize=(12, 8))
 axes2[0].plot(gt_gamma_n, 'k-', label='Ground truth', linewidth=1.5, alpha=0.8)
 for r in r_to_plot:
     axes2[0].plot(results[r]['gamma_n'], '--', label=f'r={r}', alpha=0.8)
-axes2[0].set_ylabel('Gamma_n')
-axes2[0].set_title('Gamma_n')
+axes2[0].set_ylabel(r'$\Gamma_n$')
+axes2[0].set_title(r'Particle Flux $\Gamma_n$')
 axes2[0].legend()
 axes2[0].grid(True, alpha=0.3)
 
 axes2[1].plot(gt_gamma_c, 'k-', label='Ground truth', linewidth=1.5, alpha=0.8)
 for r in r_to_plot:
     axes2[1].plot(results[r]['gamma_c'], '--', label=f'r={r}', alpha=0.8)
-axes2[1].set_ylabel('Gamma_c')
+axes2[1].set_ylabel(r'$\Gamma_c$')
 axes2[1].set_xlabel('Time step')
-axes2[1].set_title('Gamma_c')
+axes2[1].set_title(r'Conductive Flux $\Gamma_c$')
 axes2[1].legend()
 axes2[1].grid(True, alpha=0.3)
 
@@ -318,8 +324,13 @@ log("Saved: pod_gamma_timeseries.png")
 
 plt.show()
 
+# =============================================================================
+# CLEANUP
+# =============================================================================
 log("")
 log("=" * 60)
 log("DONE")
 log("=" * 60)
 log(f"Full log saved to: {LOG_FILE}")
+
+log.close()

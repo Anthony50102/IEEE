@@ -1,0 +1,113 @@
+run_name: "local_1train_5test"
+
+# =============================================================================
+# DATA PATHS
+# =============================================================================
+paths:
+  output_base: "/scratch/user/output/"       # Base directory for outputs
+  data_dir: "/scratch/user/data/hw2d/"       # Directory containing HDF5 files
+  
+  training_files:
+    - simulation_001.h5
+  
+  test_files:
+    - simulation_002.h5
+    - simulation_003.h5
+
+# =============================================================================
+# PHYSICS PARAMETERS
+# =============================================================================
+physics:
+  dt: 0.025              # Simulation time step
+  n_fields: 2            # Number of fields (e.g., density, phi)
+  n_x: 256               # Grid points in x
+  n_y: 256               # Grid points in y
+
+# =============================================================================
+# POD SETTINGS
+# =============================================================================
+pod:
+  r: 75                  # Number of POD modes to retain
+  target_energy: 0.9999  # Target retained energy (alternative to fixed r)
+
+# =============================================================================
+# DATA TRUNCATION
+# =============================================================================
+truncation:
+  enabled: true          # Enable time truncation of trajectories
+  method: "time"         # "time" (seconds) or "snapshots" (count)
+  time: 200.0            # Truncate to this simulation time
+  snapshots: null        # Or truncate to this many snapshots
+
+# =============================================================================
+# PREPROCESSING
+# =============================================================================
+preprocessing:
+  centering: true        # Subtract temporal mean (RECOMMENDED for POD)
+  scaling: false         # Normalize each field to [-1, 1]
+
+# =============================================================================
+# TRAINING PARAMETERS
+# =============================================================================
+training:
+  training_end: 8000     # Index marking end of training region (for error calc)
+  n_steps: 8000          # Number of time steps for ROM integration
+
+# =============================================================================
+# REGULARIZATION PARAMETER GRIDS
+# =============================================================================
+# The OpInf optimization uses Tikhonov regularization:
+#   min ||D @ O - Y||_F^2 + α_lin ||O_lin||_F^2 + α_quad ||O_quad||_F^2
+#
+# The grid search explores all combinations of these parameters.
+# Total combinations = num(state_lin) × num(state_quad) × num(output_lin) × num(output_quad)
+# =============================================================================
+regularization:
+  state_lin:
+    min: 1.0e0
+    max: 1.0e7
+    num: 10
+    scale: "log"         # "linear" or "log"
+  
+  state_quad:
+    min: 1.0e4
+    max: 1.0e12
+    num: 10
+    scale: "log"
+  
+  output_lin:
+    min: 1.0e-2
+    max: 1.0e4
+    num: 10
+    scale: "log"
+  
+  output_quad:
+    min: 1.0e-2
+    max: 1.0e6
+    num: 10
+    scale: "log"
+
+# =============================================================================
+# MODEL SELECTION
+# =============================================================================
+# After hyperparameter sweep, models meeting BOTH threshold criteria are kept.
+# All four error metrics (mean_n, std_n, mean_c, std_c) must be below thresholds.
+# =============================================================================
+model_selection:
+  threshold_mean: 0.05   # Max 5% error in mean statistics
+  threshold_std: 0.20    # Max 20% error in std statistics
+
+# =============================================================================
+# EVALUATION OPTIONS
+# =============================================================================
+evaluation:
+  save_predictions: true # Save ensemble predictions to disk
+  generate_plots: true   # Generate diagnostic plots
+
+# =============================================================================
+# EXECUTION OPTIONS
+# =============================================================================
+execution:
+  verbose: true          # Print progress information
+  log_level: "INFO"      # DEBUG, INFO, WARNING, ERROR
+  engine: "h5netcdf"     # HDF5 engine for xarray
