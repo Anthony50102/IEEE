@@ -22,16 +22,19 @@ Outputs:
 import sys
 from pathlib import Path
 
+print("DEBUG: RESOLVING PATH")
 # Add project root to path for shared imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+print("DEBUG: RESOLVED PATH")
 
-import numpy as np
-import xarray as xr
-import matplotlib.pyplot as plt
-from datetime import datetime
-
-from shared.physics import periodic_gradient, compute_gamma_n, compute_gamma_c
+print("DEBUG: IMPORTS")
+print("importing numpy"); import numpy as np
+print("importing xarray"); import xarray as xr
+print("importing matplotlib"); import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+print("importing shared.physics"); from shared.physics import periodic_gradient, compute_gamma_n, compute_gamma_c
+print("done imports")
+print("DEBUG: FINISHED THE IMPORTS")
 
 # =============================================================================
 # CONFIGURATION
@@ -73,12 +76,13 @@ class Logger:
     def close(self):
         self.fh.close()
 
-
+print("DEBUG: LOG FILE")  
 log = Logger(LOG_FILE)
 
 # =============================================================================
 # STEP 1: LOAD DATA
 # =============================================================================
+print("DEBUG: LOAD THE DATA")
 log("=" * 60)
 log("STEP 1: Loading data")
 log("=" * 60)
