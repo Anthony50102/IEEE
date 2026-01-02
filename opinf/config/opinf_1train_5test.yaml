@@ -21,9 +21,12 @@ physics:
   n_x: 256                      # Grid points in x
   n_y: 256                      # Grid points in y
 
-pod:
-  r: 75                        # Number of POD modes to retain
-  target_energy: 0.9999  
+reduction:
+  method: "linear"       # "linear" or "manifold"
+  r: 75                  # Number of modes to retain
+  target_energy: 0.9999  # Alternative to fixed r
+  n_vectors_to_check: 200  # For manifold only
+  reg_magnitude: 1.0e-6    # For manifold only
   
 truncation:
   enabled: true                 # Enable/disable truncation
