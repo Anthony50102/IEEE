@@ -69,7 +69,7 @@ run_step_1() {
     echo "Config: $CONFIG"
     echo "Nodes: $SLURM_NNODES, Tasks: $SLURM_NTASKS"
     
-    ibrun -n $SLURM_NTASKS python3 opinf_refactored/step_1_preprocess.py \
+    ibrun -n $SLURM_NTASKS python3 opinf/step_1_preprocess.py \
         --config "$CONFIG" \
         --save-pod-energy
     
@@ -88,7 +88,7 @@ run_step_2() {
         exit 1
     fi
     
-    ibrun -n $SLURM_NTASKS python3 opinf_refactored/step_2_train.py \
+    ibrun -n $SLURM_NTASKS python3 opinf/step_2_train.py \
         --config "$CONFIG" \
         --run-dir "$RUN_DIR"
 }
@@ -103,7 +103,7 @@ run_step_3() {
         exit 1
     fi
     
-    python3 opinf_refactored/step_3_evaluate.py \
+    python3 opinf/step_3_evaluate.py \
         --config "$CONFIG" \
         --run-dir "$RUN_DIR"
 }
