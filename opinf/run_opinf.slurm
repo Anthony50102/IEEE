@@ -23,9 +23,9 @@
 #SBATCH -o opinf_%j.out
 #SBATCH -e opinf_%j.err
 #SBATCH -p normal
-#SBATCH -N 1
-#SBATCH -n 56
-#SBATCH --cpus-per-task=1
+#SBATCH -N 4 # Increase for step 1
+#SBATCH -n 16
+#SBATCH --cpus-per-task=14
 #SBATCH -t 04:00:00
 
 set -e
@@ -51,7 +51,7 @@ cd $WORK/repos/IEEE
 pip install -q -c frontera_pip_constraints.txt h5netcdf
 
 # Set environment
-export OMP_NUM_THREADS=1
+export OMP_NUM_THREADS=14
 
 # =============================================================================
 # Functions
@@ -69,7 +69,7 @@ run_step_1() {
     echo "Config: $CONFIG"
     echo "Nodes: $SLURM_NNODES, Tasks: $SLURM_NTASKS"
     
-    ibrun -n $SLURM_NTASKS python3 opinf_refactored/step_1_preprocess.py \
+    ibrun -n $SLURM_NTASKS python3 opinf/step_1_preprocess.py \
         --config "$CONFIG" \
         --save-pod-energy
     
@@ -88,7 +88,7 @@ run_step_2() {
         exit 1
     fi
     
-    ibrun -n $SLURM_NTASKS python3 opinf_refactored/step_2_train.py \
+    ibrun -n $SLURM_NTASKS python3 opinf/step_2_train.py \
         --config "$CONFIG" \
         --run-dir "$RUN_DIR"
 }
@@ -103,7 +103,7 @@ run_step_3() {
         exit 1
     fi
     
-    python3 opinf_refactored/step_3_evaluate.py \
+    python3 opinf/step_3_evaluate.py \
         --config "$CONFIG" \
         --run-dir "$RUN_DIR"
 }

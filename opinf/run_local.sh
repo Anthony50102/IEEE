@@ -31,7 +31,7 @@ print_header() {
 
 run_step_1() {
     print_header "STEP 1: Preprocessing and POD"
-    mpirun -n $N_PROCS python3 opinf_refactored/step_1_preprocess.py \
+    mpirun -n $N_PROCS python3 opinf/step_1_preprocess.py \
         --config "$CONFIG" \
         --save-pod-energy
 }
@@ -42,7 +42,7 @@ run_step_2() {
         echo "ERROR: Run directory required for Step 2"
         exit 1
     fi
-    mpirun -n $N_PROCS python3 opinf_refactored/step_2_train.py \
+    mpirun -n $N_PROCS python3 opinf/step_2_train.py \
         --config "$CONFIG" \
         --run-dir "$RUN_DIR"
 }
@@ -53,7 +53,7 @@ run_step_3() {
         echo "ERROR: Run directory required for Step 3"
         exit 1
     fi
-    python3 opinf_refactored/step_3_evaluate.py \
+    python3 opinf/step_3_evaluate.py \
         --config "$CONFIG" \
         --run-dir "$RUN_DIR"
 }
