@@ -32,11 +32,3 @@ Edit the script directly to change:
 cd /path/to/IEEE/analysis
 python pod_reconstruction.py
 ```
-
-## Adding New Analysis Scripts
-
-When adding new analysis scripts:
-1. Include a docstring explaining the purpose
-2. Document any hardcoded paths or parameters
-3. Save outputs to the current working directory
-4. Consider using the `shared/` utilities for common operations

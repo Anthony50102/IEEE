@@ -264,7 +264,7 @@ log("=" * 60)
 log("Using POD basis to reconstruct initial condition from test set")
 log("Using SVD-based POD for this step")
 log("=" * 60)
-with xr.open_dataset(DATA_FILE, engine="h5netcdf", phony_dims="sort") as fh:
+with xr.open_dataset(TEST_FILE, engine="h5netcdf", phony_dims="sort") as fh:
     # Load density and phi
     density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
     phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
