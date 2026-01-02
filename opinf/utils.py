@@ -1,235 +1,37 @@
 """
-Pipeline Utilities for Operator Inference ROM.
+Utility functions for the OpInf pipeline.
 
-This module provides shared utilities for the OpInf pipeline:
+This module provides shared utilities:
 - Configuration loading and validation
 - Run directory management
 - Logging setup
-- Common data structures
+- Data loading utilities
+- Step status tracking
 
 Author: Anthony Poole
 """
 
 import os
 import yaml
-import shutil
 import logging
+import gc
 import h5py
 import xarray as xr
 import numpy as np
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
-
-#TODO: Clean this part
-# gets non-redundant quadratic terms of X
-def get_x_sq(X):
-    if len(np.shape(X)) == 1:  # if X is a vector
-        r = np.size(X)
-        prods = []
-        for i in range(r):
-            temp = X[i] * X[i:]
-            prods.append(temp)
-        X2 = np.concatenate(tuple(prods))
-
-    elif len(np.shape(X)) == 2:  # if X is a matrix
-        K, r = np.shape(X)
-
-        prods = []
-        for i in range(r):
-            temp = np.transpose(np.broadcast_to(X[:, i], (r - i, K))) * X[:, i:]
-            prods.append(temp)
-        X2 = np.concatenate(tuple(prods), axis=1)
-
-    else:
-        print("invalid input size for helpers.get_x_sq")
-    return X2
-
-def solve_opinf_difference_model(s0: np.ndarray, n_steps: int, f: callable):
-    """
-    Integrate a discrete-time dynamical system forward.
-    
-    Solves the difference equation: s_{k+1} = f(s_k)
-    
-    Parameters
-    ----------
-    s0 : np.ndarray
-        Initial state vector of shape (r,).
-    n_steps : int
-        Number of time steps to integrate.
-    f : callable
-        State transition function f: R^r -> R^r.
-    
-    Returns
-    -------
-    is_nan : bool
-        True if NaN values were encountered during integration.
-    s : np.ndarray
-        State trajectory of shape (r, n_steps).
-    
-    Examples
-    --------
-    >>> A = np.array([[0.9, 0.1], [-0.1, 0.9]])
-    >>> f = lambda x: A @ x
-    >>> s0 = np.array([1.0, 0.0])
-    >>> is_nan, trajectory = solve_opinf_difference_model(s0, 100, f)
-    """
-    r = np.size(s0)
-    s = np.zeros((r, n_steps))
-    is_nan = False
-
-    s[:, 0] = s0
-    for i in range(n_steps - 1):
-        s[:, i + 1] = f(s[:, i])
-
-        if np.any(np.isnan(s[:, i + 1])):
-            print(f"NaN encountered at iteration {i + 1}")
-            is_nan = True
-            break
-
-    return is_nan, s
-
-# =============================================================================
-# MEMORY-MAPPED FILE UTILITIES
-# =============================================================================
-
-def get_memmap_path(output_path: str, name: str) -> str:
-    """
-    Get full path for a memory-mapped file.
-    
-    Parameters
-    ----------
-    output_path : str
-        Directory where memmap files are stored.
-    name : str
-        Base name for the memmap file.
-    
-    Returns
-    -------
-    str
-        Full path to memmap file.
-    """
-    return os.path.join(output_path, f"memmap_{name}.dat")
-
-
-def cleanup_memmap(output_path: str, name: str) -> None:
-    """
-    Remove a memory-mapped file if it exists.
-    
-    Parameters
-    ----------
-    output_path : str
-        Directory where memmap files are stored.
-    name : str
-        Base name for the memmap file.
-    """
-    path = get_memmap_path(output_path, name)
-    if os.path.exists(path):
-        os.remove(path)
-
-def loader(path, ENGINE="h5netcdf"):
-    try:
-        fh = xr.open_dataset(path, engine=ENGINE)
-        return fh
-    except Exception as e:
-        print(f"\033[91m ERROR: Could not open file {path}: {e} \033[0m")
-        print("  Retrying with phony_dims='sort'...")
-        try:
-            fh = xr.open_dataset(path, engine=ENGINE, phony_dims="sort")
-            return fh
-        except Exception as e:
-            print(f"\033[91m ERROR: Could not open file {path} with phony_dims: {e} \033[0m")
-
-def get_dt_from_file(file_path: str, default: float = 0.025) -> float:
-    """
-    Extract time step (dt) from HDF5 file attributes.
-    
-    Searches common attribute locations in the HDF5 file structure.
-    
-    Parameters
-    ----------
-    file_path : str
-        Path to the HDF5 file.
-    default : float, optional
-        Default dt value if not found in file. Default is 0.025.
-    
-    Returns
-    -------
-    float
-        Time step value.
-    """
-    try:
-        with h5py.File(file_path, 'r') as f:
-            # Check root attributes
-            if 'dt' in f.attrs:
-                return float(f.attrs['dt'])
-            if 'dt' in f:
-                return float(f['dt'][()])
-            
-            # Check common group locations
-            for group_name in ['params', 'metadata', 'parameters']:
-                if group_name in f:
-                    grp = f[group_name]
-                    if 'dt' in grp.attrs:
-                        return float(grp.attrs['dt'])
-                    if 'dt' in grp:
-                        return float(grp['dt'][()])
-    except Exception as e:
-        print(f"  Warning: Could not read dt from {file_path}: {e}")
-    
-    return default
-
-def compute_truncation_snapshots(
-    file_path: str,
-    truncate_snapshots: int = None,
-    truncate_time: float = None,
-    default_dt: float = 0.025
-) -> int:
-    """
-    Compute number of snapshots to keep based on truncation settings.
-    
-    Parameters
-    ----------
-    file_path : str
-        Path to data file (used to extract dt).
-    truncate_snapshots : int, optional
-        Direct number of snapshots to keep.
-    truncate_time : float, optional
-        Simulation time to keep (converted to snapshots using dt).
-    default_dt : float, optional
-        Default time step if not found in file.
-    
-    Returns
-    -------
-    int or None
-        Number of snapshots to keep, or None if no truncation.
-    
-    Notes
-    -----
-    If both truncate_snapshots and truncate_time are provided,
-    truncate_snapshots takes priority.
-    """
-    if truncate_snapshots is not None:
-        return truncate_snapshots
-    elif truncate_time is not None:
-        dt = get_dt_from_file(file_path, default_dt)
-        n_snaps = int(truncate_time / dt)
-        print(f"    Using dt={dt:.4f} -> {n_snaps} snapshots for t={truncate_time}")
-        return n_snaps
-    return None
+from typing import List, Optional
+from mpi4py import MPI
 
 
 # =============================================================================
-# CONFIGURATION DATACLASS
+# CONFIGURATION
 # =============================================================================
 
 @dataclass
-class PipelineConfig:
-    """
-    Configuration container for the OpInf pipeline.
+class OpInfConfig:
+    """Configuration container for the OpInf pipeline."""
     
-    Attributes are organized by category matching the YAML structure.
-    """
     # Run identification
     run_name: str = ""
     run_dir: str = ""
@@ -248,7 +50,7 @@ class PipelineConfig:
     
     # POD
     r: int = 100
-    svd_save: int = 100
+    target_energy: float = 0.9999
     
     # Truncation
     truncation_enabled: bool = False
@@ -256,28 +58,25 @@ class PipelineConfig:
     truncation_snapshots: Optional[int] = None
     truncation_time: Optional[float] = None
     
-    # Preprocessing (centering and scaling)
-    centering_enabled: bool = True    # Center data before POD (subtract temporal mean)
-    scaling_enabled: bool = False     # Scale each field to [-1, 1] after centering
+    # Preprocessing
+    centering_enabled: bool = True
+    scaling_enabled: bool = False
     
     # Training
     training_end: int = 5000
     n_steps: int = 16001
     
-    # Regularization
+    # Regularization grids
     state_lin: np.ndarray = field(default_factory=lambda: np.array([]))
     state_quad: np.ndarray = field(default_factory=lambda: np.array([]))
     output_lin: np.ndarray = field(default_factory=lambda: np.array([]))
     output_quad: np.ndarray = field(default_factory=lambda: np.array([]))
     
-    # Model selection
-    selection_method: str = "threshold"
-    num_top_models: int = 20
+    # Model selection (threshold-based)
     threshold_mean: float = 0.05
     threshold_std: float = 0.30
     
     # Evaluation
-    compute_full_state: bool = False
     save_predictions: bool = True
     generate_plots: bool = True
     
@@ -290,46 +89,22 @@ class PipelineConfig:
 def _build_reg_array(reg_config: dict) -> np.ndarray:
     """Build regularization parameter array from config dict."""
     scale = reg_config.get("scale", "linear")
-    
-    # Convert to float to handle string inputs from YAML
     min_val = float(reg_config["min"])
     max_val = float(reg_config["max"])
     num_val = int(reg_config["num"])
     
     if scale == "log":
-        return np.logspace(
-            np.log10(min_val),
-            np.log10(max_val),
-            num_val
-        )
+        return np.logspace(np.log10(min_val), np.log10(max_val), num_val)
     else:
-        return np.linspace(
-            min_val,
-            max_val,
-            num_val
-        )
+        return np.linspace(min_val, max_val, num_val)
 
 
-def load_config(config_path: str) -> PipelineConfig:
-    """
-    Load configuration from YAML file.
-    
-    Parameters
-    ----------
-    config_path : str
-        Path to YAML configuration file.
-    
-    Returns
-    -------
-    PipelineConfig
-        Populated configuration object.
-    """
+def load_config(config_path: str) -> OpInfConfig:
+    """Load configuration from YAML file."""
     with open(config_path, 'r') as f:
         raw = yaml.safe_load(f)
     
-    cfg = PipelineConfig()
-    
-    # Run identification
+    cfg = OpInfConfig()
     cfg.run_name = raw.get("run_name", "")
     
     # Paths
@@ -355,7 +130,7 @@ def load_config(config_path: str) -> PipelineConfig:
     # POD
     pod = raw.get("pod", {})
     cfg.r = pod.get("r", 100)
-    cfg.svd_save = pod.get("svd_save", 100)
+    cfg.target_energy = pod.get("target_energy", 0.9999)
     
     # Truncation
     trunc = raw.get("truncation", {})
@@ -364,10 +139,10 @@ def load_config(config_path: str) -> PipelineConfig:
     cfg.truncation_snapshots = trunc.get("snapshots")
     cfg.truncation_time = trunc.get("time")
     
-    # Preprocessing (centering and scaling)
+    # Preprocessing
     preproc = raw.get("preprocessing", {})
-    cfg.centering_enabled = preproc.get("centering", True)  # Default: True (recommended for POD)
-    cfg.scaling_enabled = preproc.get("scaling", False)     # Default: False
+    cfg.centering_enabled = preproc.get("centering", True)
+    cfg.scaling_enabled = preproc.get("scaling", False)
     
     # Training
     training = raw.get("training", {})
@@ -383,14 +158,11 @@ def load_config(config_path: str) -> PipelineConfig:
     
     # Model selection
     selection = raw.get("model_selection", {})
-    cfg.selection_method = selection.get("method", "threshold")
-    cfg.num_top_models = selection.get("num_top_models", 20)
     cfg.threshold_mean = selection.get("threshold_mean", 0.05)
     cfg.threshold_std = selection.get("threshold_std", 0.30)
     
     # Evaluation
     evaluation = raw.get("evaluation", {})
-    cfg.compute_full_state = evaluation.get("compute_full_state", False)
     cfg.save_predictions = evaluation.get("save_predictions", True)
     cfg.generate_plots = evaluation.get("generate_plots", True)
     
@@ -403,29 +175,8 @@ def load_config(config_path: str) -> PipelineConfig:
     return cfg
 
 
-def save_config(cfg: PipelineConfig, output_path: str, step_name: str = None) -> str:
-    """
-    Save configuration to YAML file.
-    
-    Each step should save its own version of the config with a step-specific
-    filename so we can track exactly which config was used for each step.
-    
-    Parameters
-    ----------
-    cfg : PipelineConfig
-        Configuration object.
-    output_path : str
-        Directory to save configuration.
-    step_name : str, optional
-        Name of the step (e.g., "step_1", "step_2", "step_3").
-        If provided, saves to config_<step_name>.yaml.
-        If None, saves to config.yaml for backward compatibility.
-    
-    Returns
-    -------
-    str
-        Path to saved configuration file.
-    """
+def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> str:
+    """Save configuration to YAML file."""
     config_dict = {
         "run_name": cfg.run_name,
         "run_dir": cfg.run_dir,
@@ -435,30 +186,16 @@ def save_config(cfg: PipelineConfig, output_path: str, step_name: str = None) ->
             "training_files": cfg.training_files,
             "test_files": cfg.test_files,
         },
-        "physics": {
-            "dt": cfg.dt,
-            "n_fields": cfg.n_fields,
-            "n_x": cfg.n_x,
-            "n_y": cfg.n_y,
-        },
-        "pod": {
-            "r": cfg.r,
-            "svd_save": cfg.svd_save,
-        },
+        "physics": {"dt": cfg.dt, "n_fields": cfg.n_fields, "n_x": cfg.n_x, "n_y": cfg.n_y},
+        "pod": {"r": cfg.r, "target_energy": cfg.target_energy},
         "truncation": {
             "enabled": cfg.truncation_enabled,
             "method": cfg.truncation_method,
             "snapshots": cfg.truncation_snapshots,
             "time": cfg.truncation_time,
         },
-        "preprocessing": {
-            "centering": cfg.centering_enabled,
-            "scaling": cfg.scaling_enabled,
-        },
-        "training": {
-            "training_end": cfg.training_end,
-            "n_steps": cfg.n_steps,
-        },
+        "preprocessing": {"centering": cfg.centering_enabled, "scaling": cfg.scaling_enabled},
+        "training": {"training_end": cfg.training_end, "n_steps": cfg.n_steps},
         "regularization": {
             "state_lin": cfg.state_lin.tolist(),
             "state_quad": cfg.state_quad.tolist(),
@@ -466,30 +203,16 @@ def save_config(cfg: PipelineConfig, output_path: str, step_name: str = None) ->
             "output_quad": cfg.output_quad.tolist(),
         },
         "model_selection": {
-            "method": cfg.selection_method,
-            "num_top_models": cfg.num_top_models,
             "threshold_mean": cfg.threshold_mean,
             "threshold_std": cfg.threshold_std,
         },
-        "evaluation": {
-            "compute_full_state": cfg.compute_full_state,
-            "save_predictions": cfg.save_predictions,
-            "generate_plots": cfg.generate_plots,
-        },
-        "execution": {
-            "verbose": cfg.verbose,
-            "log_level": cfg.log_level,
-            "engine": cfg.engine,
-        },
+        "evaluation": {"save_predictions": cfg.save_predictions, "generate_plots": cfg.generate_plots},
+        "execution": {"verbose": cfg.verbose, "log_level": cfg.log_level, "engine": cfg.engine},
     }
     
-    # Determine filename based on step_name
-    if step_name:
-        filename = f"config_{step_name}.yaml"
-    else:
-        filename = "config.yaml"
-    
+    filename = f"config_{step_name}.yaml" if step_name else "config.yaml"
     filepath = os.path.join(output_path, filename)
+    
     with open(filepath, 'w') as f:
         yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
     
@@ -500,117 +223,54 @@ def save_config(cfg: PipelineConfig, output_path: str, step_name: str = None) ->
 # RUN DIRECTORY MANAGEMENT
 # =============================================================================
 
-def create_run_directory(cfg: PipelineConfig) -> str:
-    """
-    Create a new run directory with timestamp.
-    
-    Parameters
-    ----------
-    cfg : PipelineConfig
-        Configuration object.
-    
-    Returns
-    -------
-    str
-        Path to the created run directory.
-    """
+def create_run_directory(cfg: OpInfConfig) -> str:
+    """Create a new run directory with timestamp."""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    
-    if cfg.run_name:
-        dir_name = f"{timestamp}_{cfg.run_name}"
-    else:
-        dir_name = timestamp
-    
+    dir_name = f"{timestamp}_{cfg.run_name}" if cfg.run_name else timestamp
     run_dir = os.path.join(cfg.output_base, dir_name)
     os.makedirs(run_dir, exist_ok=True)
-    
-    # Update config with run directory
     cfg.run_dir = run_dir
-    
     return run_dir
 
 
-def get_run_directory(cfg: PipelineConfig, run_dir: str = None) -> str:
-    """
-    Get or create run directory.
-    
-    If run_dir is provided, use it (for continuing from previous step).
-    Otherwise, create a new timestamped directory.
-    
-    Parameters
-    ----------
-    cfg : PipelineConfig
-        Configuration object.
-    run_dir : str, optional
-        Existing run directory to use.
-    
-    Returns
-    -------
-    str
-        Path to run directory.
-    """
+def get_run_directory(cfg: OpInfConfig, run_dir: str = None) -> str:
+    """Get or create run directory."""
     if run_dir and os.path.isdir(run_dir):
         cfg.run_dir = run_dir
         return run_dir
-    else:
-        return create_run_directory(cfg)
+    return create_run_directory(cfg)
 
-#TODO: Make this better, probaly don't need two methods for thsi
-def get_data_directory(cfg: PipelineConfig, data_dir: str = None) -> str:
-    """
-    Get or create run directory.
-    
-    If run_dir is provided, use it (for continuing from previous step).
-    Otherwise, create a new timestamped directory.
-    
-    Parameters
-    ----------
-    cfg : PipelineConfig
-        Configuration object.
-    run_dir : str, optional
-        Existing run directory to use.
-    
-    Returns
-    -------
-    str
-        Path to run directory.
-    """
-    if data_dir and os.path.isdir(data_dir):
-        cfg.data_dir = data_dir
-        return data_dir
-    else:
-        print(f"No directory found at data dir: {data_dir}")
+
+def get_output_paths(run_dir: str) -> dict:
+    """Get standard output file paths for a run."""
+    return {
+        # Step 1 outputs
+        "pod_file": os.path.join(run_dir, "POD.npz"),
+        "pod_basis": os.path.join(run_dir, "POD_basis_Ur.npy"),
+        "xhat_train": os.path.join(run_dir, "X_hat_train.npy"),
+        "xhat_test": os.path.join(run_dir, "X_hat_test.npy"),
+        "boundaries": os.path.join(run_dir, "data_boundaries.npz"),
+        "initial_conditions": os.path.join(run_dir, "initial_conditions.npz"),
+        "gamma_ref": os.path.join(run_dir, "gamma_reference.npz"),
+        "learning_matrices": os.path.join(run_dir, "learning_matrices.npz"),
+        "preprocessing_info": os.path.join(run_dir, "preprocessing_info.npz"),
+        # Step 2 outputs
+        "ensemble_models": os.path.join(run_dir, "ensemble_models.npz"),
+        "sweep_results": os.path.join(run_dir, "sweep_results.npz"),
+        "operators_dir": os.path.join(run_dir, "operators"),
+        # Step 3 outputs
+        "predictions": os.path.join(run_dir, "ensemble_predictions.npz"),
+        "metrics": os.path.join(run_dir, "evaluation_metrics.yaml"),
+        "figures_dir": os.path.join(run_dir, "figures"),
+    }
 
 
 # =============================================================================
 # LOGGING
 # =============================================================================
 
-def setup_logging(
-    name: str,
-    run_dir: str,
-    log_level: str = "INFO",
-    rank: int = 0
-) -> logging.Logger:
-    """
-    Set up logging for a pipeline step.
-    
-    Parameters
-    ----------
-    name : str
-        Logger name (usually step name).
-    run_dir : str
-        Run directory for log file.
-    log_level : str
-        Logging level.
-    rank : int
-        MPI rank (for parallel execution).
-    
-    Returns
-    -------
-    logging.Logger
-        Configured logger.
-    """
+def setup_logging(name: str, run_dir: str, log_level: str = "INFO", rank: int = 0) -> logging.Logger:
+    """Set up logging for a pipeline step."""
     logger = logging.getLogger(name)
     logger.setLevel(getattr(logging, log_level.upper()))
     logger.handlers = []
@@ -626,7 +286,7 @@ def setup_logging(
     console.setFormatter(formatter)
     logger.addHandler(console)
     
-    # File handler (only rank 0 in parallel)
+    # File handler (only rank 0)
     if rank == 0 and run_dir:
         log_file = os.path.join(run_dir, f"{name}.log")
         file_handler = logging.FileHandler(log_file, mode='a')
@@ -637,114 +297,172 @@ def setup_logging(
     return logger
 
 
+class DummyLogger:
+    """Silent logger for non-root MPI ranks."""
+    def info(self, *a, **kw): pass
+    def error(self, *a, **kw): pass
+    def warning(self, *a, **kw): pass
+    def debug(self, *a, **kw): pass
+
+
 # =============================================================================
 # STEP STATUS TRACKING
 # =============================================================================
 
 def save_step_status(run_dir: str, step: str, status: str, metadata: dict = None):
-    """
-    Save step completion status.
-    
-    Parameters
-    ----------
-    run_dir : str
-        Run directory.
-    step : str
-        Step name (e.g., "step_1", "step_2").
-    status : str
-        Status ("completed", "failed", "running").
-    metadata : dict, optional
-        Additional metadata to save.
-    """
+    """Save step completion status."""
     status_file = os.path.join(run_dir, "pipeline_status.yaml")
     
-    # Load existing status or create new
     if os.path.exists(status_file):
         with open(status_file, 'r') as f:
             status_data = yaml.safe_load(f) or {}
     else:
         status_data = {}
     
-    # Update status
-    status_data[step] = {
-        "status": status,
-        "timestamp": datetime.now().isoformat(),
-    }
+    status_data[step] = {"status": status, "timestamp": datetime.now().isoformat()}
     if metadata:
         status_data[step].update(metadata)
     
-    # Save
     with open(status_file, 'w') as f:
         yaml.dump(status_data, f, default_flow_style=False)
 
 
-def load_step_status(run_dir: str) -> dict:
-    """
-    Load pipeline status.
-    
-    Parameters
-    ----------
-    run_dir : str
-        Run directory.
-    
-    Returns
-    -------
-    dict
-        Status dictionary.
-    """
+def check_step_completed(run_dir: str, step: str) -> bool:
+    """Check if a step has completed successfully."""
     status_file = os.path.join(run_dir, "pipeline_status.yaml")
     if os.path.exists(status_file):
         with open(status_file, 'r') as f:
-            return yaml.safe_load(f) or {}
-    return {}
-
-
-def check_step_completed(run_dir: str, step: str) -> bool:
-    """Check if a step has completed successfully."""
-    status = load_step_status(run_dir)
-    return status.get(step, {}).get("status") == "completed"
+            status_data = yaml.safe_load(f) or {}
+        return status_data.get(step, {}).get("status") == "completed"
+    return False
 
 
 # =============================================================================
-# DATA FILE PATHS
+# DATA LOADING UTILITIES
 # =============================================================================
 
-def get_output_paths(run_dir: str) -> dict:
-    """
-    Get standard output file paths for a run.
+def get_dt_from_file(file_path: str, default: float = 0.025) -> float:
+    """Extract time step (dt) from HDF5 file attributes."""
+    try:
+        with h5py.File(file_path, 'r') as f:
+            for loc in [f.attrs, f]:
+                if 'dt' in loc:
+                    return float(f['dt'][()] if 'dt' in f else f.attrs['dt'])
+            for grp_name in ['params', 'metadata', 'parameters']:
+                if grp_name in f:
+                    grp = f[grp_name]
+                    if 'dt' in grp.attrs:
+                        return float(grp.attrs['dt'])
+                    if 'dt' in grp:
+                        return float(grp['dt'][()])
+    except Exception:
+        pass
+    return default
+
+
+def compute_truncation_snapshots(
+    file_path: str,
+    truncate_snapshots: int = None,
+    truncate_time: float = None,
+    default_dt: float = 0.025,
+) -> Optional[int]:
+    """Compute number of snapshots to keep based on truncation settings."""
+    if truncate_snapshots is not None:
+        return truncate_snapshots
+    elif truncate_time is not None:
+        dt = get_dt_from_file(file_path, default_dt)
+        return int(truncate_time / dt)
+    return None
+
+
+def load_dataset(path: str, engine: str = "h5netcdf"):
+    """Load xarray dataset from HDF5 file."""
+    try:
+        return xr.open_dataset(path, engine=engine)
+    except Exception:
+        return xr.open_dataset(path, engine=engine, phony_dims="sort")
+
+
+# =============================================================================
+# MPI UTILITIES
+# =============================================================================
+
+def distribute_indices(rank: int, n_total: int, size: int) -> tuple:
+    """Distribute indices across MPI ranks."""
+    n_per_rank = n_total // size
+    start = rank * n_per_rank
+    end = (rank + 1) * n_per_rank
     
-    Parameters
-    ----------
-    run_dir : str
-        Run directory.
+    # Last rank handles remainder
+    if rank == size - 1 and end != n_total:
+        end = n_total
     
-    Returns
-    -------
-    dict
-        Dictionary of output file paths.
+    return start, end, end - start
+
+
+def chunked_bcast(comm, data, root: int = 0, max_bytes: int = 2**30):
     """
-    return {
-        # Step 1 outputs
-        "pod_file": os.path.join(run_dir, "POD.npz"),
-        "pod_basis": os.path.join(run_dir, "POD_basis_Ur.npy"),
-        "xhat_train": os.path.join(run_dir, "X_hat_train.npy"),
-        "xhat_test": os.path.join(run_dir, "X_hat_test.npy"),
-        "boundaries": os.path.join(run_dir, "data_boundaries.npz"),
-        "initial_conditions": os.path.join(run_dir, "initial_conditions.npz"),
-        "gamma_ref": os.path.join(run_dir, "gamma_reference.npz"),
-        "learning_matrices": os.path.join(run_dir, "learning_matrices.npz"),
-        "preprocessing_info": os.path.join(run_dir, "preprocessing_info.npz"),
-        
-        # Step 2 outputs
-        "ensemble_models": os.path.join(run_dir, "ensemble_models.npz"),
-        "sweep_results": os.path.join(run_dir, "sweep_results.npz"),
-        "operators_dir": os.path.join(run_dir, "operators"),
-        
-        # Step 3 outputs
-        "predictions": os.path.join(run_dir, "ensemble_predictions.npz"),
-        "metrics": os.path.join(run_dir, "evaluation_metrics.yaml"),
-        "figures_dir": os.path.join(run_dir, "figures"),
-    }
+    Broadcast a numpy array in chunks to avoid MPI 32-bit integer overflow.
+    
+    MPI's Bcast uses a 32-bit signed integer for count, limiting messages to ~2GB.
+    """
+    rank = comm.Get_rank()
+    
+    # Broadcast shape and dtype first
+    if rank == root:
+        shape, dtype = data.shape, data.dtype
+    else:
+        shape, dtype = None, None
+    
+    shape = comm.bcast(shape, root=root)
+    dtype = comm.bcast(dtype, root=root)
+    
+    if rank != root:
+        data = np.empty(shape, dtype=dtype)
+    
+    # If small enough, single broadcast
+    itemsize = np.dtype(dtype).itemsize
+    total_bytes = int(np.prod(shape)) * itemsize
+    
+    if total_bytes <= max_bytes:
+        comm.Bcast(data, root=root)
+        return data
+    
+    # Chunked broadcast for large arrays
+    n_rows = shape[0]
+    bytes_per_row = total_bytes // n_rows
+    rows_per_chunk = max(1, max_bytes // bytes_per_row)
+    
+    data_flat = data.reshape(n_rows, -1) if len(shape) > 1 else data.reshape(n_rows, 1)
+    
+    for start_row in range(0, n_rows, rows_per_chunk):
+        end_row = min(start_row + rows_per_chunk, n_rows)
+        if rank == root:
+            chunk = np.ascontiguousarray(data_flat[start_row:end_row, :])
+        else:
+            chunk = np.empty((end_row - start_row, data_flat.shape[1]), dtype=dtype)
+        comm.Bcast(chunk, root=root)
+        if rank != root:
+            data_flat[start_row:end_row, :] = chunk
+    
+    return data
+
+
+def create_shared_array(node_comm, shape, dtype=np.float64):
+    """Create a numpy array backed by MPI shared memory within a node."""
+    node_rank = node_comm.Get_rank()
+    itemsize = np.dtype(dtype).itemsize
+    nbytes = int(np.prod(shape)) * itemsize
+    
+    if node_rank == 0:
+        win = MPI.Win.Allocate_shared(nbytes, itemsize, comm=node_comm)
+    else:
+        win = MPI.Win.Allocate_shared(0, itemsize, comm=node_comm)
+    
+    buf, _ = win.Shared_query(0)
+    arr = np.ndarray(buffer=buf, dtype=dtype, shape=shape)
+    
+    return arr, win
 
 
 # =============================================================================
@@ -758,25 +476,16 @@ def print_header(title: str, width: int = 70):
     print("=" * width)
 
 
-def print_config_summary(cfg: PipelineConfig):
+def print_config_summary(cfg: OpInfConfig):
     """Print a summary of the configuration."""
     print_header("CONFIGURATION SUMMARY")
     print(f"  Run name: {cfg.run_name or '(auto)'}")
-    print(f"  Output base: {cfg.output_base}")
     print(f"  Training files: {len(cfg.training_files)}")
     print(f"  Test files: {len(cfg.test_files)}")
     print(f"  POD modes (r): {cfg.r}")
     print(f"  Truncation: {'enabled' if cfg.truncation_enabled else 'disabled'}")
-    if cfg.truncation_enabled:
-        if cfg.truncation_method == "time":
-            print(f"    Time: {cfg.truncation_time} units")
-        else:
-            print(f"    Snapshots: {cfg.truncation_snapshots}")
-    print(f"  Preprocessing:")
-    print(f"    Centering: {'enabled' if cfg.centering_enabled else 'disabled'}")
-    print(f"    Scaling: {'enabled' if cfg.scaling_enabled else 'disabled'}")
-    print(f"  Selection method: {cfg.selection_method}")
-    print(f"  Regularization grid: {len(cfg.state_lin)}x{len(cfg.state_quad)}x{len(cfg.output_lin)}x{len(cfg.output_quad)}")
-    total = len(cfg.state_lin) * len(cfg.state_quad) * len(cfg.output_lin) * len(cfg.output_quad)
-    print(f"  Total combinations: {total:,}")
+    print(f"  Centering: {'enabled' if cfg.centering_enabled else 'disabled'}")
+    print(f"  Scaling: {'enabled' if cfg.scaling_enabled else 'disabled'}")
+    n_reg = len(cfg.state_lin) * len(cfg.state_quad) * len(cfg.output_lin) * len(cfg.output_quad)
+    print(f"  Regularization combinations: {n_reg:,}")
     print("=" * 70 + "\n")

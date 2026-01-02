@@ -1,43 +1,53 @@
 """
-OpInf ROM Pipeline for Hasegawa-Wakatani Equations.
+Discrete-Time Operator Inference ROM Pipeline.
 
-This package provides a modular, configurable pipeline for training and
-evaluating Operator Inference (OpInf) reduced-order models.
+This package implements a three-step pipeline for learning reduced-order models
+using Operator Inference (OpInf):
 
-Modules
--------
-step_1_preprocess
-    Data loading, POD computation, and learning matrix preparation.
-step_2_train_rom
-    Hyperparameter sweep for ROM training (supports MPI parallelization).
-step_3_evaluate
-    Ensemble prediction and evaluation.
-run_pipeline
-    Orchestrator for running full or partial pipeline.
-utils
-    Shared utilities for configuration, logging, and file management.
+    Step 1: Data preprocessing and POD computation (MPI parallel)
+    Step 2: ROM training via regularization hyperparameter sweep (MPI parallel)
+    Step 3: Evaluation and prediction (serial)
 
-Usage
------
-See README.md for detailed usage instructions.
+The method learns discrete-time operators A, F such that:
+    x_{k+1} = A @ x_k + F @ x_k^{(2)}
+
+where x_k are reduced coordinates and x_k^{(2)} are non-redundant quadratic terms.
+
+Modules:
+    core        - Core mathematical operations (quadratic terms, solve OpInf)
+    utils       - Configuration, logging, MPI utilities
+    data        - Data loading and I/O
+    pod         - POD computation and projection
+    training    - Hyperparameter sweep and model selection
+    evaluation  - Prediction and metrics
+    plotting    - Visualization utilities
+
+References:
+    - Peherstorfer & Willcox (2016). Data-driven operator inference for 
+      nonintrusive projection-based model reduction.
+    - Qian et al. (2020). Lift & Learn: Physics-informed machine learning
+      for large-scale nonlinear dynamical systems.
+
+Author: Anthony Poole
 """
 
-from .utils import (
-    load_config,
-    save_config,
-    PipelineConfig,
-    create_run_directory,
-    get_run_directory,
-    setup_logging,
-    get_output_paths,
+from .core import (
+    get_quadratic_terms,
+    solve_difference_model,
+    solve_opinf_operators,
+    build_data_matrix,
 )
 
-__all__ = [
-    'load_config',
-    'save_config',
-    'PipelineConfig',
-    'create_run_directory',
-    'get_run_directory',
-    'setup_logging',
-    'get_output_paths',
-]
+from .utils import (
+    OpInfConfig,
+    load_config,
+    save_config,
+    get_run_directory,
+    get_output_paths,
+    setup_logging,
+    print_header,
+    print_config_summary,
+)
+
+__version__ = "1.0.0"
+__author__ = "Anthony Poole"
