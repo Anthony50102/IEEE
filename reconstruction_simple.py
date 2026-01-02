@@ -12,6 +12,17 @@ Bare-bones implementation following the workflow:
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+from datetime import datetime
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+LOG_FILE = f"pod_reconstruction_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+_log_fh = open(LOG_FILE, 'w')
+
+def log(msg=""):
+    print(msg)
+    print(msg, file=_log_fh, flush=True)
 
 # =============================================================================
 # CONFIGURATION
@@ -60,9 +71,10 @@ def compute_gamma_c(n, phi, c1):
 # =============================================================================
 # STEP 1: LOAD DATA
 # =============================================================================
-print("=" * 60)
-print("STEP 1: Loading data")
-print("=" * 60)
+log("=" * 60)
+log("STEP 1: Loading data")
+log("=" * 60)
+log(f"Log file: {LOG_FILE}")
 
 with xr.open_dataset(DATA_FILE, engine="h5netcdf", phony_dims="sort") as fh:
     # Load density and phi, reshape to (nx*ny, nt) and stack
@@ -75,7 +87,7 @@ with xr.open_dataset(DATA_FILE, engine="h5netcdf", phony_dims="sort") as fh:
 
 nt = density.shape[0]
 ny, nx_grid = density.shape[1], density.shape[2]
-print(f"Loaded {nt} timesteps, grid size: {ny} x {nx_grid}")
+log(f"Loaded {nt} timesteps, grid size: {ny} x {nx_grid}")
 
 # Stack into Q matrix: shape (2*nx*ny, nt)
 # Each column is a flattened state [n_flat; phi_flat]
@@ -83,14 +95,15 @@ Q = np.vstack([
     density.reshape(nt, -1).T,  # (nx*ny, nt)
     phi.reshape(nt, -1).T       # (nx*ny, nt)
 ])
-print(f"Q matrix shape: {Q.shape}")
+log(f"Q matrix shape: {Q.shape}")
 
 # =============================================================================
 # STEP 2: VERIFY GAMMA COMPUTATIONS
 # =============================================================================
-print("\n" + "=" * 60)
-print("STEP 2: Verifying Gamma computations")
-print("=" * 60)
+log("")
+log("=" * 60)
+log("STEP 2: Verifying Gamma computations")
+log("=" * 60)
 
 recomputed_gamma_n = np.zeros(nt)
 recomputed_gamma_c = np.zeros(nt)
@@ -105,26 +118,27 @@ for t in range(nt):
 gamma_n_error = np.abs(recomputed_gamma_n - gt_gamma_n).max()
 gamma_c_error = np.abs(recomputed_gamma_c - gt_gamma_c).max()
 
-print(f"Max error in Gamma_n: {gamma_n_error:.6e}")
-print(f"Max error in Gamma_c: {gamma_c_error:.6e}")
+log(f"Max error in Gamma_n: {gamma_n_error:.6e}")
+log(f"Max error in Gamma_c: {gamma_c_error:.6e}")
 
 if gamma_n_error < 1e-10 and gamma_c_error < 1e-10:
-    print("Gamma computations match saved values!")
+    log("Gamma computations match saved values!")
 else:
-    print("Warning: Gamma computations differ from saved values")
+    log("Warning: Gamma computations differ from saved values")
 
 # =============================================================================
 # STEP 3: COMPUTE POD BASIS
 # =============================================================================
-print("\n" + "=" * 60)
-print("STEP 3: Computing POD basis")
-print("=" * 60)
+log("")
+log("=" * 60)
+log("STEP 3: Computing POD basis")
+log("=" * 60)
 
 # Method: SVD of Q directly, or eigendecomposition of Q^T Q (Gram matrix)
 # Using Gram matrix approach (more efficient when nx*ny >> nt)
 
 D = Q.T @ Q  # Gram matrix, shape (nt, nt)
-print(f"Gram matrix shape: {D.shape}")
+log(f"Gram matrix shape: {D.shape}")
 
 # Eigendecomposition
 eigs, eigv = np.linalg.eigh(D)
@@ -138,22 +152,23 @@ eigv = eigv[:, sorted_idx]
 total_energy = np.sum(eigs)
 cumulative_energy = np.cumsum(eigs) / total_energy
 
-print(f"Total energy (sum of eigenvalues): {total_energy:.6e}")
-print(f"Energy captured by first 10 modes: {cumulative_energy[9]*100:.2f}%")
-print(f"Energy captured by first 50 modes: {cumulative_energy[49]*100:.2f}%")
-print(f"Energy captured by first 100 modes: {cumulative_energy[99]*100:.2f}%")
+log(f"Total energy (sum of eigenvalues): {total_energy:.6e}")
+log(f"Energy captured by first 10 modes: {cumulative_energy[9]*100:.2f}%")
+log(f"Energy captured by first 50 modes: {cumulative_energy[49]*100:.2f}%")
+log(f"Energy captured by first 100 modes: {cumulative_energy[99]*100:.2f}%")
 
 # =============================================================================
 # STEP 4: RECONSTRUCTION FOR DIFFERENT r VALUES
 # =============================================================================
-print("\n" + "=" * 60)
-print("STEP 4: Reconstruction analysis for different r values")
-print("=" * 60)
+log("")
+log("=" * 60)
+log("STEP 4: Reconstruction analysis for different r values")
+log("=" * 60)
 
 results = {}
 
 for r in R_VALUES:
-    print(f"\n--- r = {r} modes ---")
+    log(f"\n--- r = {r} modes ---")
     
     # Compute POD basis Vr
     # Vr = Q @ eigv[:, :r] @ diag(1/sqrt(eigs[:r]))
@@ -163,15 +178,15 @@ for r in R_VALUES:
     # Verify orthonormality: Vr.T @ Vr should be identity
     VtV = Vr.T @ Vr
     ortho_error = np.linalg.norm(VtV - np.eye(r))
-    print(f"  Orthonormality error: {ortho_error:.6e}")
+    log(f"  Orthonormality error: {ortho_error:.6e}")
     
     # Reconstruct: Q_approx = Vr @ Vr.T @ Q
     Q_approx = Vr @ (Vr.T @ Q)
     
     # Reconstruction error
     rel_error = np.linalg.norm(Q - Q_approx) / np.linalg.norm(Q)
-    print(f"  Relative reconstruction error: {rel_error:.6e} ({rel_error*100:.4f}%)")
-    print(f"  Energy retained: {cumulative_energy[r-1]*100:.4f}%")
+    log(f"  Relative reconstruction error: {rel_error:.6e} ({rel_error*100:.4f}%)")
+    log(f"  Energy retained: {cumulative_energy[r-1]*100:.4f}%")
     
     # Compute Gamma from reconstructed data
     approx_gamma_n = np.zeros(nt)
@@ -189,8 +204,8 @@ for r in R_VALUES:
     gamma_n_rel_error = np.linalg.norm(approx_gamma_n - gt_gamma_n) / np.linalg.norm(gt_gamma_n)
     gamma_c_rel_error = np.linalg.norm(approx_gamma_c - gt_gamma_c) / np.linalg.norm(gt_gamma_c)
     
-    print(f"  Gamma_n relative error: {gamma_n_rel_error:.6e} ({gamma_n_rel_error*100:.4f}%)")
-    print(f"  Gamma_c relative error: {gamma_c_rel_error:.6e} ({gamma_c_rel_error*100:.4f}%)")
+    log(f"  Gamma_n relative error: {gamma_n_rel_error:.6e} ({gamma_n_rel_error*100:.4f}%)")
+    log(f"  Gamma_c relative error: {gamma_c_rel_error:.6e} ({gamma_c_rel_error*100:.4f}%)")
     
     results[r] = {
         'rel_error': rel_error,
@@ -202,11 +217,45 @@ for r in R_VALUES:
     }
 
 # =============================================================================
+# STEP 4b: SVD-BASED RECONSTRUCTION (verification)
+# =============================================================================
+log("")
+log("=" * 60)
+log("STEP 4b: SVD-based reconstruction (verification)")
+log("=" * 60)
+
+U, S, _ = np.linalg.svd(Q, full_matrices=False)
+svd_energy = np.cumsum(S**2) / np.sum(S**2)
+
+log(f"{'r':>4} | {'||Q-Qr||²/||Q||²':>18} | {'1 - retained':>18} | {'sum(S[r:]²)/sum(S²)':>20} | {'match?':>6}")
+log("-" * 75)
+
+for r in R_VALUES:
+    Vr_svd = U[:, :r]
+    Q_approx_svd = Vr_svd @ (Vr_svd.T @ Q)
+    
+    recon_err_sq = np.linalg.norm(Q - Q_approx_svd)**2 / np.linalg.norm(Q)**2
+    one_minus_energy = 1 - svd_energy[r-1]
+    tail_energy = np.sum(S[r:]**2) / np.sum(S**2)
+    
+    match = np.allclose(recon_err_sq, tail_energy, rtol=1e-10)
+    log(f"{r:>4} | {recon_err_sq:>18.10e} | {one_minus_energy:>18.10e} | {tail_energy:>20.10e} | {'✓' if match else '✗':>6}")
+
+log("")
+log("Comparing Gram eigendecomp vs SVD energy retention:")
+log(f"{'r':>4} | {'Gram energy':>14} | {'SVD energy':>14} | {'diff':>12}")
+log("-" * 55)
+for r in R_VALUES:
+    diff = abs(cumulative_energy[r-1] - svd_energy[r-1])
+    log(f"{r:>4} | {cumulative_energy[r-1]*100:>13.6f}% | {svd_energy[r-1]*100:>13.6f}% | {diff:.2e}")
+
+# =============================================================================
 # STEP 5: PLOTTING
 # =============================================================================
-print("\n" + "=" * 60)
-print("STEP 5: Generating plots")
-print("=" * 60)
+log("")
+log("=" * 60)
+log("STEP 5: Generating plots")
+log("=" * 60)
 
 # Plot 1: Error vs r
 fig1, axes1 = plt.subplots(1, 3, figsize=(15, 4))
@@ -239,7 +288,7 @@ axes1[2].grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.savefig("pod_error_vs_r.png", dpi=150)
-print("Saved: pod_error_vs_r.png")
+log("Saved: pod_error_vs_r.png")
 
 # Plot 2: Time series comparison for select r values
 r_to_plot = [R_VALUES[0], R_VALUES[len(R_VALUES)//2], R_VALUES[-1]]
@@ -265,10 +314,12 @@ axes2[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.savefig("pod_gamma_timeseries.png", dpi=150)
-print("Saved: pod_gamma_timeseries.png")
+log("Saved: pod_gamma_timeseries.png")
 
 plt.show()
 
-print("\n" + "=" * 60)
-print("DONE")
-print("=" * 60)
+log("")
+log("=" * 60)
+log("DONE")
+log("=" * 60)
+log(f"Full log saved to: {LOG_FILE}")
