@@ -38,6 +38,7 @@ from shared.physics import periodic_gradient, compute_gamma_n, compute_gamma_c
 # =============================================================================
 # Path to HW2D simulation HDF5 file
 DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
+TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142043_21898_0.h5" 
 
 # Physical parameters
 k0 = 0.15
@@ -254,6 +255,66 @@ log("-" * 55)
 for r in R_VALUES:
     diff = abs(cumulative_energy[r-1] - svd_energy[r-1])
     log(f"{r:>4} | {cumulative_energy[r-1]*100:>13.6f}% | {svd_energy[r-1]*100:>13.6f}% | {diff:.2e}")
+
+# =============================================================================
+# STEP 6: TEST INTIAL CONDITIONS
+# =============================================================================
+log("")
+log("=" * 60)
+log("Using POD basis to reconstruct initial condition from test set")
+log("Using SVD-based POD for this step")
+log("=" * 60)
+with xr.open_dataset(DATA_FILE, engine="h5netcdf", phony_dims="sort") as fh:
+    # Load density and phi
+    density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
+    phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
+    
+    # Ground truth gamma values from file
+    gt_gamma_n = fh["gamma_n"].values[:NT_MAX]
+    gt_gamma_c = fh["gamma_c"].values[:NT_MAX]
+
+nt = density.shape[0]
+ny, nx_grid = density.shape[1], density.shape[2]
+log(f"Loaded {nt} timesteps, grid size: {ny} x {nx_grid}")
+
+# Stack into Q matrix: shape (2*nx*ny, nt)
+# Each column is a flattened state [n_flat; phi_flat]
+Q = np.vstack([
+    density.reshape(nt, -1).T,  # (nx*ny, nt)
+    phi.reshape(nt, -1).T       # (nx*ny, nt)
+])
+log(f"Q matrix shape: {Q.shape}")
+
+
+for r in R_VALUES:
+    Vr_svd = U[:, :r]
+    Q_approx_svd = Vr_svd @ (Vr_svd.T @ Q)
+    
+    recon_err_sq = np.linalg.norm(Q - Q_approx_svd)**2 / np.linalg.norm(Q)**2
+    one_minus_energy = 1 - svd_energy[r-1]
+    tail_energy = np.sum(S[r:]**2) / np.sum(S**2)
+    
+    log(f"{r:>4} | {recon_err_sq:>18.10e} | {one_minus_energy:>18.10e} | {tail_energy:>20.10e}")
+
+    # Compute Gamma from reconstructed data
+    approx_gamma_n = np.zeros(nt)
+    approx_gamma_c = np.zeros(nt)
+    
+    n_size = ny * nx_grid
+    for t in range(nt):
+        state = Q_approx_svd[:, t]
+        n_approx = state[:n_size].reshape(ny, nx_grid)
+        phi_approx = state[n_size:].reshape(ny, nx_grid)
+        approx_gamma_n[t] = compute_gamma_n(n_approx, phi_approx, dx)
+        approx_gamma_c[t] = compute_gamma_c(n_approx, phi_approx, c1)
+    
+    # Errors in gamma
+    gamma_n_rel_error = np.linalg.norm(approx_gamma_n - gt_gamma_n) / np.linalg.norm(gt_gamma_n)
+    gamma_c_rel_error = np.linalg.norm(approx_gamma_c - gt_gamma_c) / np.linalg.norm(gt_gamma_c)
+    
+    log(f"  Gamma_n relative error: {gamma_n_rel_error:.6e} ({gamma_n_rel_error*100:.4f}%)")
+    log(f"  Gamma_c relative error: {gamma_c_rel_error:.6e} ({gamma_c_rel_error*100:.4f}%)")
+
 
 # =============================================================================
 # STEP 5: PLOTTING
