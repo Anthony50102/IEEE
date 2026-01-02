@@ -47,13 +47,13 @@ def periodic_gradient(field, dx, axis):
 
 
 def compute_gamma_n(n, phi, dx):
-    """Compute particle flux Gamma_n = -<n * d(phi)/dy>."""
+    """Compute Gamma_n = -<n * d(phi)/dy>."""
     dphi_dy = periodic_gradient(phi, dx, axis=-2)
     return -np.mean(n * dphi_dy)
 
 
 def compute_gamma_c(n, phi, c1):
-    """Compute curvature-driven flux Gamma_c = c1 * <(n - phi)^2>."""
+    """Compute flux Gamma_c = c1 * <(n - phi)^2>."""
     return c1 * np.mean((n - phi) ** 2)
 
 
@@ -109,9 +109,9 @@ print(f"Max error in Gamma_n: {gamma_n_error:.6e}")
 print(f"Max error in Gamma_c: {gamma_c_error:.6e}")
 
 if gamma_n_error < 1e-10 and gamma_c_error < 1e-10:
-    print("✓ Gamma computations match saved values!")
+    print("Gamma computations match saved values!")
 else:
-    print("⚠ Warning: Gamma computations differ from saved values")
+    print("Warning: Gamma computations differ from saved values")
 
 # =============================================================================
 # STEP 3: COMPUTE POD BASIS
@@ -250,7 +250,7 @@ axes2[0].plot(gt_gamma_n, 'k-', label='Ground truth', linewidth=1.5, alpha=0.8)
 for r in r_to_plot:
     axes2[0].plot(results[r]['gamma_n'], '--', label=f'r={r}', alpha=0.8)
 axes2[0].set_ylabel('Gamma_n')
-axes2[0].set_title('Particle Flux Gamma_n')
+axes2[0].set_title('Gamma_n')
 axes2[0].legend()
 axes2[0].grid(True, alpha=0.3)
 
@@ -259,7 +259,7 @@ for r in r_to_plot:
     axes2[1].plot(results[r]['gamma_c'], '--', label=f'r={r}', alpha=0.8)
 axes2[1].set_ylabel('Gamma_c')
 axes2[1].set_xlabel('Time step')
-axes2[1].set_title('Curvature Flux Gamma_c')
+axes2[1].set_title('Gamma_c')
 axes2[1].legend()
 axes2[1].grid(True, alpha=0.3)
 
