@@ -1,27 +1,21 @@
 run_name: "local_1train_5test"
 
-# =============================================================================
-# DATA PATHS
-# =============================================================================
 paths:
-  output_base: "/scratch/user/output/"       # Base directory for outputs
-  data_dir: "/scratch/user/data/hw2d/"       # Directory containing HDF5 files
+  output_base: "/Users/anthonypoole/Repositories/IEEE/opinf/local_output/"       
+  data_dir: "/Users/anthonypoole/data/hw2d/hw2d_256x256_24001"       
   
   training_files:
-    - simulation_001.h5
+    - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142043_15012_2.h5
   
   test_files:
-    - simulation_002.h5
-    - simulation_003.h5
+    - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142043_21898_0.h5
+    - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142043_23707_1.h5
 
-# =============================================================================
-# PHYSICS PARAMETERS
-# =============================================================================
 physics:
-  dt: 0.025              # Simulation time step
-  n_fields: 2            # Number of fields (e.g., density, phi)
-  n_x: 256               # Grid points in x
-  n_y: 256               # Grid points in y
+  dt: 0.025              
+  n_fields: 2            
+  n_x: 256               
+  n_y: 256               
 
 # =============================================================================
 # DIMENSIONALITY REDUCTION
@@ -33,44 +27,26 @@ reduction:
   n_vectors_to_check: 200  # For manifold only
   reg_magnitude: 1.0e-6    # For manifold only
 
-# =============================================================================
-# DATA TRUNCATION
-# =============================================================================
 truncation:
-  enabled: true          # Enable time truncation of trajectories
-  method: "time"         # "time" (seconds) or "snapshots" (count)
-  time: 200.0            # Truncate to this simulation time
-  snapshots: null        # Or truncate to this many snapshots
+  enabled: true          
+  method: "time"         
+  time: 10.0            
+  snapshots: null        
 
-# =============================================================================
-# PREPROCESSING
-# =============================================================================
 preprocessing:
-  centering: true        # Subtract temporal mean (RECOMMENDED for POD)
-  scaling: false         # Normalize each field to [-1, 1]
+  centering: false        
+  scaling: false         
 
-# =============================================================================
-# TRAINING PARAMETERS
-# =============================================================================
 training:
-  training_end: 8000     # Index marking end of training region (for error calc)
-  n_steps: 8000          # Number of time steps for ROM integration
+  training_end: 1000     
+  n_steps: 1000          
 
-# =============================================================================
-# REGULARIZATION PARAMETER GRIDS
-# =============================================================================
-# The OpInf optimization uses Tikhonov regularization:
-#   min ||D @ O - Y||_F^2 + α_lin ||O_lin||_F^2 + α_quad ||O_quad||_F^2
-#
-# The grid search explores all combinations of these parameters.
-# Total combinations = num(state_lin) × num(state_quad) × num(output_lin) × num(output_quad)
-# =============================================================================
 regularization:
   state_lin:
     min: 1.0e0
     max: 1.0e7
     num: 10
-    scale: "log"         # "linear" or "log"
+    scale: "log"         
   
   state_quad:
     min: 1.0e4
@@ -90,27 +66,15 @@ regularization:
     num: 10
     scale: "log"
 
-# =============================================================================
-# MODEL SELECTION
-# =============================================================================
-# After hyperparameter sweep, models meeting BOTH threshold criteria are kept.
-# All four error metrics (mean_n, std_n, mean_c, std_c) must be below thresholds.
-# =============================================================================
 model_selection:
-  threshold_mean: 0.05   # Max 5% error in mean statistics
-  threshold_std: 0.20    # Max 20% error in std statistics
+  threshold_mean: 0.05   
+  threshold_std: 0.20    
 
-# =============================================================================
-# EVALUATION OPTIONS
-# =============================================================================
 evaluation:
-  save_predictions: true # Save ensemble predictions to disk
-  generate_plots: true   # Generate diagnostic plots
+  save_predictions: true 
+  generate_plots: true   
 
-# =============================================================================
-# EXECUTION OPTIONS
-# =============================================================================
 execution:
-  verbose: true          # Print progress information
-  log_level: "INFO"      # DEBUG, INFO, WARNING, ERROR
-  engine: "h5netcdf"     # HDF5 engine for xarray
+  verbose: true          
+  log_level: "INFO"      
+  engine: "h5netcdf"     
