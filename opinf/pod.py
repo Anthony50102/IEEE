@@ -1,17 +1,97 @@
 """
-POD computation and projection utilities.
+Dimensionality reduction: POD and Quadratic Manifold.
 
 This module handles:
-- Distributed Gram matrix eigendecomposition (Sirovich method)
-- Data projection onto POD basis
-- POD mode/energy computation
+- Distributed Gram matrix eigendecomposition (Sirovich method) for linear POD
+- Quadratic manifold via greedy mode selection
+- Data projection/lifting for both methods
+- Unified interface via BasisData container
 
 Author: Anthony Poole
 """
 
 import gc
+import time
 import numpy as np
 from mpi4py import MPI
+from dataclasses import dataclass
+from typing import Optional, Callable
+
+
+# =============================================================================
+# DATA CONTAINERS
+# =============================================================================
+
+@dataclass
+class BasisData:
+    """Container for dimensionality reduction basis (works for both methods)."""
+    method: str                    # "linear" or "manifold"
+    V: np.ndarray                  # Linear basis (n_spatial, r)
+    W: Optional[np.ndarray]        # Quadratic coefficients (manifold only)
+    shift: np.ndarray              # Mean shift vector
+    r: int                         # Number of modes
+    eigs: np.ndarray               # Eigenvalues/singular values squared
+    selected_indices: Optional[np.ndarray] = None  # For manifold: which modes selected
+
+
+def save_basis(basis: BasisData, filepath: str):
+    """Save basis to npz file."""
+    np.savez(
+        filepath,
+        method=basis.method,
+        V=basis.V,
+        W=basis.W if basis.W is not None else np.array([]),
+        shift=basis.shift,
+        r=basis.r,
+        eigs=basis.eigs,
+        selected_indices=basis.selected_indices if basis.selected_indices is not None else np.array([]),
+    )
+
+
+def load_basis(filepath: str) -> BasisData:
+    """Load basis from npz file."""
+    d = np.load(filepath, allow_pickle=True)
+    return BasisData(
+        method=str(d['method']),
+        V=d['V'],
+        W=d['W'] if d['W'].size > 0 else None,
+        shift=d['shift'],
+        r=int(d['r']),
+        eigs=d['eigs'],
+        selected_indices=d['selected_indices'] if d['selected_indices'].size > 0 else None,
+    )
+
+
+# =============================================================================
+# PROJECTION AND LIFTING (unified interface)
+# =============================================================================
+
+def _quadratic_features(z: np.ndarray) -> np.ndarray:
+    """Compute quadratic features: z_i * z_j for j <= i."""
+    r = z.shape[0]
+    return np.concatenate([z[i:i+1] * z[:i+1] for i in range(r)], axis=0)
+
+
+def encode(data: np.ndarray, basis: BasisData) -> np.ndarray:
+    """Project full state to reduced coordinates: z = V^T (x - shift)."""
+    return basis.V.T @ (data - basis.shift[:, None])
+
+
+def decode(z: np.ndarray, basis: BasisData) -> np.ndarray:
+    """Lift reduced coordinates to full state."""
+    if basis.method == "linear":
+        return basis.V @ z + basis.shift[:, None]
+    else:  # manifold
+        return basis.V @ z + basis.W @ _quadratic_features(z) + basis.shift[:, None]
+
+
+def reconstruction_error(data: np.ndarray, basis: BasisData) -> tuple:
+    """Compute reconstruction error: ||x - decode(encode(x))||."""
+    z = encode(data, basis)
+    recon = decode(z, basis)
+    abs_err = np.linalg.norm(recon - data, 'fro')
+    rel_err = abs_err / np.linalg.norm(data, 'fro')
+    return abs_err, rel_err
 
 
 # =============================================================================
@@ -164,3 +244,109 @@ def project_data_distributed(
         logger.info(f"  Xhat_test shape: {Xhat_test.shape}")
     
     return Xhat_train, Xhat_test, Ur_local, Ur_full
+
+
+# =============================================================================
+# QUADRATIC MANIFOLD (greedy algorithm)
+# =============================================================================
+
+def _lstsq_reg(A: np.ndarray, B: np.ndarray, reg: float = 1e-6) -> tuple:
+    """Tikhonov-regularized least squares via SVD."""
+    U, s, VT = np.linalg.svd(A, full_matrices=False)
+    s_inv = s / (s**2 + reg**2)
+    x = (VT.T * s_inv) @ (U.T @ B)
+    residual = np.linalg.norm(B - A @ x, 'fro')
+    return x, residual
+
+
+def _greedy_error(idx_in, idx_out, sigma, VT, reg):
+    """Reconstruction error for a mode partition."""
+    z = sigma[idx_in, None] * VT[idx_in]
+    target = VT[idx_out].T * sigma[idx_out]
+    H = _quadratic_features(z)
+    _, residual = _lstsq_reg(H.T, target, reg)
+    return residual
+
+
+def compute_manifold_greedy(Q_full: np.ndarray, r: int, n_check: int, reg: float, 
+                            logger) -> BasisData:
+    """
+    Compute quadratic manifold using greedy mode selection.
+    
+    The manifold approximates: x ≈ V·z + W·h(z) + μ
+    where h(z) are quadratic features z_i·z_j.
+    
+    Parameters
+    ----------
+    Q_full : ndarray (n_spatial, n_time)
+        Full snapshot matrix (must be gathered on calling rank).
+    r : int
+        Number of modes.
+    n_check : int
+        Max candidates to evaluate per greedy step.
+    reg : float
+        Tikhonov regularization.
+    logger : Logger
+    
+    Returns
+    -------
+    BasisData with method="manifold"
+    """
+    logger.info(f"Computing quadratic manifold: r={r}, n_check={n_check}, reg={reg:.1e}")
+    
+    # Center and SVD
+    shift = np.mean(Q_full, axis=1)
+    Q_centered = Q_full - shift[:, None]
+    
+    logger.info("  Computing SVD...")
+    t0 = time.time()
+    U, sigma, VT = np.linalg.svd(Q_centered, full_matrices=False)
+    logger.info(f"  SVD done in {time.time()-t0:.1f}s, rank={len(sigma)}")
+    
+    # Cumulative energy
+    eigs = sigma**2
+    energy = np.cumsum(eigs) / np.sum(eigs)
+    logger.info(f"  Energy: r=10 → {energy[9]*100:.2f}%, r=50 → {energy[49]*100:.2f}%, r=100 → {energy[min(99, len(energy)-1)]*100:.2f}%")
+    
+    # Greedy selection
+    idx_in = np.array([0], dtype=np.int64)
+    idx_out = np.arange(1, len(sigma), dtype=np.int64)
+    
+    while len(idx_in) < r:
+        t0 = time.time()
+        n_consider = min(n_check, len(idx_out))
+        errors = np.zeros(n_consider)
+        
+        for i in range(n_consider):
+            trial_in = np.append(idx_in, idx_out[i])
+            trial_out = np.delete(idx_out, i)
+            errors[i] = _greedy_error(trial_in, trial_out, sigma, VT, reg)
+        
+        best = np.argmin(errors)
+        idx_in = np.append(idx_in, idx_out[best])
+        idx_out = np.delete(idx_out, best)
+        
+        if len(idx_in) % 10 == 0 or len(idx_in) == r:
+            logger.info(f"  Step {len(idx_in)}: mode {idx_in[-1]}, t={time.time()-t0:.1f}s")
+    
+    # Compute W matrix
+    logger.info("  Computing quadratic coefficients...")
+    V = U[:, idx_in]
+    z = sigma[idx_in, None] * VT[idx_in]
+    target = VT[idx_out].T * sigma[idx_out]
+    H = _quadratic_features(z)
+    W_coeffs, residual = _lstsq_reg(H.T, target, reg)
+    W = U[:, idx_out] @ W_coeffs.T
+    
+    logger.info(f"  Final residual: {residual:.6e}")
+    
+    return BasisData(
+        method="manifold",
+        V=V,
+        W=W,
+        shift=shift,
+        r=r,
+        eigs=eigs,
+        selected_indices=idx_in,
+    )
+
