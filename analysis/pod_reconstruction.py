@@ -43,7 +43,7 @@ print("DEBUG: FINISHED THE IMPORTS")
 # =============================================================================
 # Path to HW2D simulation HDF5 file
 DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
-TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142043_21898_0.h5" 
+TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250317003217_14167_2.h5" 
 
 # Physical parameters
 k0 = 0.15
