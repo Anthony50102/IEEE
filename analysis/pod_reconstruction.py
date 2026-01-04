@@ -22,13 +22,8 @@ Outputs:
 import sys
 from pathlib import Path
 
-print("DEBUG: RESOLVING PATH")
-# Add project root to path for shared imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-print("DEBUG: RESOLVED PATH")
-
-print("DEBUG: IMPORTS")
 print("importing numpy"); import numpy as np
 print("importing xarray"); import xarray as xr
 print("importing matplotlib"); import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
@@ -42,8 +37,8 @@ print("DEBUG: FINISHED THE IMPORTS")
 # CONFIGURATION
 # =============================================================================
 # Path to HW2D simulation HDF5 file
-DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
-TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d256x256_striped/hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250317003217_14167_2.h5" 
+DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512/test_nu5e-9.h5"
+TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512/test_nu5e-9_2.h5" 
 
 # Physical parameters
 k0 = 0.15
@@ -78,7 +73,6 @@ class Logger:
     def close(self):
         self.fh.close()
 
-print("DEBUG: LOG FILE")  
 log = Logger(LOG_FILE)
 
 # =============================================================================
@@ -263,64 +257,75 @@ for r in R_VALUES:
     log(f"{r:>4} | {cumulative_energy[r-1]*100:>13.6f}% | {svd_energy[r-1]*100:>13.6f}% | {diff:.2e}")
 
 # =============================================================================
-# STEP 6: TEST INTIAL CONDITIONS
+# STEP 6: TEST INITIAL CONDITIONS
 # =============================================================================
 log("")
 log("=" * 60)
-log("Using POD basis to reconstruct initial condition from test set")
+log("STEP 6: Using POD basis to reconstruct initial condition from test set")
 log("Using SVD-based POD for this step")
 log("=" * 60)
 with xr.open_dataset(TEST_FILE, engine="h5netcdf", phony_dims="sort") as fh:
     # Load density and phi
-    density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
-    phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
+    test_density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
+    test_phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
     
     # Ground truth gamma values from file
-    gt_gamma_n = fh["gamma_n"].values[:NT_MAX]
-    gt_gamma_c = fh["gamma_c"].values[:NT_MAX]
+    test_gt_gamma_n = fh["gamma_n"].values[:NT_MAX]
+    test_gt_gamma_c = fh["gamma_c"].values[:NT_MAX]
 
-nt = density.shape[0]
-ny, nx_grid = density.shape[1], density.shape[2]
-log(f"Loaded {nt} timesteps, grid size: {ny} x {nx_grid}")
+test_nt = test_density.shape[0]
+test_ny, test_nx_grid = test_density.shape[1], test_density.shape[2]
+log(f"Loaded {test_nt} timesteps, grid size: {test_ny} x {test_nx_grid}")
 
-# Stack into Q matrix: shape (2*nx*ny, nt)
+# Stack into Q_test matrix: shape (2*nx*ny, nt)
 # Each column is a flattened state [n_flat; phi_flat]
-Q = np.vstack([
-    density.reshape(nt, -1).T,  # (nx*ny, nt)
-    phi.reshape(nt, -1).T       # (nx*ny, nt)
+Q_test = np.vstack([
+    test_density.reshape(test_nt, -1).T,  # (nx*ny, nt)
+    test_phi.reshape(test_nt, -1).T       # (nx*ny, nt)
 ])
-log(f"Q matrix shape: {Q.shape}")
+log(f"Q_test matrix shape: {Q_test.shape}")
 
+test_results = {}
+
+log(f"\n{'r':>4} | {'||Q-Qr||²/||Q||²':>18} | {'1 - retained':>18} | {'sum(S[r:]²)/sum(S²)':>20}")
+log("-" * 75)
 
 for r in R_VALUES:
     Vr_svd = U[:, :r]
-    Q_approx_svd = Vr_svd @ (Vr_svd.T @ Q)
+    Q_approx_svd = Vr_svd @ (Vr_svd.T @ Q_test)
     
-    recon_err_sq = np.linalg.norm(Q - Q_approx_svd)**2 / np.linalg.norm(Q)**2
+    recon_err_sq = np.linalg.norm(Q_test - Q_approx_svd)**2 / np.linalg.norm(Q_test)**2
     one_minus_energy = 1 - svd_energy[r-1]
     tail_energy = np.sum(S[r:]**2) / np.sum(S**2)
     
     log(f"{r:>4} | {recon_err_sq:>18.10e} | {one_minus_energy:>18.10e} | {tail_energy:>20.10e}")
 
     # Compute Gamma from reconstructed data
-    approx_gamma_n = np.zeros(nt)
-    approx_gamma_c = np.zeros(nt)
+    approx_gamma_n = np.zeros(test_nt)
+    approx_gamma_c = np.zeros(test_nt)
     
-    n_size = ny * nx_grid
-    for t in range(nt):
+    n_size = test_ny * test_nx_grid
+    for t in range(test_nt):
         state = Q_approx_svd[:, t]
-        n_approx = state[:n_size].reshape(ny, nx_grid)
-        phi_approx = state[n_size:].reshape(ny, nx_grid)
+        n_approx = state[:n_size].reshape(test_ny, test_nx_grid)
+        phi_approx = state[n_size:].reshape(test_ny, test_nx_grid)
         approx_gamma_n[t] = compute_gamma_n(n_approx, phi_approx, dx)
         approx_gamma_c[t] = compute_gamma_c(n_approx, phi_approx, c1)
     
     # Errors in gamma
-    gamma_n_rel_error = np.linalg.norm(approx_gamma_n - gt_gamma_n) / np.linalg.norm(gt_gamma_n)
-    gamma_c_rel_error = np.linalg.norm(approx_gamma_c - gt_gamma_c) / np.linalg.norm(gt_gamma_c)
+    gamma_n_rel_error = np.linalg.norm(approx_gamma_n - test_gt_gamma_n) / np.linalg.norm(test_gt_gamma_n)
+    gamma_c_rel_error = np.linalg.norm(approx_gamma_c - test_gt_gamma_c) / np.linalg.norm(test_gt_gamma_c)
     
     log(f"  Gamma_n relative error: {gamma_n_rel_error:.6e} ({gamma_n_rel_error*100:.4f}%)")
     log(f"  Gamma_c relative error: {gamma_c_rel_error:.6e} ({gamma_c_rel_error*100:.4f}%)")
-
+    
+    test_results[r] = {
+        'rel_error': np.sqrt(recon_err_sq),
+        'gamma_n': approx_gamma_n,
+        'gamma_c': approx_gamma_c,
+        'gamma_n_error': gamma_n_rel_error,
+        'gamma_c_error': gamma_c_rel_error,
+    }
 
 # =============================================================================
 # STEP 5: PLOTTING
@@ -330,7 +335,7 @@ log("=" * 60)
 log("STEP 5: Generating plots")
 log("=" * 60)
 
-# Plot 1: Error vs r
+# Plot 1: Error vs r (training data)
 fig1, axes1 = plt.subplots(1, 3, figsize=(15, 4))
 
 r_vals = list(results.keys())
@@ -363,7 +368,7 @@ plt.tight_layout()
 plt.savefig("pod_error_vs_r.png", dpi=150)
 log("Saved: pod_error_vs_r.png")
 
-# Plot 2: Time series comparison for select r values
+# Plot 2: Time series comparison for select r values (training data)
 r_to_plot = [R_VALUES[0], R_VALUES[len(R_VALUES)//2], R_VALUES[-1]]
 
 fig2, axes2 = plt.subplots(2, 1, figsize=(12, 8))
@@ -372,7 +377,7 @@ axes2[0].plot(gt_gamma_n, 'k-', label='Ground truth', linewidth=1.5, alpha=0.8)
 for r in r_to_plot:
     axes2[0].plot(results[r]['gamma_n'], '--', label=f'r={r}', alpha=0.8)
 axes2[0].set_ylabel(r'$\Gamma_n$')
-axes2[0].set_title(r'Particle Flux $\Gamma_n$')
+axes2[0].set_title(r'Particle Flux $\Gamma_n$ (Training Data)')
 axes2[0].legend()
 axes2[0].grid(True, alpha=0.3)
 
@@ -381,13 +386,73 @@ for r in r_to_plot:
     axes2[1].plot(results[r]['gamma_c'], '--', label=f'r={r}', alpha=0.8)
 axes2[1].set_ylabel(r'$\Gamma_c$')
 axes2[1].set_xlabel('Time step')
-axes2[1].set_title(r'Conductive Flux $\Gamma_c$')
+axes2[1].set_title(r'Conductive Flux $\Gamma_c$ (Training Data)')
 axes2[1].legend()
 axes2[1].grid(True, alpha=0.3)
 
 plt.tight_layout()
 plt.savefig("pod_gamma_timeseries.png", dpi=150)
 log("Saved: pod_gamma_timeseries.png")
+
+# Plot 3: Error vs r comparison (training vs test)
+fig3, axes3 = plt.subplots(1, 3, figsize=(15, 4))
+
+test_recon_errors = [test_results[r]['rel_error'] * 100 for r in r_vals]
+test_gamma_n_errors = [test_results[r]['gamma_n_error'] * 100 for r in r_vals]
+test_gamma_c_errors = [test_results[r]['gamma_c_error'] * 100 for r in r_vals]
+
+axes3[0].semilogy(r_vals, recon_errors, 'o-', linewidth=2, markersize=8, label='Training')
+axes3[0].semilogy(r_vals, test_recon_errors, 's--', linewidth=2, markersize=8, label='Test')
+axes3[0].set_xlabel('Number of modes (r)')
+axes3[0].set_ylabel('Reconstruction error (%)')
+axes3[0].set_title('State Reconstruction Error')
+axes3[0].legend()
+axes3[0].grid(True, alpha=0.3)
+
+axes3[1].semilogy(r_vals, gamma_n_errors, 'o-', linewidth=2, markersize=8, label=r'$\Gamma_n$ (Train)')
+axes3[1].semilogy(r_vals, test_gamma_n_errors, 'o--', linewidth=2, markersize=8, label=r'$\Gamma_n$ (Test)')
+axes3[1].semilogy(r_vals, gamma_c_errors, 's-', linewidth=2, markersize=8, label=r'$\Gamma_c$ (Train)')
+axes3[1].semilogy(r_vals, test_gamma_c_errors, 's--', linewidth=2, markersize=8, label=r'$\Gamma_c$ (Test)')
+axes3[1].set_xlabel('Number of modes (r)')
+axes3[1].set_ylabel('Relative error (%)')
+axes3[1].set_title('Gamma Estimation Error')
+axes3[1].legend()
+axes3[1].grid(True, alpha=0.3)
+
+axes3[2].plot(r_vals, energies, 'o-', linewidth=2, markersize=8, label='Energy retained')
+axes3[2].set_xlabel('Number of modes (r)')
+axes3[2].set_ylabel('Energy retained (%)')
+axes3[2].set_title('Cumulative Energy (from Training)')
+axes3[2].legend()
+axes3[2].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("pod_error_vs_r_comparison.png", dpi=150)
+log("Saved: pod_error_vs_r_comparison.png")
+
+# Plot 4: Time series comparison for test data
+fig4, axes4 = plt.subplots(2, 1, figsize=(12, 8))
+
+axes4[0].plot(test_gt_gamma_n, 'k-', label='Ground truth', linewidth=1.5, alpha=0.8)
+for r in r_to_plot:
+    axes4[0].plot(test_results[r]['gamma_n'], '--', label=f'r={r}', alpha=0.8)
+axes4[0].set_ylabel(r'$\Gamma_n$')
+axes4[0].set_title(r'Particle Flux $\Gamma_n$ (Test Data)')
+axes4[0].legend()
+axes4[0].grid(True, alpha=0.3)
+
+axes4[1].plot(test_gt_gamma_c, 'k-', label='Ground truth', linewidth=1.5, alpha=0.8)
+for r in r_to_plot:
+    axes4[1].plot(test_results[r]['gamma_c'], '--', label=f'r={r}', alpha=0.8)
+axes4[1].set_ylabel(r'$\Gamma_c$')
+axes4[1].set_xlabel('Time step')
+axes4[1].set_title(r'Conductive Flux $\Gamma_c$ (Test Data)')
+axes4[1].legend()
+axes4[1].grid(True, alpha=0.3)
+
+plt.tight_layout()
+plt.savefig("pod_gamma_timeseries_test.png", dpi=150)
+log("Saved: pod_gamma_timeseries_test.png")
 
 plt.show()
 
