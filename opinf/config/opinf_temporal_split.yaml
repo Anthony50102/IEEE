@@ -39,7 +39,7 @@ preprocessing:
 
 training:
   training_end: 8000               # Match temporal_split_train
-  n_steps: 8000                    # Total steps to predict
+  n_steps: 16000                    # Total steps to predict
 
 regularization:
   state_lin:
