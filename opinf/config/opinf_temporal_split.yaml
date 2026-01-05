@@ -1,0 +1,78 @@
+run_name: "opinf_temporal_split"  # Train on first n snapshots, predict rest
+
+paths:
+  output_base: "./output/"
+  
+  data_dir: "./data/hw2d/"
+  
+  # Single trajectory for temporal split mode
+  training_files: 
+      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5
+
+  # test_files not used in temporal_split mode
+  test_files: []
+
+physics:
+  dt: 0.025
+  n_fields: 2
+  n_x: 256
+  n_y: 256
+
+# Training mode configuration
+training_mode:
+  mode: "temporal_split"           # "multi_trajectory" or "temporal_split"
+  temporal_split_train: 2000       # Train on first 2000 snapshots (50 time units)
+
+reduction:
+  method: "linear"                 # "linear" (POD) or "manifold"
+  r: 75
+  target_energy: 0.9999
+
+truncation:
+  enabled: true
+  method: "time"
+  time: 200.0                      # Use 200 time units total (8000 snapshots)
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 2000               # Match temporal_split_train
+  n_steps: 8000                    # Total steps to predict
+
+regularization:
+  state_lin:
+    min: 1.0e0
+    max: 1.0e7
+    num: 15
+    scale: "linear"
+  state_quad:
+    min: 1.0e4
+    max: 1.0e12
+    num: 15
+    scale: "linear"
+  output_lin:
+    min: 1.0e-2
+    max: 1.0e4
+    num: 15
+    scale: "linear"
+  output_quad:
+    min: 1.0e-2
+    max: 1.0e6
+    num: 15
+    scale: "linear"
+
+model_selection:
+  method: "threshold"
+  threshold_mean: 0.05
+  threshold_std: 0.3
+
+evaluation:
+  save_predictions: true
+  generate_plots: true
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

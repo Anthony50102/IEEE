@@ -4,29 +4,29 @@ DMD (Dynamic Mode Decomposition) ROM Pipeline.
 This package implements Optimized DMD (opt-DMD via BOPDMD) for 
 reduced-order modeling of the Hasegawa-Wakatani system.
 
-Features:
-    - BOPDMD fitting with optional bagging
-    - Physics-based Gamma computation from reconstructed fields
-    - Full-state reconstruction from POD-reduced DMD predictions
+Pipeline Steps:
+    step_1_preprocess: Load data, compute POD, project snapshots
+    step_2_train: Fit BOPDMD model
+    step_3_evaluate: Compute predictions and metrics
 
 Modules:
-    utils: DMD-specific utility functions
-    save_pod_basis: Save POD basis for full-state reconstruction
-    step_2_fit_dmd: Fit BOPDMD model to training data
-    step_3_evaluate_dmd: Evaluate model on test trajectories
+    utils: Configuration and DMD forecasting utilities
+    data: Data loading and POD computation
+
+Training Modes:
+    multi_trajectory: Train on full trajectories, test on different ICs
+    temporal_split: Train on first n snapshots, predict the rest
 
 Usage:
-    # Step 1: Run the standard preprocessing (shared with OpInf)
-    python opinf/step_1_parallel_preprocess.py --config config/dmd_1train_5test.yaml
+    # Full pipeline with temporal split mode
+    python dmd/step_1_preprocess.py --config config/dmd_temporal_split.yaml
+    python dmd/step_2_train.py --config config/dmd_temporal_split.yaml --run-dir <run_dir>
+    python dmd/step_3_evaluate.py --config config/dmd_temporal_split.yaml --run-dir <run_dir>
     
-    # Step 1.5: Save POD basis for Gamma computation
-    python dmd/save_pod_basis.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
-    
-    # Step 2: Fit DMD model
-    python dmd/step_2_fit_dmd.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
-    
-    # Step 3: Evaluate predictions  
-    python dmd/step_3_evaluate_dmd.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
+    # Multi-trajectory mode (original behavior)
+    python dmd/step_1_preprocess.py --config config/dmd_1train_5test.yaml
+    python dmd/step_2_train.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
+    python dmd/step_3_evaluate.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
 
 Physics-Based Gamma:
     Γ_n = -∫d²x ñ ∂φ̃/∂y  (particle flux)

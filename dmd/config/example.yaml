@@ -1,12 +1,11 @@
 # =============================================================================
-# OpInf Pipeline Configuration
+# DMD Pipeline Configuration
 # =============================================================================
-# This configuration file controls all parameters for the discrete-time
-# Operator Inference ROM pipeline.
+# This configuration file controls all parameters for the BOPDMD ROM pipeline.
 #
 # Usage:
 #   mpirun -np 4 python step_1_preprocess.py --config config.yaml
-#   mpirun -np 4 python step_2_train.py --config config.yaml --run-dir /path
+#   python step_2_train.py --config config.yaml --run-dir /path
 #   python step_3_evaluate.py --config config.yaml --run-dir /path
 # =============================================================================
 
@@ -36,31 +35,31 @@ physics:
   n_y: 256               # Grid points in y
 
 # =============================================================================
-# TRAINING MODE
-# =============================================================================
-# Two modes available:
-#   "multi_trajectory" - Train on full trajectories, test on different ICs (default)
-#   "temporal_split"   - Train on first n snapshots, predict rest of same trajectory
-# =============================================================================
-training_mode:
-  mode: "multi_trajectory"     # "multi_trajectory" or "temporal_split"
-  temporal_split_train: 2000   # Only used if mode="temporal_split"
-
-# =============================================================================
-# DIMENSIONALITY REDUCTION
-# =============================================================================
-# Two methods available:
-#   "linear"   - Standard POD (default)
-#   "manifold" - Quadratic manifold via greedy mode selection
+# DIMENSIONALITY REDUCTION (POD)
 # =============================================================================
 reduction:
-  method: "linear"       # "linear" or "manifold"
-  r: 75                  # Number of modes to retain
-  target_energy: 0.9999  # Alternative to fixed r (uses whichever is smaller)
+  method: "linear"       # Only "linear" (POD) supported for DMD
+  r: 75                  # Number of POD modes to retain
+  target_energy: 0.9999  # Alternative to fixed r
+
+# =============================================================================
+# DMD-SPECIFIC SETTINGS
+# =============================================================================
+dmd:
+  # Training mode: "multi_trajectory" or "temporal_split"
+  #   multi_trajectory - Train on full trajectories, test on different ICs
+  #   temporal_split   - Train on first n snapshots, predict rest
+  training_mode: "multi_trajectory"
+  temporal_split_train: 2000   # Only used if training_mode="temporal_split"
   
-  # Quadratic manifold settings (only used if method="manifold")
-  n_vectors_to_check: 200  # Max candidates per greedy step
-  reg_magnitude: 1.0e-6    # Tikhonov regularization for coefficient solve
+  rank: null             # DMD rank (null = use same as POD r)
+  num_trials: 0          # Bagging trials for BOPDMD (0 = standard DMD)
+  use_proj: true         # Use POD projection in BOPDMD
+  eig_sort: "real"       # Eigenvalue sorting: "real", "imag", "abs"
+  
+  # Physics parameters for Gamma computation
+  k0: 0.15               # Wavenumber for grid spacing (dx = 2*pi/k0)
+  c1: 1.0                # Adiabaticity parameter for Gamma_c
 
 # =============================================================================
 # DATA TRUNCATION
@@ -82,58 +81,32 @@ preprocessing:
 # TRAINING PARAMETERS
 # =============================================================================
 training:
-  training_end: 8000     # Index marking end of training region (for error calc)
-  n_steps: 8000          # Number of time steps for ROM integration
+  training_end: 8000     # Index marking end of training region
+  n_steps: 8000          # Number of time steps for DMD integration
 
 # =============================================================================
-# REGULARIZATION PARAMETER GRIDS
-# =============================================================================
-# The OpInf optimization uses Tikhonov regularization:
-#   min ||D @ O - Y||_F^2 + α_lin ||O_lin||_F^2 + α_quad ||O_quad||_F^2
-#
-# The grid search explores all combinations of these parameters.
-# Total combinations = num(state_lin) × num(state_quad) × num(output_lin) × num(output_quad)
+# REGULARIZATION (for compatibility with shared preprocessing)
 # =============================================================================
 regularization:
-  state_lin:
-    min: 1.0e0
-    max: 1.0e7
-    num: 10
-    scale: "log"         # "linear" or "log"
-  
-  state_quad:
-    min: 1.0e4
-    max: 1.0e12
-    num: 10
-    scale: "log"
-  
-  output_lin:
-    min: 1.0e-2
-    max: 1.0e4
-    num: 10
-    scale: "log"
-  
-  output_quad:
-    min: 1.0e-2
-    max: 1.0e6
-    num: 10
-    scale: "log"
+  state_lin: {min: 1.0e-4, max: 1.0e6, num: 1, scale: "linear"}
+  state_quad: {min: 1.0e5, max: 1.0e15, num: 1, scale: "linear"}
+  output_lin: {min: 1.0e-10, max: 1.0e1, num: 1, scale: "linear"}
+  output_quad: {min: 1.0e-12, max: 1.0e1, num: 1, scale: "linear"}
 
 # =============================================================================
-# MODEL SELECTION
-# =============================================================================
-# After hyperparameter sweep, models meeting BOTH threshold criteria are kept.
-# All four error metrics (mean_n, std_n, mean_c, std_c) must be below thresholds.
+# MODEL SELECTION (not used for DMD, kept for compatibility)
 # =============================================================================
 model_selection:
-  threshold_mean: 0.05   # Max 5% error in mean statistics
-  threshold_std: 0.20    # Max 20% error in std statistics
+  method: "top_k"
+  num_top_models: 1
+  threshold_mean: 0.05
+  threshold_std: 0.4
 
 # =============================================================================
 # EVALUATION OPTIONS
 # =============================================================================
 evaluation:
-  save_predictions: true # Save ensemble predictions to disk
+  save_predictions: true # Save DMD predictions to disk
   generate_plots: true   # Generate diagnostic plots
 
 # =============================================================================

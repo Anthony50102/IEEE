@@ -19,7 +19,7 @@ from typing import List, Optional
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'opinf'))
 
 from utils import (
-    PipelineConfig as OpInfConfig,
+    OpInfConfig,
     load_config as load_opinf_config,
     save_config,
     get_run_directory,
@@ -29,7 +29,7 @@ from utils import (
     get_output_paths as get_opinf_output_paths,
     print_header,
     print_config_summary as print_opinf_config_summary,
-    loader,
+    load_dataset as loader,
 )
 
 
@@ -44,6 +44,10 @@ class DMDConfig(OpInfConfig):
     
     Extends OpInfConfig with DMD-specific parameters.
     """
+    # Training mode
+    training_mode: str = "multi_trajectory"  # "multi_trajectory" or "temporal_split"
+    temporal_split_train: int = 1000  # Snapshots for training (if temporal_split)
+    
     # DMD-specific parameters
     dmd_rank: Optional[int] = None  # DMD rank (defaults to POD r if None)
     num_trials: int = 0  # Number of bagging trials for BOPDMD (0 = no bagging)
@@ -84,6 +88,8 @@ def load_dmd_config(config_path: str) -> DMDConfig:
         raw = yaml.safe_load(f)
     
     dmd_section = raw.get("dmd", {})
+    cfg.training_mode = dmd_section.get("training_mode", "multi_trajectory")
+    cfg.temporal_split_train = dmd_section.get("temporal_split_train", 1000)
     cfg.dmd_rank = dmd_section.get("rank", None)
     cfg.num_trials = dmd_section.get("num_trials", 0)
     cfg.use_proj = dmd_section.get("use_proj", True)
@@ -113,10 +119,18 @@ def get_dmd_output_paths(run_dir: str) -> dict:
     # Get base paths from OpInf
     paths = get_opinf_output_paths(run_dir)
     
-    # Add DMD-specific paths
+    # Override paths to match DMD naming convention
     paths.update({
+        # Step 1 outputs (override with DMD-specific names)
+        "xhat_train": os.path.join(run_dir, "Xhat_train.npy"),
+        "xhat_test": os.path.join(run_dir, "Xhat_test.npy"),
+        "boundaries": os.path.join(run_dir, "boundaries.npz"),
+        "initial_conditions": os.path.join(run_dir, "initial_conditions.npz"),
+        "preprocessing_info": os.path.join(run_dir, "preprocessing_info.npz"),
+        
         # POD basis for reconstruction
         "pod_basis": os.path.join(run_dir, "pod_basis.npz"),
+        "pod_file": os.path.join(run_dir, "POD.npz"),
         
         # Step 2 outputs (DMD fitting)
         "dmd_model": os.path.join(run_dir, "dmd_model.npz"),
@@ -128,6 +142,7 @@ def get_dmd_output_paths(run_dir: str) -> dict:
         "dmd_forecasts_dir": os.path.join(run_dir, "dmd_forecasts"),
         "dmd_predictions": os.path.join(run_dir, "dmd_predictions.npz"),
         "dmd_metrics": os.path.join(run_dir, "dmd_evaluation_metrics.yaml"),
+        "figures_dir": os.path.join(run_dir, "figures"),
     })
     
     return paths
@@ -138,8 +153,12 @@ def print_dmd_config_summary(cfg: DMDConfig):
     print_header("DMD CONFIGURATION SUMMARY")
     print(f"  Run name: {cfg.run_name or '(auto)'}")
     print(f"  Output base: {cfg.output_base}")
-    print(f"  Training files: {len(cfg.training_files)}")
-    print(f"  Test files: {len(cfg.test_files)}")
+    print(f"  Training mode: {cfg.training_mode}")
+    if cfg.training_mode == "temporal_split":
+        print(f"    Train snapshots: {cfg.temporal_split_train}")
+    else:
+        print(f"  Training files: {len(cfg.training_files)}")
+        print(f"  Test files: {len(cfg.test_files)}")
     print(f"  POD modes (r): {cfg.r}")
     print(f"  DMD rank: {cfg.dmd_rank or 'same as POD r'}")
     print(f"  BOPDMD trials: {cfg.num_trials}")
@@ -463,7 +482,7 @@ def compute_gamma_from_state(
 def reconstruct_full_state(
     X_hat: np.ndarray,
     pod_basis: np.ndarray,
-    temporal_mean: np.ndarray = None,
+    temporal_mean=None,
 ) -> np.ndarray:
     """
     Reconstruct full state from reduced state using POD basis.
