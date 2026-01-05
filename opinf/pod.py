@@ -112,6 +112,15 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     
     t0 = MPI.Wtime()
     
+    # Verify Q_train_local shape consistency across ranks
+    local_shape = Q_train_local.shape
+    all_shapes = comm.gather(local_shape, root=0)
+    if rank == 0:
+        n_times = set(s[1] for s in all_shapes)
+        if len(n_times) > 1:
+            logger.error(f"  [ERROR] Inconsistent n_time across ranks: {all_shapes}")
+            raise ValueError(f"Q_train_local has inconsistent n_time across ranks: {all_shapes}")
+    
     # Compute local Gram matrix
     D_local = Q_train_local.T @ Q_train_local
     
@@ -141,7 +150,9 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     gc.collect()
     
     # Eigendecomposition (rank 0 only to save memory)
+    # IMPORTANT: Broadcast n_time to ensure all ranks agree on matrix dimensions
     n_time = D_global.shape[0]
+    n_time = comm.bcast(n_time, root=0)
     
     if rank == 0:
         logger.debug(f"  [DIAG] D_global trace: {np.trace(D_global):.2e}")
