@@ -1,0 +1,321 @@
+"""
+Step 3: DMD Evaluation and Prediction.
+
+This script orchestrates:
+1. Loading fitted DMD model from Step 2
+2. Computing forecasts for training and test trajectories
+3. Reconstructing full state and computing physics-based Gamma
+4. Computing evaluation metrics
+5. Generating diagnostic plots
+
+Usage:
+    python step_3_evaluate.py --config config.yaml --run-dir /path/to/run
+
+Author: Anthony Poole
+"""
+
+import argparse
+import os
+import sys
+import time
+import numpy as np
+import yaml
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from dmd.utils import (
+    load_dmd_config, get_dmd_output_paths, print_dmd_config_summary,
+    dmd_forecast_reduced, compute_gamma_from_state, reconstruct_full_state,
+)
+from opinf.utils import (
+    setup_logging, save_config, save_step_status, check_step_completed,
+    print_header, load_dataset as loader,
+)
+
+
+# =============================================================================
+# MODEL & DATA LOADING
+# =============================================================================
+
+def load_dmd_model(paths: dict, logger) -> dict:
+    """Load DMD model from Step 2."""
+    logger.info(f"Loading DMD model from {paths['dmd_model']}")
+    data = np.load(paths['dmd_model'])
+    model = {
+        'eigs': data['eigs'],
+        'modes_reduced': data['modes_reduced'],
+        'amplitudes': data['amplitudes'],
+        'dt': float(data['dt']),
+        'dmd_rank': int(data['dmd_rank']),
+    }
+    logger.info(f"  Rank: {model['dmd_rank']}, dt: {model['dt']}")
+    return model
+
+
+def load_pod_basis(paths: dict, logger):
+    """Load POD basis for full-state reconstruction."""
+    pod_path = paths['pod_basis']
+    if not os.path.exists(pod_path):
+        logger.warning("POD basis not found, will not compute physics-based Gamma")
+        return None
+    
+    logger.info(f"Loading POD basis from {pod_path}")
+    data = np.load(pod_path)
+    return {
+        'U_r': data['U_r'],
+        'mean': data['mean'],
+        'n_y': int(data['n_y']),
+        'n_x': int(data['n_x']),
+    }
+
+
+def load_supporting_data(paths: dict, logger) -> tuple:
+    """Load ICs and boundaries."""
+    ics = np.load(paths['initial_conditions'])
+    bounds = np.load(paths['boundaries'])
+    return (
+        ics['train_ICs_reduced'], ics['test_ICs_reduced'],
+        bounds['train_boundaries'], bounds['test_boundaries'],
+    )
+
+
+# =============================================================================
+# FORECASTING
+# =============================================================================
+
+def compute_amplitudes_from_ic(x0: np.ndarray, modes_reduced: np.ndarray) -> np.ndarray:
+    """Compute DMD amplitudes from initial condition via least squares."""
+    return np.linalg.lstsq(modes_reduced, x0, rcond=None)[0]
+
+
+def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: dict, 
+                        k0: float, c1: float) -> dict:
+    """Forecast a single trajectory."""
+    r = model['dmd_rank']
+    x0_r = x0[:r]
+    
+    # Compute amplitudes for this IC
+    amplitudes = compute_amplitudes_from_ic(x0_r, model['modes_reduced'])
+    
+    # Time vector
+    t = np.arange(n_steps) * model['dt']
+    
+    # Forecast in reduced space
+    X_hat = dmd_forecast_reduced(model['eigs'], model['modes_reduced'], amplitudes, t)
+    X_hat = np.real(X_hat)  # (r, n_steps)
+    
+    if np.any(np.isnan(X_hat)) or np.any(np.isinf(X_hat)):
+        return {'is_nan': True}
+    
+    result = {'is_nan': False, 'X_hat': X_hat}
+    
+    # Compute Gamma from physics if POD basis available
+    if pod_basis is not None:
+        mean_data = pod_basis.get('mean')
+        Q_full = reconstruct_full_state(X_hat, pod_basis['U_r'], mean_data)
+        Gamma_n, Gamma_c = compute_gamma_from_state(
+            Q_full, 2, pod_basis['n_y'], pod_basis['n_x'], k0, c1
+        )
+        result['Gamma_n'] = Gamma_n
+        result['Gamma_c'] = Gamma_c
+    
+    return result
+
+
+def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
+                      pod_basis, k0: float, c1: float, logger, name: str) -> dict:
+    """Compute forecasts for all trajectories."""
+    n_traj = len(boundaries) - 1
+    forecasts = {'X_hat': [], 'Gamma_n': [], 'Gamma_c': [], 'is_nan': []}
+    
+    logger.info(f"Computing {n_traj} {name} forecast(s)...")
+    
+    for i in range(n_traj):
+        n_steps = boundaries[i + 1] - boundaries[i]
+        x0 = ICs[i, :]
+        
+        result = forecast_trajectory(model, x0, n_steps, pod_basis, k0, c1)
+        
+        forecasts['is_nan'].append(result['is_nan'])
+        if result['is_nan']:
+            forecasts['X_hat'].append(None)
+            forecasts['Gamma_n'].append(None)
+            forecasts['Gamma_c'].append(None)
+            logger.warning(f"  Trajectory {i+1}: NaN detected")
+        else:
+            forecasts['X_hat'].append(result['X_hat'])
+            forecasts['Gamma_n'].append(result.get('Gamma_n'))
+            forecasts['Gamma_c'].append(result.get('Gamma_c'))
+            logger.info(f"  Trajectory {i+1}: {n_steps} steps")
+    
+    return forecasts
+
+
+# =============================================================================
+# METRICS
+# =============================================================================
+
+def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
+                    engine: str, logger, name: str) -> dict:
+    """Compute evaluation metrics."""
+    logger.info(f"Computing {name} metrics...")
+    
+    metrics = {'trajectories': [], 'summary': {}}
+    all_errs = {'mean_n': [], 'std_n': [], 'mean_c': [], 'std_c': []}
+    
+    n_traj = len(boundaries) - 1
+    
+    for i in range(n_traj):
+        if forecasts['is_nan'][i] or forecasts['Gamma_n'][i] is None:
+            metrics['trajectories'].append({'valid': False})
+            continue
+        
+        # Load reference
+        fh = loader(ref_files[i], engine=engine)
+        n_steps = boundaries[i + 1] - boundaries[i]
+        ref_n = fh["gamma_n"].data[:n_steps]
+        ref_c = fh["gamma_c"].data[:n_steps]
+        
+        pred_n = forecasts['Gamma_n'][i]
+        pred_c = forecasts['Gamma_c'][i]
+        
+        # Stats and errors
+        ref_mean_n, ref_std_n = np.mean(ref_n), np.std(ref_n, ddof=1)
+        ref_mean_c, ref_std_c = np.mean(ref_c), np.std(ref_c, ddof=1)
+        pred_mean_n, pred_std_n = np.mean(pred_n), np.std(pred_n, ddof=1)
+        pred_mean_c, pred_std_c = np.mean(pred_c), np.std(pred_c, ddof=1)
+        
+        err_mean_n = np.abs(ref_mean_n - pred_mean_n) / np.abs(ref_mean_n)
+        err_std_n = np.abs(ref_std_n - pred_std_n) / ref_std_n
+        err_mean_c = np.abs(ref_mean_c - pred_mean_c) / np.abs(ref_mean_c)
+        err_std_c = np.abs(ref_std_c - pred_std_c) / ref_std_c
+        
+        all_errs['mean_n'].append(err_mean_n)
+        all_errs['std_n'].append(err_std_n)
+        all_errs['mean_c'].append(err_mean_c)
+        all_errs['std_c'].append(err_std_c)
+        
+        metrics['trajectories'].append({
+            'valid': True,
+            'trajectory': i,
+            'err_mean_Gamma_n': float(err_mean_n),
+            'err_std_Gamma_n': float(err_std_n),
+            'err_mean_Gamma_c': float(err_mean_c),
+            'err_std_Gamma_c': float(err_std_c),
+        })
+        
+        logger.info(f"  Traj {i+1}: Γn=[{err_mean_n:.4f}, {err_std_n:.4f}], "
+                    f"Γc=[{err_mean_c:.4f}, {err_std_c:.4f}]")
+    
+    if all_errs['mean_n']:
+        metrics['summary'] = {
+            'mean_err_Gamma_n': float(np.mean(all_errs['mean_n'])),
+            'std_err_Gamma_n': float(np.mean(all_errs['std_n'])),
+            'mean_err_Gamma_c': float(np.mean(all_errs['mean_c'])),
+            'std_err_Gamma_c': float(np.mean(all_errs['std_c'])),
+        }
+    
+    return metrics
+
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main():
+    """Main entry point for Step 3."""
+    parser = argparse.ArgumentParser(description="Step 3: DMD Evaluation")
+    parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
+    parser.add_argument("--run-dir", type=str, required=True, help="Run directory")
+    args = parser.parse_args()
+    
+    cfg = load_dmd_config(args.config)
+    cfg.run_dir = args.run_dir
+    
+    logger = setup_logging("step_3", args.run_dir, cfg.log_level)
+    
+    print_header("STEP 3: DMD EVALUATION")
+    print(f"  Run directory: {args.run_dir}")
+    print_dmd_config_summary(cfg)
+    
+    if not check_step_completed(args.run_dir, "step_2"):
+        logger.error("Step 2 has not completed!")
+        return
+    
+    save_step_status(args.run_dir, "step_3", "running")
+    save_config(cfg, args.run_dir, step_name="step_3")
+    
+    paths = get_dmd_output_paths(args.run_dir)
+    t_start = time.time()
+    
+    try:
+        # Load model and data
+        model = load_dmd_model(paths, logger)
+        pod_basis = load_pod_basis(paths, logger)
+        train_ICs, test_ICs, train_bounds, test_bounds = load_supporting_data(paths, logger)
+        
+        # Compute forecasts
+        train_pred = compute_forecasts(model, train_ICs, train_bounds, pod_basis,
+                                        cfg.k0, cfg.c1, logger, "training")
+        test_pred = compute_forecasts(model, test_ICs, test_bounds, pod_basis,
+                                       cfg.k0, cfg.c1, logger, "test")
+        
+        # Determine reference files for metrics
+        if cfg.training_mode == "temporal_split":
+            # For temporal split, use the same file for both train and test
+            train_ref_files = cfg.training_files
+            test_ref_files = cfg.training_files  # Same file, different portion
+        else:
+            train_ref_files = cfg.training_files
+            test_ref_files = cfg.test_files
+        
+        # Compute metrics
+        train_metrics = compute_metrics(train_pred, train_ref_files, train_bounds,
+                                         cfg.engine, logger, "training")
+        test_metrics = compute_metrics(test_pred, test_ref_files, test_bounds,
+                                        cfg.engine, logger, "test")
+        
+        # Save results
+        all_metrics = {'train': train_metrics, 'test': test_metrics}
+        with open(paths['dmd_metrics'], 'w') as f:
+            yaml.dump(all_metrics, f, default_flow_style=False)
+        logger.info(f"Saved metrics to {paths['dmd_metrics']}")
+        
+        # Save predictions
+        if cfg.save_predictions:
+            save_dict = {}
+            save_dict['n_train_traj'] = np.array(len(train_bounds) - 1)
+            save_dict['n_test_traj'] = np.array(len(test_bounds) - 1)
+            for i, gn in enumerate(train_pred['Gamma_n']):
+                if gn is not None:
+                    save_dict[f'train_traj_{i}_Gamma_n'] = gn
+            for i, gn in enumerate(test_pred['Gamma_n']):
+                if gn is not None:
+                    save_dict[f'test_traj_{i}_Gamma_n'] = gn
+            np.savez(paths['dmd_predictions'], **save_dict)
+            logger.info(f"Saved predictions to {paths['dmd_predictions']}")
+        
+        # Final timing
+        t_elapsed = time.time() - t_start
+        
+        save_step_status(args.run_dir, "step_3", "completed", {
+            "time_seconds": t_elapsed,
+        })
+        
+        # Print summary
+        print_header("STEP 3 COMPLETE")
+        print(f"  Runtime: {t_elapsed:.1f}s")
+        
+        if test_metrics.get('summary'):
+            print(f"\n  TEST SUMMARY:")
+            print(f"    Avg Γn mean error: {test_metrics['summary']['mean_err_Gamma_n']:.4f}")
+            print(f"    Avg Γc mean error: {test_metrics['summary']['mean_err_Gamma_c']:.4f}")
+        
+    except Exception as e:
+        logger.error(f"Step 3 failed: {e}", exc_info=True)
+        save_step_status(args.run_dir, "step_3", "failed", {"error": str(e)})
+        raise
+
+
+if __name__ == "__main__":
+    main()

@@ -21,6 +21,10 @@ physics:
   n_x: 256                      # Grid points in x
   n_y: 256                      # Grid points in y
 
+# Training mode (multi_trajectory = train/test on different ICs)
+training_mode:
+  mode: "multi_trajectory"
+
 reduction:
   method: "manifold"       # "linear" or "manifold"
   r: 75                  # Number of modes to retain
@@ -55,14 +59,14 @@ regularization:
         min: 1.0e4
         max: 1.0e12
         num: 20
-    scale: "linear"
+        scale: "linear"
 
       # If going to change stuff change state bounds
     output_lin:
         min: 1.0e-2
         max: 1.0e4
         num: 20
-    scale: "linear"
+        scale: "linear"
                                                                   
     output_quad:
         min: 1.0e-2

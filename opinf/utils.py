@@ -42,6 +42,10 @@ class OpInfConfig:
     training_files: List[str] = field(default_factory=list)
     test_files: List[str] = field(default_factory=list)
     
+    # Training mode
+    training_mode: str = "multi_trajectory"  # "multi_trajectory" or "temporal_split"
+    temporal_split_train: int = 1000  # Snapshots for training (if temporal_split)
+    
     # Physics
     dt: float = 0.025
     n_fields: int = 2
@@ -139,6 +143,11 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.target_energy = reduction.get("target_energy", 0.9999)
     cfg.n_vectors_to_check = reduction.get("n_vectors_to_check", 200)
     cfg.reg_magnitude = float(reduction.get("reg_magnitude", 1e-6))
+    
+    # Training mode
+    training_mode = raw.get("training_mode", {})
+    cfg.training_mode = training_mode.get("mode", "multi_trajectory")
+    cfg.temporal_split_train = training_mode.get("temporal_split_train", 1000)
     
     # Truncation
     trunc = raw.get("truncation", {})

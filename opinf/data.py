@@ -80,6 +80,12 @@ def load_distributed_snapshots(
 
 def load_all_data_distributed(cfg, run_dir: str, comm, rank: int, size: int, logger) -> tuple:
     """Load all training and test data in distributed fashion."""
+    
+    # Check for temporal split mode
+    if cfg.training_mode == "temporal_split":
+        return load_temporal_split_distributed(cfg, run_dir, comm, rank, size, logger)
+    
+    # Original multi-trajectory mode
     if rank == 0:
         logger.info("Loading simulation data (distributed)...")
         
@@ -146,6 +152,70 @@ def load_all_data_distributed(cfg, run_dir: str, comm, rank: int, size: int, log
         Q_test_local[:, test_boundaries[i]:test_boundaries[i + 1]] = Q_local
         del Q_local
         gc.collect()
+    
+    return (Q_train_local, Q_test_local, train_boundaries, test_boundaries,
+            n_spatial, n_local, start_idx, end_idx)
+
+
+def load_temporal_split_distributed(cfg, run_dir: str, comm, rank: int, size: int, logger) -> tuple:
+    """
+    Load data for temporal split mode: train on first n snapshots, test on rest.
+    
+    Uses a single trajectory file, splitting temporally instead of by IC.
+    """
+    if rank == 0:
+        logger.info("Loading simulation data (temporal split mode)...")
+        logger.info(f"  Training on first {cfg.temporal_split_train} snapshots")
+        
+        # Get metadata from single training file
+        fp = cfg.training_files[0]
+        n_spatial, n_time_total, max_snaps = get_file_metadata(cfg, fp)
+        
+        if max_snaps and max_snaps < n_time_total:
+            n_time_total = max_snaps
+        
+        n_train = cfg.temporal_split_train
+        if n_train >= n_time_total:
+            raise ValueError(f"temporal_split_train ({n_train}) >= total snapshots ({n_time_total})")
+        
+        n_test = n_time_total - n_train
+        
+        metadata = {
+            'n_spatial': n_spatial,
+            'n_time_total': n_time_total,
+            'n_train': n_train,
+            'n_test': n_test,
+            'max_snaps': max_snaps,
+        }
+        logger.info(f"  Total: {n_time_total}, Train: {n_train}, Test: {n_test}")
+    else:
+        metadata = None
+    
+    metadata = comm.bcast(metadata, root=0)
+    n_spatial = metadata['n_spatial']
+    n_train = metadata['n_train']
+    n_test = metadata['n_test']
+    
+    # Distribute spatial DOF
+    start_idx, end_idx, n_local = distribute_indices(rank, n_spatial, size)
+    
+    if rank == 0:
+        logger.info(f"  Spatial DOF: {n_spatial:,}, MPI ranks: {size}")
+    
+    # Load full trajectory
+    Q_full_local = load_distributed_snapshots(
+        cfg.training_files[0], start_idx, end_idx, cfg.engine, metadata['max_snaps']
+    )
+    
+    # Split temporally
+    Q_train_local = Q_full_local[:, :n_train].copy()
+    Q_test_local = Q_full_local[:, n_train:].copy()
+    del Q_full_local
+    gc.collect()
+    
+    # Boundaries for single trajectory each
+    train_boundaries = [0, n_train]
+    test_boundaries = [0, n_test]
     
     return (Q_train_local, Q_test_local, train_boundaries, test_boundaries,
             n_spatial, n_local, start_idx, end_idx)

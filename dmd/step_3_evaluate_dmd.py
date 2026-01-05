@@ -41,7 +41,7 @@ from opinf.utils import (
     save_step_status,
     check_step_completed,
     print_header,
-    loader,
+    load_dataset as loader,
 )
 
 
@@ -463,7 +463,7 @@ def compute_metrics(
             continue
         
         # Load reference data
-        fh = loader(reference_files[traj_idx], ENGINE=engine)
+        fh = loader(reference_files[traj_idx], engine=engine)
         ref_Gamma_n = fh["gamma_n"].data
         ref_Gamma_c = fh["gamma_c"].data
         
@@ -609,7 +609,7 @@ def generate_plots(
             continue
         
         # Load reference
-        fh = loader(reference_files[traj_idx], ENGINE=cfg.engine)
+        fh = loader(reference_files[traj_idx], engine=cfg.engine)
         ref_Gamma_n = fh["gamma_n"].data
         ref_Gamma_c = fh["gamma_c"].data
         

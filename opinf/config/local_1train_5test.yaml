@@ -17,6 +17,10 @@ physics:
   n_x: 256               
   n_y: 256               
 
+# Training mode (multi_trajectory = train/test on different ICs)
+training_mode:
+  mode: "multi_trajectory"
+
 # =============================================================================
 # DIMENSIONALITY REDUCTION
 # =============================================================================

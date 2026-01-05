@@ -39,7 +39,7 @@ from opinf.utils import (
     save_step_status,
     check_step_completed,
     print_header,
-    loader,
+    load_dataset as loader,
 )
 
 
