@@ -37,20 +37,21 @@ print("DEBUG: FINISHED THE IMPORTS")
 # CONFIGURATION
 # =============================================================================
 # Path to HW2D simulation HDF5 file
-DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512/test_nu5e-9.h5"
-TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512/test_nu5e-9_2.h5" 
+DATA_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/test_nu5e-9.h5"
+TEST_FILE = "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/test_nu5e-9_2.h5" 
 
 # Physical parameters
 k0 = 0.15
 c1 = 1.0
 Lx = 2 * np.pi / k0
-nx = 256
+nx = 512
 dx = Lx / nx
 
 # Range of r values to test
 R_VALUES = [10, 25, 50, 75, 100, 150, 200]
 
 # Number of timesteps to use (None = use all)
+NT_START = 8000
 NT_MAX = 4000
 
 # =============================================================================
@@ -87,12 +88,12 @@ log(f"Data file: {DATA_FILE}")
 
 with xr.open_dataset(DATA_FILE, engine="h5netcdf", phony_dims="sort") as fh:
     # Load density and phi
-    density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
-    phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
+    density = fh["density"].values[NT_START:NT_START+NT_MAX]  # (nt, ny, nx)
+    phi = fh["phi"].values[NT_START:NT_START+NT_MAX]          # (nt, ny, nx)
     
     # Ground truth gamma values from file
-    gt_gamma_n = fh["gamma_n"].values[:NT_MAX]
-    gt_gamma_c = fh["gamma_c"].values[:NT_MAX]
+    gt_gamma_n = fh["gamma_n"].values[NT_START:NT_START+NT_MAX]
+    gt_gamma_c = fh["gamma_c"].values[NT_START:NT_START+NT_MAX]
 
 nt = density.shape[0]
 ny, nx_grid = density.shape[1], density.shape[2]
@@ -266,12 +267,12 @@ log("Using SVD-based POD for this step")
 log("=" * 60)
 with xr.open_dataset(TEST_FILE, engine="h5netcdf", phony_dims="sort") as fh:
     # Load density and phi
-    test_density = fh["density"].values[:NT_MAX]  # (nt, ny, nx)
-    test_phi = fh["phi"].values[:NT_MAX]          # (nt, ny, nx)
+    test_density = fh["density"].values[NT_START:NT_START+NT_MAX]  # (nt, ny, nx)
+    test_phi = fh["phi"].values[NT_START:NT_START+NT_MAX]          # (nt, ny, nx)
     
     # Ground truth gamma values from file
-    test_gt_gamma_n = fh["gamma_n"].values[:NT_MAX]
-    test_gt_gamma_c = fh["gamma_c"].values[:NT_MAX]
+    test_gt_gamma_n = fh["gamma_n"].values[NT_START:NT_START+NT_MAX]
+    test_gt_gamma_c = fh["gamma_c"].values[NT_START:NT_START+NT_MAX]
 
 test_nt = test_density.shape[0]
 test_ny, test_nx_grid = test_density.shape[1], test_density.shape[2]
