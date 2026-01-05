@@ -1,13 +1,13 @@
 run_name: "opinf_temporal_split"  # Train on first n snapshots, predict rest
 
 paths:
-  output_base: "./output/"
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
   
-  data_dir: "./data/hw2d/"
+  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
   
   # Single trajectory for temporal split mode
   training_files: 
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5
+      - test_nu5e-9.h5
 
   # test_files not used in temporal_split mode
   test_files: []
@@ -15,18 +15,18 @@ paths:
 physics:
   dt: 0.025
   n_fields: 2
-  n_x: 256
-  n_y: 256
+  n_x: 512
+  n_y: 512
 
 # Training mode configuration
 training_mode:
   mode: "temporal_split"           # "multi_trajectory" or "temporal_split"
-  temporal_split_train: 2000       # Train on first 2000 snapshots (50 time units)
+  temporal_split_train: 8000       # Train on first 8000 snapshots (200 time units)
 
 reduction:
   method: "linear"                 # "linear" (POD) or "manifold"
   r: 75
-  target_energy: 0.9999
+  target_energy: 0.95
 
 truncation:
   enabled: true
@@ -34,33 +34,33 @@ truncation:
   time: 200.0                      # Use 200 time units total (8000 snapshots)
 
 preprocessing:
-  centering: true
+  centering: false
   scaling: false
 
 training:
-  training_end: 2000               # Match temporal_split_train
+  training_end: 8000               # Match temporal_split_train
   n_steps: 8000                    # Total steps to predict
 
 regularization:
   state_lin:
-    min: 1.0e0
+    min: 1.0e-4
     max: 1.0e7
-    num: 15
+    num: 20
     scale: "linear"
   state_quad:
-    min: 1.0e4
+    min: 1.0e0
     max: 1.0e12
-    num: 15
+    num: 20
     scale: "linear"
   output_lin:
-    min: 1.0e-2
+    min: 1.0e-6
     max: 1.0e4
-    num: 15
+    num: 20
     scale: "linear"
   output_quad:
-    min: 1.0e-2
+    min: 1.0e-6
     max: 1.0e6
-    num: 15
+    num: 20
     scale: "linear"
 
 model_selection:
