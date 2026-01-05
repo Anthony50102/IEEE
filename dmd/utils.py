@@ -46,7 +46,10 @@ class DMDConfig(OpInfConfig):
     """
     # Training mode
     training_mode: str = "multi_trajectory"  # "multi_trajectory" or "temporal_split"
-    temporal_split_train: int = 1000  # Snapshots for training (if temporal_split)
+    train_start: int = 0      # Start snapshot for training (temporal_split only)
+    train_end: int = 8000     # End snapshot for training (temporal_split only)
+    test_start: int = 8000    # Start snapshot for testing (temporal_split only)
+    test_end: int = 16000     # End snapshot for testing (temporal_split only)
     
     # DMD-specific parameters
     dmd_rank: Optional[int] = None  # DMD rank (defaults to POD r if None)
@@ -89,7 +92,10 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     
     dmd_section = raw.get("dmd", {})
     cfg.training_mode = dmd_section.get("training_mode", "multi_trajectory")
-    cfg.temporal_split_train = dmd_section.get("temporal_split_train", 1000)
+    cfg.train_start = dmd_section.get("train_start", 0)
+    cfg.train_end = dmd_section.get("train_end", 8000)
+    cfg.test_start = dmd_section.get("test_start", 8000)
+    cfg.test_end = dmd_section.get("test_end", 16000)
     cfg.dmd_rank = dmd_section.get("rank", None)
     cfg.num_trials = dmd_section.get("num_trials", 0)
     cfg.use_proj = dmd_section.get("use_proj", True)

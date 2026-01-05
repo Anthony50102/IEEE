@@ -44,7 +44,10 @@ class OpInfConfig:
     
     # Training mode
     training_mode: str = "multi_trajectory"  # "multi_trajectory" or "temporal_split"
-    temporal_split_train: int = 1000  # Snapshots for training (if temporal_split)
+    train_start: int = 0      # Start snapshot for training (temporal_split only)
+    train_end: int = 8000     # End snapshot for training (temporal_split only)
+    test_start: int = 8000    # Start snapshot for testing (temporal_split only)
+    test_end: int = 16000     # End snapshot for testing (temporal_split only)
     
     # Physics
     dt: float = 0.025
@@ -147,7 +150,10 @@ def load_config(config_path: str) -> OpInfConfig:
     # Training mode
     training_mode = raw.get("training_mode", {})
     cfg.training_mode = training_mode.get("mode", "multi_trajectory")
-    cfg.temporal_split_train = training_mode.get("temporal_split_train", 1000)
+    cfg.train_start = training_mode.get("train_start", 0)
+    cfg.train_end = training_mode.get("train_end", 8000)
+    cfg.test_start = training_mode.get("test_start", 8000)
+    cfg.test_end = training_mode.get("test_end", 16000)
     
     # Truncation
     trunc = raw.get("truncation", {})
