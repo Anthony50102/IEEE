@@ -40,11 +40,15 @@ physics:
 # =============================================================================
 # Two modes available:
 #   "multi_trajectory" - Train on full trajectories, test on different ICs (default)
-#   "temporal_split"   - Train on first n snapshots, predict rest of same trajectory
+#   "temporal_split"   - Train/test on specified snapshot ranges from one trajectory
 # =============================================================================
 training_mode:
-  mode: "multi_trajectory"     # "multi_trajectory" or "temporal_split"
-  temporal_split_train: 2000   # Only used if mode="temporal_split"
+  mode: "multi_trajectory"
+  # Only used if mode="temporal_split":
+  train_start: 8000      # Train from this snapshot
+  train_end: 16000       # Train to this snapshot
+  test_start: 16000      # Test from this snapshot
+  test_end: 24000        # Test to this snapshot
 
 # =============================================================================
 # DIMENSIONALITY REDUCTION

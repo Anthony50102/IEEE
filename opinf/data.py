@@ -159,40 +159,52 @@ def load_all_data_distributed(cfg, run_dir: str, comm, rank: int, size: int, log
 
 def load_temporal_split_distributed(cfg, run_dir: str, comm, rank: int, size: int, logger) -> tuple:
     """
-    Load data for temporal split mode: train on first n snapshots, test on rest.
+    Load data for temporal split mode using explicit snapshot ranges.
     
-    Uses a single trajectory file, splitting temporally instead of by IC.
+    Uses a single trajectory file with user-specified train/test ranges.
     """
     if rank == 0:
         logger.info("Loading simulation data (temporal split mode)...")
-        logger.info(f"  Training on first {cfg.temporal_split_train} snapshots")
         
         # Get metadata from single training file
         fp = cfg.training_files[0]
-        n_spatial, n_time_total, max_snaps = get_file_metadata(cfg, fp)
+        n_spatial, n_time_total, _ = get_file_metadata(cfg, fp)
         
-        if max_snaps and max_snaps < n_time_total:
-            n_time_total = max_snaps
+        # Get ranges from config
+        train_start, train_end = cfg.train_start, cfg.train_end
+        test_start, test_end = cfg.test_start, cfg.test_end
         
-        n_train = cfg.temporal_split_train
-        if n_train >= n_time_total:
-            raise ValueError(f"temporal_split_train ({n_train}) >= total snapshots ({n_time_total})")
+        # Validate ranges
+        if train_end > n_time_total or test_end > n_time_total:
+            raise ValueError(f"Range exceeds file length ({n_time_total} snapshots)")
+        if train_start >= train_end:
+            raise ValueError(f"Invalid train range: [{train_start}, {train_end})")
+        if test_start >= test_end:
+            raise ValueError(f"Invalid test range: [{test_start}, {test_end})")
         
-        n_test = n_time_total - n_train
+        n_train = train_end - train_start
+        n_test = test_end - test_start
         
         metadata = {
             'n_spatial': n_spatial,
-            'n_time_total': n_time_total,
+            'train_start': train_start,
+            'train_end': train_end,
+            'test_start': test_start,
+            'test_end': test_end,
             'n_train': n_train,
             'n_test': n_test,
-            'max_snaps': max_snaps,
         }
-        logger.info(f"  Total: {n_time_total}, Train: {n_train}, Test: {n_test}")
+        logger.info(f"  Train: snapshots [{train_start}, {train_end}) = {n_train} snapshots")
+        logger.info(f"  Test:  snapshots [{test_start}, {test_end}) = {n_test} snapshots")
     else:
         metadata = None
     
     metadata = comm.bcast(metadata, root=0)
     n_spatial = metadata['n_spatial']
+    train_start = metadata['train_start']
+    train_end = metadata['train_end']
+    test_start = metadata['test_start']
+    test_end = metadata['test_end']
     n_train = metadata['n_train']
     n_test = metadata['n_test']
     
@@ -202,14 +214,15 @@ def load_temporal_split_distributed(cfg, run_dir: str, comm, rank: int, size: in
     if rank == 0:
         logger.info(f"  Spatial DOF: {n_spatial:,}, MPI ranks: {size}")
     
-    # Load full trajectory
+    # Load full trajectory (we need to load enough to cover both ranges)
+    max_snap_needed = max(train_end, test_end)
     Q_full_local = load_distributed_snapshots(
-        cfg.training_files[0], start_idx, end_idx, cfg.engine, metadata['max_snaps']
+        cfg.training_files[0], start_idx, end_idx, cfg.engine, max_snap_needed
     )
     
-    # Split temporally
-    Q_train_local = Q_full_local[:, :n_train].copy()
-    Q_test_local = Q_full_local[:, n_train:].copy()
+    # Extract train and test ranges
+    Q_train_local = Q_full_local[:, train_start:train_end].copy()
+    Q_test_local = Q_full_local[:, test_start:test_end].copy()
     del Q_full_local
     gc.collect()
     

@@ -47,10 +47,13 @@ reduction:
 # =============================================================================
 dmd:
   # Training mode: "multi_trajectory" or "temporal_split"
-  #   multi_trajectory - Train on full trajectories, test on different ICs
-  #   temporal_split   - Train on first n snapshots, predict rest
   training_mode: "multi_trajectory"
-  temporal_split_train: 2000   # Only used if training_mode="temporal_split"
+  
+  # Only used if training_mode="temporal_split":
+  train_start: 8000      # Train from this snapshot
+  train_end: 16000       # Train to this snapshot
+  test_start: 16000      # Test from this snapshot
+  test_end: 24000        # Test to this snapshot
   
   rank: null             # DMD rank (null = use same as POD r)
   num_trials: 0          # Bagging trials for BOPDMD (0 = standard DMD)

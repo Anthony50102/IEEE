@@ -75,22 +75,30 @@ def main():
         n_y, n_x = cfg.n_y, cfg.n_x
         
         if cfg.training_mode == "temporal_split":
-            # Single trajectory: split into train/test temporally
+            # Single trajectory with explicit train/test ranges
             Q_full, n_y, n_x = load_trajectory(cfg.training_files[0], cfg, logger)
             n_spatial, n_time = Q_full.shape
             
-            # Split: first n_train snapshots for training
-            n_train = cfg.temporal_split_train
-            if n_train >= n_time:
-                raise ValueError(f"temporal_split_train ({n_train}) >= total snapshots ({n_time})")
+            # Get ranges from config
+            train_start, train_end = cfg.train_start, cfg.train_end
+            test_start, test_end = cfg.test_start, cfg.test_end
             
-            Q_train = Q_full[:, :n_train]
-            Q_test = Q_full[:, n_train:]
+            # Validate
+            if train_end > n_time or test_end > n_time:
+                raise ValueError(f"Range exceeds file length ({n_time} snapshots)")
+            
+            # Extract ranges
+            Q_train = Q_full[:, train_start:train_end]
+            Q_test = Q_full[:, test_start:test_end]
+            n_train = train_end - train_start
+            n_test = test_end - test_start
             
             train_boundaries = np.array([0, n_train])
-            test_boundaries = np.array([0, n_time - n_train])
+            test_boundaries = np.array([0, n_test])
             
-            logger.info(f"  Temporal split: {n_train} train / {n_time - n_train} test snapshots")
+            logger.info(f"  Temporal split:")
+            logger.info(f"    Train: snapshots [{train_start}, {train_end}) = {n_train}")
+            logger.info(f"    Test:  snapshots [{test_start}, {test_end}) = {n_test}")
         else:
             # Multi-trajectory mode (original behavior)
             Q_train_list = []

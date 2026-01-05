@@ -20,8 +20,11 @@ physics:
 
 # Training mode configuration
 training_mode:
-  mode: "temporal_split"           # "multi_trajectory" or "temporal_split"
-  temporal_split_train: 8000       # Train on first 8000 snapshots (200 time units)
+  mode: "temporal_split"
+  train_start: 8000      # Train from snapshot 8000
+  train_end: 16000       # Train to snapshot 16000  
+  test_start: 16000      # Test from snapshot 16000
+  test_end: 24000        # Test to snapshot 24000
 
 reduction:
   method: "linear"                 # "linear" (POD) or "manifold"
@@ -29,9 +32,7 @@ reduction:
   target_energy: 0.95
 
 truncation:
-  enabled: true
-  method: "time"
-  time: 200.0                      # Use 200 time units total (8000 snapshots)
+  enabled: false                   # Not needed - using explicit snapshot ranges
 
 preprocessing:
   centering: false

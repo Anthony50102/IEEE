@@ -27,23 +27,21 @@ reduction:
 
 # DMD-specific settings
 dmd:
-  # Training mode: "multi_trajectory" or "temporal_split"
   training_mode: "temporal_split"
+  train_start: 8000      # Train from snapshot 8000
+  train_end: 16000       # Train to snapshot 16000
+  test_start: 16000      # Test from snapshot 16000
+  test_end: 24000        # Test to snapshot 24000
   
-  # For temporal_split: train on first n snapshots, predict rest
-  temporal_split_train: 2000   # Train on first 2000 snapshots (50 time units)
-  
-  rank: null                   # DMD rank (null = use POD r)
-  num_trials: 0                # Bagging trials (0 = no bagging)
+  rank: null             # DMD rank (null = use POD r)
+  num_trials: 0          # Bagging trials (0 = no bagging)
   use_proj: true
   eig_sort: "real"
   k0: 0.15
   c1: 1.0
   
 truncation:
-  enabled: true
-  method: "time"
-  time: 200.0                  # Use 200 time units total (8000 snapshots)
+  enabled: false                 # Not needed - using explicit snapshot ranges
 
 preprocessing:
   centering: true
