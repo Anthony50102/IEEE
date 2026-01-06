@@ -1,13 +1,13 @@
 run_name: "dmd_temporal_split"  # Train on first n snapshots, predict rest
 
 paths:
-  output_base: "./output/"
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
   
-  data_dir: "./data/hw2d/"
+  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
   
   # Single trajectory for temporal split mode
   training_files: 
-      - hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5
+      - test_nu5e-9.h5
 
   # test_files not used in temporal_split mode
   test_files: []
