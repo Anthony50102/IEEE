@@ -322,7 +322,13 @@ def load_reference_gamma(cfg, rank, logger) -> dict:
         fh = load_dataset(fp, cfg.engine)
         gamma_n, gamma_c = fh["gamma_n"].values, fh["gamma_c"].values
         
-        if cfg.truncation_enabled:
+        # Handle temporal_split mode: use explicit train range
+        if cfg.training_mode == "temporal_split":
+            train_start, train_end = cfg.train_start, cfg.train_end
+            gamma_n = gamma_n[train_start:train_end]
+            gamma_c = gamma_c[train_start:train_end]
+            logger.info(f"  Temporal split: using gamma[{train_start}:{train_end}]")
+        elif cfg.truncation_enabled:
             max_snaps = compute_truncation_snapshots(
                 fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
             )

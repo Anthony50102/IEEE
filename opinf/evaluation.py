@@ -87,8 +87,13 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
 # =============================================================================
 
 def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
-                    engine: str, logger) -> dict:
-    """Compute evaluation metrics comparing predictions to reference."""
+                    engine: str, logger, start_offset: int = 0) -> dict:
+    """Compute evaluation metrics comparing predictions to reference.
+    
+    Args:
+        start_offset: For temporal_split mode, the starting snapshot index
+                      (e.g., train_start or test_start) for loading reference data.
+    """
     logger.info("Computing evaluation metrics...")
     
     metrics = {'trajectories': [], 'ensemble': {}}
@@ -100,8 +105,9 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
         fh = load_dataset(ref_files[traj_idx], engine)
         traj_len = boundaries[traj_idx + 1] - boundaries[traj_idx]
         
-        ref_n = fh["gamma_n"].values[:traj_len]
-        ref_c = fh["gamma_c"].values[:traj_len]
+        # Apply offset for temporal_split mode
+        ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
+        ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
         
         # Ensemble mean predictions
         pred_n = predictions['Gamma_n'][traj_idx]

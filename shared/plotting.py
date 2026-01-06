@@ -94,13 +94,18 @@ def plot_pod_energy(eigs, r, output_dir, logger, filename="pod_energy.png"):
 # =============================================================================
 
 def plot_gamma_predictions(predictions: dict, ref_files: list, boundaries: np.ndarray,
-                           dt: float, engine: str, output_dir: str, logger):
+                           dt: float, engine: str, output_dir: str, logger,
+                           start_offset: int = 0):
     """
     Generate Gamma time series comparison plots.
     
     Creates one figure per trajectory showing:
     - Reference vs ensemble mean
     - ±2σ uncertainty band
+    
+    Args:
+        start_offset: For temporal_split mode, the starting snapshot index
+                      for loading reference data.
     """
     if not HAS_MATPLOTLIB:
         logger.warning("matplotlib not available, skipping plots")
@@ -118,8 +123,9 @@ def plot_gamma_predictions(predictions: dict, ref_files: list, boundaries: np.nd
         fh = load_dataset(ref_files[traj_idx], engine)
         traj_len = boundaries[traj_idx + 1] - boundaries[traj_idx]
         
-        ref_n = fh["gamma_n"].values[:traj_len]
-        ref_c = fh["gamma_c"].values[:traj_len]
+        # Apply offset for temporal_split mode
+        ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
+        ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
         
         pred_n = predictions['Gamma_n'][traj_idx]
         pred_c = predictions['Gamma_c'][traj_idx]
