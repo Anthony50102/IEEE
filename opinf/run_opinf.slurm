@@ -24,9 +24,13 @@
 #SBATCH -e opinf_%j.err
 #SBATCH -p normal
 #SBATCH -N 2 # Increase for step 1
-#SBATCH -n 4
-#SBATCH --cpus-per-task=28
+#SBATCH -n 112
+#SBATCH --cpus-per-task=1
 #SBATCH -t 4:00:00
+
+# Recommended values
+# Step 1: N=2, n=2, cpus=56, t=1:00:00
+# Step 2: N=10, 560, cpus=1, t=2:00:00
 
 set -e
 
@@ -51,7 +55,7 @@ cd $WORK/repos/IEEE
 pip install -q -c frontera_pip_constraints.txt h5netcdf
 
 # Set environment
-export OMP_NUM_THREADS=28
+export OMP_NUM_THREADS=1
 
 # =============================================================================
 # Functions
