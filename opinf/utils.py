@@ -437,6 +437,112 @@ def distribute_indices(rank: int, n_total: int, size: int) -> tuple:
     return start, end, end - start
 
 
+def chunked_gather(comm, local_data, root: int = 0, max_bytes: int = 2**30):
+    """
+    Gather numpy arrays from all ranks to root, chunking to avoid MPI 32-bit overflow.
+    
+    MPI's gather uses a 32-bit signed integer for message sizes, limiting to ~2GB.
+    This function gathers row-by-row chunks when arrays are large.
+    
+    Args:
+        comm: MPI communicator
+        local_data: Local numpy array to gather (must have same dtype across ranks)
+        root: Root rank to gather to
+        max_bytes: Maximum bytes per chunk (default 1GB for safety margin)
+    
+    Returns:
+        On root: Vertically stacked array from all ranks
+        On non-root: None
+    """
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+    
+    # Get local shape and dtype
+    local_shape = local_data.shape
+    dtype = local_data.dtype
+    itemsize = np.dtype(dtype).itemsize
+    
+    # Gather all shapes to root to know total size
+    all_shapes = comm.gather(local_shape, root=root)
+    
+    # Calculate total bytes per rank
+    local_bytes = int(np.prod(local_shape)) * itemsize
+    all_bytes = comm.gather(local_bytes, root=root)
+    
+    # Check if we need chunking (any rank has data > max_bytes)
+    max_local_bytes = comm.allreduce(local_bytes, op=_get_mpi().MAX)
+    
+    if max_local_bytes <= max_bytes:
+        # Small enough for regular gather
+        gathered = comm.gather(local_data, root=root)
+        if rank == root:
+            return np.vstack(gathered)
+        return None
+    
+    # Need chunked gather - work row by row
+    # Determine rows per chunk based on largest row size across ranks
+    if len(local_shape) == 1:
+        # 1D array - treat as single column
+        local_data = local_data.reshape(-1, 1)
+        local_shape = local_data.shape
+        was_1d = True
+    else:
+        was_1d = False
+    
+    n_local_rows = local_shape[0]
+    bytes_per_row = int(np.prod(local_shape[1:])) * itemsize
+    
+    # Get max bytes per row across all ranks
+    max_bytes_per_row = comm.allreduce(bytes_per_row, op=_get_mpi().MAX)
+    rows_per_chunk = max(1, max_bytes // (max_bytes_per_row * size))
+    
+    # Gather row counts from each rank
+    all_n_rows = comm.allgather(n_local_rows)
+    
+    # Process in chunks
+    if rank == root:
+        # Pre-allocate result array
+        total_rows = sum(all_n_rows)
+        result_shape = (total_rows,) + local_shape[1:]
+        result = np.empty(result_shape, dtype=dtype)
+    else:
+        result = None
+    
+    # Track current row position for each rank in the result
+    if rank == root:
+        row_offsets = [0]
+        for i in range(size - 1):
+            row_offsets.append(row_offsets[-1] + all_n_rows[i])
+    
+    # Gather in chunks of rows
+    max_rows = max(all_n_rows)
+    for chunk_start in range(0, max_rows, rows_per_chunk):
+        chunk_end = min(chunk_start + rows_per_chunk, n_local_rows)
+        
+        # Get this rank's chunk (or empty if we're past our rows)
+        if chunk_start < n_local_rows:
+            chunk = np.ascontiguousarray(local_data[chunk_start:chunk_end])
+        else:
+            # This rank has no more rows, send empty
+            chunk = np.empty((0,) + local_shape[1:], dtype=dtype)
+        
+        # Gather chunks from all ranks
+        chunks = comm.gather(chunk, root=root)
+        
+        if rank == root:
+            # Place chunks into result array at correct positions
+            for r, ch in enumerate(chunks):
+                if ch.size > 0:
+                    dest_start = row_offsets[r] + chunk_start
+                    dest_end = dest_start + ch.shape[0]
+                    result[dest_start:dest_end] = ch
+    
+    if rank == root and was_1d:
+        result = result.ravel()
+    
+    return result
+
+
 def chunked_bcast(comm, data, root: int = 0, max_bytes: int = 2**30):
     """
     Broadcast a numpy array in chunks to avoid MPI 32-bit integer overflow.

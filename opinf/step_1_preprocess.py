@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import (
     load_config, save_config, get_run_directory, setup_logging, DummyLogger,
     save_step_status, get_output_paths, print_header, print_config_summary,
+    chunked_gather,
 )
 from data import (
     load_all_data_distributed, center_data_distributed, scale_data_distributed,
@@ -126,15 +127,11 @@ def main():
         # =====================================================================
         if cfg.reduction_method == "manifold":
             # Quadratic manifold requires full data on rank 0
-            Q_train_gathered = comm.gather(Q_train_centered, root=0)
-            Q_test_gathered = comm.gather(Q_test_centered, root=0)
+            # Use chunked_gather to handle large arrays (>2GB per rank)
+            Q_train_full = chunked_gather(comm, Q_train_centered, root=0)
+            Q_test_full = chunked_gather(comm, Q_test_centered, root=0)
             
             if rank == 0:
-                Q_train_full = np.vstack(Q_train_gathered)
-                Q_test_full = np.vstack(Q_test_gathered)
-                del Q_train_gathered, Q_test_gathered
-                gc.collect()
-                
                 # Compute quadratic manifold
                 basis = compute_manifold_greedy(
                     Q_train_full, cfg.r, cfg.n_vectors_to_check, cfg.reg_magnitude, logger
@@ -192,19 +189,17 @@ def main():
                 np.save(paths["xhat_train"], Xhat_train)
                 np.save(paths["xhat_test"], Xhat_test)
                 np.save(paths["pod_basis"], Ur_full)
-                
-                # Compute reconstruction error for consistency with manifold
-                Q_train_gathered = comm.gather(Q_train_centered, root=0)
-            else:
-                comm.gather(Q_train_centered, root=0)
             
-            if rank == 0 and Q_train_gathered is not None:
-                Q_train_full = np.vstack(Q_train_gathered)
+            # Compute reconstruction error for consistency with manifold
+            # Use chunked_gather to handle large arrays (>2GB per rank)
+            Q_train_full = chunked_gather(comm, Q_train_centered, root=0)
+            
+            if rank == 0 and Q_train_full is not None:
                 shift = np.zeros(Q_train_full.shape[0])  # Already centered
                 basis = BasisData("linear", Ur_full, None, shift, r_actual, eigs)
                 abs_err, rel_err = reconstruction_error(Q_train_full, basis)
                 logger.info(f"  Training reconstruction error: {rel_err*100:.4f}%")
-                del Q_train_full, Q_train_gathered
+                del Q_train_full
                 gc.collect()
         
         # Update config with actual r
