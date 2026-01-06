@@ -146,6 +146,9 @@ if not CENTERING:
     log("=" * 60)
     log("STEP 2: Skipping centering as per configuration")
     log("=" * 60)
+
+    # Keep this still used in the shifted svd
+    train_mean = np.mean(Q_train, axis=1, keepdims=True)
 else:
     log("")
     log("=" * 60)
