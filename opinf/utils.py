@@ -21,7 +21,15 @@ import numpy as np
 from datetime import datetime
 from dataclasses import dataclass, field
 from typing import List, Optional
-from mpi4py import MPI
+
+# Lazy MPI import - only import when actually needed
+MPI = None
+def _get_mpi():
+    global MPI
+    if MPI is None:
+        from mpi4py import MPI as _MPI
+        MPI = _MPI
+    return MPI
 
 
 # =============================================================================
@@ -479,6 +487,7 @@ def chunked_bcast(comm, data, root: int = 0, max_bytes: int = 2**30):
 
 def create_shared_array(node_comm, shape, dtype=np.float64):
     """Create a numpy array backed by MPI shared memory within a node."""
+    MPI = _get_mpi()  # Lazy import
     node_rank = node_comm.Get_rank()
     itemsize = np.dtype(dtype).itemsize
     nbytes = int(np.prod(shape)) * itemsize

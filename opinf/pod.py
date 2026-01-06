@@ -13,9 +13,17 @@ Author: Anthony Poole
 import gc
 import time
 import numpy as np
-from mpi4py import MPI
 from dataclasses import dataclass
 from typing import Optional, Callable
+
+# Lazy MPI import - only import when actually needed for distributed functions
+MPI = None
+def _get_mpi():
+    global MPI
+    if MPI is None:
+        from mpi4py import MPI as _MPI
+        MPI = _MPI
+    return MPI
 
 
 # =============================================================================
@@ -107,6 +115,8 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     2. Allreduce to get global Gram matrix D_global
     3. Eigendecomposition of D_global
     """
+    MPI = _get_mpi()
+    
     if rank == 0:
         logger.info("Computing POD basis via distributed Gram matrix...")
     
@@ -231,6 +241,8 @@ def project_data_distributed(
     Q_train_local, Q_test_local, eigv, eigs, r, D_global, comm, rank, logger
 ) -> tuple:
     """Project data onto POD basis using distributed computation."""
+    MPI = _get_mpi()
+    
     if rank == 0:
         logger.info(f"Projecting data onto {r} POD modes...")
     

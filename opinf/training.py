@@ -14,7 +14,15 @@ import gc
 import os
 import numpy as np
 from itertools import product
-from mpi4py import MPI
+
+# Lazy MPI import - only import when actually needed for parallel functions
+MPI = None
+def _get_mpi():
+    global MPI
+    if MPI is None:
+        from mpi4py import MPI as _MPI
+        MPI = _MPI
+    return MPI
 
 from core import get_quadratic_terms, solve_difference_model
 
