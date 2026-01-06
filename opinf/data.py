@@ -13,12 +13,27 @@ Author: Anthony Poole
 import gc
 import os
 import numpy as np
-from mpi4py import MPI
 
 from utils import (
     compute_truncation_snapshots, load_dataset, distribute_indices,
     chunked_bcast, create_shared_array,
 )
+
+
+# =============================================================================
+# LAZY MPI IMPORT
+# =============================================================================
+
+MPI = None
+
+
+def _get_mpi():
+    """Lazily import MPI only when needed for distributed functions."""
+    global MPI
+    if MPI is None:
+        from mpi4py import MPI as _MPI
+        MPI = _MPI
+    return MPI
 
 
 # =============================================================================
@@ -260,6 +275,7 @@ def scale_data_distributed(
     Q_local: np.ndarray, n_fields: int, n_local_per_field: int, comm, rank: int, logger
 ) -> tuple:
     """Scale data so each field's values are in [-1, 1]."""
+    MPI = _get_mpi()  # Lazy import
     if rank == 0:
         logger.info("Scaling data (normalizing each field to [-1, 1])...")
     
@@ -363,6 +379,7 @@ def gather_initial_conditions(
 
 def load_data_shared_memory(paths: dict, comm, logger):
     """Load data using MPI shared memory for efficiency."""
+    MPI = _get_mpi()  # Lazy import
     rank = comm.Get_rank()
     
     # Create node-local communicator
