@@ -418,6 +418,7 @@ def compute_metrics(
     engine: str,
     logger,
     dataset_name: str = "trajectory",
+    ref_offset: int = 0,
 ) -> dict:
     """
     Compute evaluation metrics.
@@ -436,6 +437,9 @@ def compute_metrics(
         Logger instance.
     dataset_name : str
         Name for logging.
+    ref_offset : int
+        Offset into reference file (for temporal_split mode where test
+        data starts at a later index in the same file).
     
     Returns
     -------
@@ -464,13 +468,11 @@ def compute_metrics(
         
         # Load reference data
         fh = loader(reference_files[traj_idx], engine=engine)
-        ref_Gamma_n = fh["gamma_n"].data
-        ref_Gamma_c = fh["gamma_c"].data
         
-        # Get trajectory length
+        # Get trajectory length and apply offset
         traj_length = boundaries[traj_idx + 1] - boundaries[traj_idx]
-        ref_Gamma_n = ref_Gamma_n[:traj_length]
-        ref_Gamma_c = ref_Gamma_c[:traj_length]
+        ref_Gamma_n = fh["gamma_n"].data[ref_offset:ref_offset + traj_length]
+        ref_Gamma_c = fh["gamma_c"].data[ref_offset:ref_offset + traj_length]
         
         # Get predictions
         pred_Gamma_n = forecasts['Gamma_n'][traj_idx]
@@ -570,6 +572,7 @@ def generate_plots(
     output_dir: str,
     logger,
     prefix: str = "",
+    ref_offset: int = 0,
 ):
     """
     Generate diagnostic plots.
@@ -590,6 +593,8 @@ def generate_plots(
         Logger instance.
     prefix : str
         Prefix for filenames (e.g., "train_" or "test_").
+    ref_offset : int
+        Offset into reference file (for temporal_split mode).
     """
     try:
         import matplotlib
@@ -610,13 +615,11 @@ def generate_plots(
         
         # Load reference
         fh = loader(reference_files[traj_idx], engine=cfg.engine)
-        ref_Gamma_n = fh["gamma_n"].data
-        ref_Gamma_c = fh["gamma_c"].data
         
-        # Get trajectory length
+        # Get trajectory length and apply offset
         traj_length = boundaries[traj_idx + 1] - boundaries[traj_idx]
-        ref_Gamma_n = ref_Gamma_n[:traj_length]
-        ref_Gamma_c = ref_Gamma_c[:traj_length]
+        ref_Gamma_n = fh["gamma_n"].data[ref_offset:ref_offset + traj_length]
+        ref_Gamma_c = fh["gamma_c"].data[ref_offset:ref_offset + traj_length]
         
         # Get predictions
         pred_Gamma_n = forecasts['Gamma_n'][traj_idx]
@@ -896,22 +899,36 @@ def main():
         logger.info("COMPUTING METRICS")
         logger.info("="*50)
         
+        # Determine reference files and offsets for metrics
+        if cfg.training_mode == "temporal_split":
+            train_ref_files = cfg.training_files
+            test_ref_files = cfg.training_files  # Same file, different portion
+            train_ref_offset = cfg.train_start
+            test_ref_offset = cfg.test_start
+        else:
+            train_ref_files = cfg.training_files
+            test_ref_files = cfg.test_files
+            train_ref_offset = 0
+            test_ref_offset = 0
+        
         train_metrics = compute_metrics(
             forecasts=train_forecasts,
-            reference_files=cfg.training_files,
+            reference_files=train_ref_files,
             boundaries=bounds['train_boundaries'],
             engine=cfg.engine,
             logger=logger,
             dataset_name="training",
+            ref_offset=train_ref_offset,
         )
         
         test_metrics = compute_metrics(
             forecasts=test_forecasts,
-            reference_files=cfg.test_files,
+            reference_files=test_ref_files,
             boundaries=bounds['test_boundaries'],
             engine=cfg.engine,
             logger=logger,
             dataset_name="test",
+            ref_offset=test_ref_offset,
         )
         
         # 6. Save predictions
@@ -936,23 +953,25 @@ def main():
             # Training trajectory plots
             generate_plots(
                 forecasts=train_forecasts,
-                reference_files=cfg.training_files,
+                reference_files=train_ref_files,
                 boundaries=bounds['train_boundaries'],
                 cfg=cfg,
                 output_dir=figures_dir,
                 logger=logger,
                 prefix="train_",
+                ref_offset=train_ref_offset,
             )
             
             # Test trajectory plots
             generate_plots(
                 forecasts=test_forecasts,
-                reference_files=cfg.test_files,
+                reference_files=test_ref_files,
                 boundaries=bounds['test_boundaries'],
                 cfg=cfg,
                 output_dir=figures_dir,
                 logger=logger,
                 prefix="test_",
+                ref_offset=test_ref_offset,
             )
         
         # Final timing
