@@ -75,7 +75,8 @@ def load_distributed_snapshots(
     n_field, n_y, n_x, n_time = Q_full.shape
     Q_full = Q_full.reshape(n_field * n_y * n_x, n_time)
     
-    return Q_full[start_idx:end_idx, :].copy()
+    # Return contiguous copy in native dtype (float32 or float64)
+    return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
 
 
 def load_all_data_distributed(cfg, run_dir: str, comm, rank: int, size: int, logger) -> tuple:
@@ -243,7 +244,9 @@ def center_data_distributed(Q_local: np.ndarray, comm, rank: int, logger) -> tup
     if rank == 0:
         logger.info("Centering data (subtracting temporal mean)...")
         logger.debug(f"  [DIAG] Raw data range: [{Q_local.min():.2e}, {Q_local.max():.2e}]")
+        logger.debug(f"  [DIAG] Input dtype: {Q_local.dtype}")
     
+    # Preserve input dtype (float32 or float64)
     temporal_mean = np.mean(Q_local, axis=1, keepdims=True)
     Q_centered = Q_local - temporal_mean
     
@@ -260,15 +263,18 @@ def scale_data_distributed(
     if rank == 0:
         logger.info("Scaling data (normalizing each field to [-1, 1])...")
     
-    scaling_factors = np.zeros(n_fields)
+    # Use float64 for scaling factors (small array), preserve input dtype for data
+    dtype = Q_local.dtype
+    scaling_factors = np.zeros(n_fields, dtype=np.float64)
     Q_scaled = Q_local.copy()
     
     for j in range(n_fields):
         start, end = j * n_local_per_field, (j + 1) * n_local_per_field
-        local_max = np.max(np.abs(Q_local[start:end, :]))
+        local_max = np.float64(np.max(np.abs(Q_local[start:end, :])))
         
-        global_max = np.zeros(1)
-        comm.Allreduce(np.array([local_max]), global_max, op=MPI.MAX)
+        # Use float64 for the reduction (small scalar)
+        global_max = np.zeros(1, dtype=np.float64)
+        comm.Allreduce(np.array([local_max], dtype=np.float64), global_max, op=MPI.MAX)
         global_max = global_max[0]
         
         if global_max > 0:
