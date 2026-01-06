@@ -112,14 +112,18 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     
     t0 = MPI.Wtime()
     
-    # Verify Q_train_local shape consistency across ranks
-    local_shape = Q_train_local.shape
-    all_shapes = comm.gather(local_shape, root=0)
-    if rank == 0:
-        n_times = set(s[1] for s in all_shapes)
-        if len(n_times) > 1:
-            logger.error(f"  [ERROR] Inconsistent n_time across ranks: {all_shapes}")
-            raise ValueError(f"Q_train_local has inconsistent n_time across ranks: {all_shapes}")
+    # Verify Q_train_local shape consistency across ranks and get canonical n_time
+    local_n_time = Q_train_local.shape[1]
+    all_n_times = comm.allgather(local_n_time)
+    
+    if len(set(all_n_times)) > 1:
+        # All ranks see this error and will raise
+        if rank == 0:
+            logger.error(f"  [ERROR] Inconsistent n_time across ranks: {all_n_times}")
+        raise ValueError(f"Q_train_local has inconsistent n_time across ranks: {all_n_times}")
+    
+    # Use the canonical n_time (same on all ranks now)
+    n_time = all_n_times[0]
     
     # Compute local Gram matrix
     D_local = Q_train_local.T @ Q_train_local
@@ -129,12 +133,11 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
         logger.debug(f"  [DIAG] D_local diagonal sum: {np.trace(D_local):.2e}")
     
     # Allreduce to get global Gram matrix (chunked if needed)
-    D_global = np.zeros_like(D_local)
+    D_global = np.zeros((n_time, n_time), dtype=np.float64)
     total_elements = D_local.size
     max_chunk = 2**30
     
     if total_elements > max_chunk:
-        n_time = D_local.shape[0]
         rows_per_chunk = max(1, max_chunk // n_time)
         
         for start_row in range(0, n_time, rows_per_chunk):
@@ -150,9 +153,7 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     gc.collect()
     
     # Eigendecomposition (rank 0 only to save memory)
-    # IMPORTANT: Broadcast n_time to ensure all ranks agree on matrix dimensions
-    n_time = D_global.shape[0]
-    n_time = comm.bcast(n_time, root=0)
+    # n_time is already synchronized from the allgather above
     
     if rank == 0:
         logger.debug(f"  [DIAG] D_global trace: {np.trace(D_global):.2e}")

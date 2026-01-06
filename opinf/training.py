@@ -28,8 +28,17 @@ def prepare_learning_matrices(Xhat_train, train_boundaries, cfg, rank, logger) -
     if rank != 0:
         return None
     
+    return _prepare_learning_matrices_impl(Xhat_train, train_boundaries, cfg.r, logger)
+
+
+def prepare_learning_matrices_serial(Xhat_train, train_boundaries, cfg, logger) -> dict:
+    """Prepare matrices for ROM training (serial version)."""
+    return _prepare_learning_matrices_impl(Xhat_train, train_boundaries, cfg.r, logger)
+
+
+def _prepare_learning_matrices_impl(Xhat_train, train_boundaries, r, logger) -> dict:
+    """Implementation of learning matrix preparation."""
     logger.info("Preparing learning matrices...")
-    r = cfg.r
     
     # STATE LEARNING: Create valid pairs within each trajectory
     n_traj = len(train_boundaries) - 1
