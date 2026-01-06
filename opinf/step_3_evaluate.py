@@ -117,12 +117,18 @@ def main():
             np.savez(paths["predictions"], **save_dict)
             logger.info(f"Saved predictions to {paths['predictions']}")
         
+        # Determine offsets for temporal_split mode
+        train_offset = cfg.train_start if cfg.training_mode == "temporal_split" else 0
+        test_offset = cfg.test_start if cfg.training_mode == "temporal_split" else 0
+        
         # Compute metrics
         train_metrics = compute_metrics(
-            train_pred, cfg.training_files, train_bounds, cfg.engine, logger
+            train_pred, cfg.training_files, train_bounds, cfg.engine, logger,
+            start_offset=train_offset
         )
         test_metrics = compute_metrics(
-            test_pred, cfg.test_files, test_bounds, cfg.engine, logger
+            test_pred, cfg.test_files if cfg.test_files else cfg.training_files,
+            test_bounds, cfg.engine, logger, start_offset=test_offset
         )
         
         all_metrics = {'train': train_metrics, 'test': test_metrics}
@@ -134,10 +140,13 @@ def main():
         if cfg.generate_plots:
             plot_gamma_predictions(train_pred, cfg.training_files, train_bounds,
                                    cfg.dt, cfg.engine, 
-                                   os.path.join(paths["figures_dir"], "train"), logger)
-            plot_gamma_predictions(test_pred, cfg.test_files, test_bounds,
-                                   cfg.dt, cfg.engine,
-                                   os.path.join(paths["figures_dir"], "test"), logger)
+                                   os.path.join(paths["figures_dir"], "train"), logger,
+                                   start_offset=train_offset)
+            plot_gamma_predictions(test_pred, 
+                                   cfg.test_files if cfg.test_files else cfg.training_files,
+                                   test_bounds, cfg.dt, cfg.engine,
+                                   os.path.join(paths["figures_dir"], "test"), logger,
+                                   start_offset=test_offset)
         
         # Print summary
         print_header("EVALUATION SUMMARY")
