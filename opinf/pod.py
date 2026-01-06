@@ -112,28 +112,46 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     
     t0 = MPI.Wtime()
     
-    # Verify Q_train_local shape consistency across ranks and get canonical n_time
+    # Verify Q_train_local shape and dtype consistency across ranks
     local_n_time = Q_train_local.shape[1]
-    all_n_times = comm.allgather(local_n_time)
+    local_dtype_str = str(Q_train_local.dtype)
+    all_info = comm.allgather((local_n_time, local_dtype_str))
+    
+    all_n_times = [info[0] for info in all_info]
+    all_dtypes = [info[1] for info in all_info]
     
     if len(set(all_n_times)) > 1:
-        # All ranks see this error and will raise
         if rank == 0:
             logger.error(f"  [ERROR] Inconsistent n_time across ranks: {all_n_times}")
         raise ValueError(f"Q_train_local has inconsistent n_time across ranks: {all_n_times}")
     
+    # Determine common dtype - promote to float64 if mixed, otherwise use common dtype
+    unique_dtypes = set(all_dtypes)
+    if len(unique_dtypes) > 1:
+        # Mixed dtypes - promote to float64 for safety
+        common_dtype = np.float64
+        if rank == 0:
+            logger.info(f"  Mixed dtypes across ranks {unique_dtypes}, promoting to float64")
+    else:
+        # All same dtype - use it (but ensure it's a float type)
+        common_dtype = np.dtype(all_dtypes[0])
+        if common_dtype not in (np.float32, np.float64):
+            common_dtype = np.float64
+        if rank == 0:
+            logger.debug(f"  [DIAG] Using dtype: {common_dtype}")
+    
     # Use the canonical n_time (same on all ranks now)
     n_time = all_n_times[0]
     
-    # Compute local Gram matrix
-    D_local = Q_train_local.T @ Q_train_local
+    # Compute local Gram matrix with consistent dtype
+    D_local = (Q_train_local.T @ Q_train_local).astype(common_dtype, copy=False)
     
     if rank == 0:
         logger.debug(f"  [DIAG] D_local shape: {D_local.shape}")
         logger.debug(f"  [DIAG] D_local diagonal sum: {np.trace(D_local):.2e}")
     
     # Allreduce to get global Gram matrix (chunked if needed)
-    D_global = np.zeros((n_time, n_time), dtype=np.float64)
+    D_global = np.zeros((n_time, n_time), dtype=common_dtype)
     total_elements = D_local.size
     max_chunk = 2**30
     
@@ -153,26 +171,30 @@ def compute_pod_distributed(Q_train_local, comm, rank, size, logger, target_ener
     gc.collect()
     
     # Eigendecomposition (rank 0 only to save memory)
-    # n_time is already synchronized from the allgather above
+    # Always use float64 for eigendecomposition for numerical stability
     
     if rank == 0:
         logger.debug(f"  [DIAG] D_global trace: {np.trace(D_global):.2e}")
         
+        # Convert to float64 for eigendecomposition if needed
+        D_for_eig = D_global.astype(np.float64, copy=False)
+        
         try:
             from scipy.linalg import eigh as scipy_eigh
             logger.info("  Using scipy.linalg.eigh...")
-            eigs, eigv = scipy_eigh(D_global.copy())
+            eigs, eigv = scipy_eigh(D_for_eig)
         except ImportError:
             logger.info("  Using numpy.linalg.eigh...")
-            eigs, eigv = np.linalg.eigh(D_global.copy())
+            eigs, eigv = np.linalg.eigh(D_for_eig)
         
-        # Sort by decreasing eigenvalue
+        # Sort by decreasing eigenvalue (eigs/eigv are float64 from eigh)
         idx = np.argsort(eigs)[::-1]
         eigs, eigv = eigs[idx], eigv[:, idx]
         
         logger.debug(f"  [DIAG] Eigenvalue sum: {np.sum(eigs):.2e}")
         logger.debug(f"  [DIAG] Top 5 eigenvalues: {eigs[:5]}")
     else:
+        # eigs/eigv are always float64 (from eigendecomposition)
         eigs = np.empty(n_time, dtype=np.float64)
         eigv = np.zeros((n_time, n_time), dtype=np.float64)
     
@@ -212,7 +234,26 @@ def project_data_distributed(
     if rank == 0:
         logger.info(f"Projecting data onto {r} POD modes...")
     
+    # Synchronize dtype across ranks (use input dtype, promote if mixed)
+    local_dtype_str = str(Q_train_local.dtype)
+    all_dtypes = comm.allgather(local_dtype_str)
+    unique_dtypes = set(all_dtypes)
+    
+    if len(unique_dtypes) > 1:
+        common_dtype = np.float64
+        if rank == 0:
+            logger.debug(f"  [DIAG] Mixed dtypes {unique_dtypes}, promoting to float64")
+    else:
+        common_dtype = np.dtype(all_dtypes[0])
+        if common_dtype not in (np.float32, np.float64):
+            common_dtype = np.float64
+    
+    # Ensure consistent dtypes for MPI operations
+    Q_train_local = np.asarray(Q_train_local, dtype=common_dtype)
+    Q_test_local = np.asarray(Q_test_local, dtype=common_dtype)
+    
     # Transformation matrix: Tr = V_r @ diag(1/sqrt(eigs_r))
+    # Note: eigs/eigv are always float64 from eigendecomposition
     eigs_r = eigs[:r]
     eigv_r = eigv[:, :r]
     
@@ -235,15 +276,15 @@ def project_data_distributed(
     Ur_local = Q_train_local @ Tr
     
     # Verify orthonormality: Ur.T @ Ur ≈ I
-    UtU_local = Ur_local.T @ Ur_local
-    UtU_global = np.zeros((r, r), dtype=np.float64)
+    UtU_local = (Ur_local.T @ Ur_local).astype(common_dtype, copy=False)
+    UtU_global = np.zeros((r, r), dtype=common_dtype)
     comm.Allreduce(UtU_local, UtU_global, op=MPI.SUM)
     
     if rank == 0:
         logger.debug(f"  [DIAG] ||Ur.T @ Ur - I||: {np.linalg.norm(UtU_global - np.eye(r)):.2e}")
     
     # Project test data: Xhat_test = Q_test.T @ Ur
-    Xhat_test_local = Q_test_local.T @ Ur_local
+    Xhat_test_local = (Q_test_local.T @ Ur_local).astype(common_dtype, copy=False)
     Xhat_test = np.zeros_like(Xhat_test_local)
     comm.Allreduce(Xhat_test_local, Xhat_test, op=MPI.SUM)
     
