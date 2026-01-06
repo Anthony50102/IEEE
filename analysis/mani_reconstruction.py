@@ -51,6 +51,9 @@ N_CHECK = 200  # Candidates per greedy step
 # Output file
 OUTPUT_FILE = "pod_vs_manifold.npz"
 
+# Centering flag (if False, data is not centered)
+CENTERING = False
+
 # =============================================================================
 # LOGGING
 # =============================================================================
@@ -138,16 +141,22 @@ log(f"Load time: {time.time()-t0:.1f}s")
 # STEP 2: CENTER DATA (for POD)
 # =============================================================================
 
-log("")
-log("=" * 60)
-log("STEP 2: Centering data")
-log("=" * 60)
+if not CENTERING:
+    log("")
+    log("=" * 60)
+    log("STEP 2: Skipping centering as per configuration")
+    log("=" * 60)
+else:
+    log("")
+    log("=" * 60)
+    log("STEP 2: Centering data")
+    log("=" * 60)
 
-train_mean = np.mean(Q_train, axis=1, keepdims=True)
-Q_train_centered = Q_train - train_mean
-Q_test_centered = Q_test - train_mean
+    train_mean = np.mean(Q_train, axis=1, keepdims=True)
+    Q_train = Q_train - train_mean
+    Q_test = Q_test - train_mean
 
-log(f"Train mean norm: {np.linalg.norm(train_mean):.6e}")
+    log(f"Train mean norm: {np.linalg.norm(train_mean):.6e}")
 
 # =============================================================================
 # STEP 3: COMPUTE POD BASIS VIA GRAM MATRIX
@@ -161,7 +170,7 @@ log("=" * 60)
 t0 = time.time()
 
 # Gram matrix: D = Q^T @ Q
-D = Q_train_centered.T @ Q_train_centered
+D = Q_train.T @ Q_train
 log(f"Gram matrix shape: {D.shape}")
 
 # Eigendecomposition
@@ -186,7 +195,7 @@ eigs_r = eigs[:r_max]
 eigv_r = eigv[:, :r_max]
 eigs_safe = np.where(eigs_r > 1e-14, eigs_r, 1e-14)
 Tr = eigv_r @ np.diag(eigs_safe ** (-0.5))
-V_pod = Q_train_centered @ Tr  # (n_spatial, r_max)
+V_pod = Q_train @ Tr  # (n_spatial, r_max)
 
 log(f"POD basis shape: {V_pod.shape}")
 
@@ -213,8 +222,8 @@ pod_results = {
     'energy_retained': np.zeros(len(R_VALUES)),
 }
 
-Q_train_norm = np.linalg.norm(Q_train_centered, 'fro')
-Q_test_norm = np.linalg.norm(Q_test_centered, 'fro')
+Q_train_norm = np.linalg.norm(Q_train, 'fro')
+Q_test_norm = np.linalg.norm(Q_test, 'fro')
 
 log(f"{'r':>6} | {'Train Err%':>10} | {'Test Err%':>10} | {'Energy%':>10}")
 log("-" * 50)
@@ -223,14 +232,14 @@ for i, r in enumerate(R_VALUES):
     V_r = V_pod[:, :r]
     
     # Train reconstruction: Q_rec = V @ V^T @ Q
-    z_train = V_r.T @ Q_train_centered
+    z_train = V_r.T @ Q_train
     Q_train_rec = V_r @ z_train
-    train_err = np.linalg.norm(Q_train_centered - Q_train_rec, 'fro') / Q_train_norm
+    train_err = np.linalg.norm(Q_train - Q_train_rec, 'fro') / Q_train_norm
     
     # Test reconstruction
-    z_test = V_r.T @ Q_test_centered
+    z_test = V_r.T @ Q_test
     Q_test_rec = V_r @ z_test
-    test_err = np.linalg.norm(Q_test_centered - Q_test_rec, 'fro') / Q_test_norm
+    test_err = np.linalg.norm(Q_test - Q_test_rec, 'fro') / Q_test_norm
     
     # Energy
     energy = np.sum(eigs_pos[:r]) / total_energy
@@ -268,7 +277,7 @@ t0 = time.time()
 
 # Use training mean as shift (same centering)
 shift = train_mean.squeeze()
-U, sigma, VT = np.linalg.svd(Q_train_centered, full_matrices=False)
+U, sigma, VT = np.linalg.svd(Q_train, full_matrices=False)
 mani_eigs = sigma**2
 
 log(f"SVD done in {time.time()-t0:.1f}s, rank={len(sigma)}")
@@ -326,7 +335,7 @@ for i, r in enumerate(R_VALUES):
         W = U[:, idx_out] @ W_coeffs.T
         
         # Training reconstruction error
-        z_train = V_mani.T @ Q_train_centered  # (r, n_train)
+        z_train = V_mani.T @ Q_train  # (r, n_train)
         Q_train_rec = V_mani @ z_train + shift[:, None]
         for t in range(n_train):
             h = quadratic_features(z_train[:, t:t+1]).squeeze()
@@ -337,7 +346,7 @@ for i, r in enumerate(R_VALUES):
         gc.collect()
         
         # Test reconstruction error
-        z_test = V_mani.T @ Q_test_centered  # (r, n_test)
+        z_test = V_mani.T @ Q_test  # (r, n_test)
         Q_test_rec = V_mani @ z_test + shift[:, None]
         for t in range(n_test):
             h = quadratic_features(z_test[:, t:t+1]).squeeze()
