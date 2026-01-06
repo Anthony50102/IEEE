@@ -161,7 +161,8 @@ def print_dmd_config_summary(cfg: DMDConfig):
     print(f"  Output base: {cfg.output_base}")
     print(f"  Training mode: {cfg.training_mode}")
     if cfg.training_mode == "temporal_split":
-        print(f"    Train snapshots: {cfg.temporal_split_train}")
+        print(f"    Train snapshots: [{cfg.train_start}, {cfg.train_end})")
+        print(f"    Test snapshots: [{cfg.test_start}, {cfg.test_end})")
     else:
         print(f"  Training files: {len(cfg.training_files)}")
         print(f"  Test files: {len(cfg.test_files)}")

@@ -37,7 +37,7 @@ from opinf.utils import (
     setup_logging,
     save_config,
     print_header,
-    loader,
+    load_dataset as loader,
 )
 
 
@@ -100,7 +100,7 @@ def load_training_data(cfg: DMDConfig, logger) -> np.ndarray:
         filepath = os.path.join(cfg.data_dir, filename)
         logger.info(f"  Loading file {i+1}: {filename}")
         
-        fh = loader(filepath, ENGINE=cfg.engine)
+        fh = loader(filepath, engine=cfg.engine)
         
         # Load density and phi fields
         density = fh["density"].data  # (n_time, n_y, n_x)

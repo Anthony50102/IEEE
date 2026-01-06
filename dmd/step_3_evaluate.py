@@ -156,8 +156,15 @@ def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
 # =============================================================================
 
 def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
-                    engine: str, logger, name: str) -> dict:
-    """Compute evaluation metrics."""
+                    engine: str, logger, name: str, ref_offset: int = 0) -> dict:
+    """Compute evaluation metrics.
+    
+    Parameters
+    ----------
+    ref_offset : int
+        Offset into reference file (for temporal_split mode where test
+        data starts at a later index in the same file).
+    """
     logger.info(f"Computing {name} metrics...")
     
     metrics = {'trajectories': [], 'summary': {}}
@@ -173,8 +180,9 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
         # Load reference
         fh = loader(ref_files[i], engine=engine)
         n_steps = boundaries[i + 1] - boundaries[i]
-        ref_n = fh["gamma_n"].data[:n_steps]
-        ref_c = fh["gamma_c"].data[:n_steps]
+        # Apply offset for temporal_split mode
+        ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
+        ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
         
         pred_n = forecasts['Gamma_n'][i]
         pred_c = forecasts['Gamma_c'][i]
@@ -260,20 +268,26 @@ def main():
         test_pred = compute_forecasts(model, test_ICs, test_bounds, pod_basis,
                                        cfg.k0, cfg.c1, logger, "test")
         
-        # Determine reference files for metrics
+        # Determine reference files and offsets for metrics
         if cfg.training_mode == "temporal_split":
             # For temporal split, use the same file for both train and test
             train_ref_files = cfg.training_files
             test_ref_files = cfg.training_files  # Same file, different portion
+            train_ref_offset = cfg.train_start
+            test_ref_offset = cfg.test_start
         else:
             train_ref_files = cfg.training_files
             test_ref_files = cfg.test_files
+            train_ref_offset = 0
+            test_ref_offset = 0
         
         # Compute metrics
         train_metrics = compute_metrics(train_pred, train_ref_files, train_bounds,
-                                         cfg.engine, logger, "training")
+                                         cfg.engine, logger, "training", 
+                                         ref_offset=train_ref_offset)
         test_metrics = compute_metrics(test_pred, test_ref_files, test_bounds,
-                                        cfg.engine, logger, "test")
+                                        cfg.engine, logger, "test",
+                                        ref_offset=test_ref_offset)
         
         # Save results
         all_metrics = {'train': train_metrics, 'test': test_metrics}
