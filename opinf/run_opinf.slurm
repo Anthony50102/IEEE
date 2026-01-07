@@ -146,3 +146,13 @@ esac
 
 print_header "Complete"
 echo "End time: $(date)"
+
+# Rename log files to include step information
+cd $SLURM_SUBMIT_DIR
+if [ -f "opinf_${SLURM_JOB_ID}.out" ]; then
+    mv "opinf_${SLURM_JOB_ID}.out" "opinf_${SLURM_JOB_ID}_step${STEP}.out"
+fi
+if [ -f "opinf_${SLURM_JOB_ID}.err" ]; then
+    mv "opinf_${SLURM_JOB_ID}.err" "opinf_${SLURM_JOB_ID}_step${STEP}.err"
+fi
+echo "Logs renamed to opinf_${SLURM_JOB_ID}_step${STEP}.{out,err}"
