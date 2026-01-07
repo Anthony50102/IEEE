@@ -31,9 +31,9 @@ dmd:
   train_start: 8000      # Train from snapshot 8000
   train_end: 16000       # Train to snapshot 16000
   test_start: 16000      # Test from snapshot 16000
-  test_end: 24000        # Test to snapshot 24000
+  test_end: 20000        # Test to snapshot 24000
   
-  rank: 40             # DMD rank (null = use POD r)
+  rank: 60             # DMD rank (null = use POD r)
   num_trials: 0          # Bagging trials (0 = no bagging)
   use_proj: true
   eig_sort: "real"

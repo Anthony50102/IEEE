@@ -90,8 +90,8 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
         proj_basis=V_global if cfg.use_proj else None,
         use_proj=cfg.use_proj,
         eig_sort=cfg.eig_sort,
-        eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
-        # init_alpha=init_alpha,
+        #eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
+        init_alpha=init_alpha,
     )
     dmd_model.fit(X_dmd, t=t_train)
     
