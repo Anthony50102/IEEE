@@ -112,7 +112,9 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
     # Compute Gamma from physics if POD basis available
     if pod_basis is not None:
         mean_data = pod_basis.get('mean')
-        Q_full = reconstruct_full_state(X_hat, pod_basis['U_r'], mean_data)
+        # DMD operates on first r POD modes, so truncate U_r to match
+        U_r_truncated = pod_basis['U_r'][:, :r]
+        Q_full = reconstruct_full_state(X_hat, U_r_truncated, mean_data)
         Gamma_n, Gamma_c = compute_gamma_from_state(
             Q_full, 2, pod_basis['n_y'], pod_basis['n_x'], k0, c1
         )
