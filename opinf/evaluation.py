@@ -54,6 +54,10 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
     n_traj = len(boundaries) - 1
     predictions = {'Gamma_n': [], 'Gamma_c': [], 'X_OpInf': []}
     
+    # Ensure ICs is 2D (n_traj, r)
+    if ICs.ndim == 1:
+        ICs = ICs.reshape(1, -1)
+    
     logger.info(f"Processing {n_traj} {name}(s)...")
     
     for traj_idx in range(n_traj):
