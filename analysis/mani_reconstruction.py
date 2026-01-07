@@ -43,7 +43,7 @@ TEST_END = 16000
 R_VALUES = [25, 50, 100, 150, 200]
 
 # Manifold regularization values to test
-REG_VALUES = [1e4, 1e6, 1e8, 1e10]
+REG_VALUES = [1e6, 5e6, 1e7, 5e7]
 
 # Greedy algorithm settings
 N_CHECK = 200  # Candidates per greedy step
