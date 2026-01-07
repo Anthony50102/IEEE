@@ -74,6 +74,7 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     init_alpha = np.log(dmd0.eigs) / dt  # Convert to continuous-time
     
     logger.info(f"  Initial eigenvalues: real in [{init_alpha.real.min():.4f}, {init_alpha.real.max():.4f}]")
+    logger.info(f"  Initial eigenvalues: imag in [{init_alpha.imag.min():.4f}, {init_alpha.imag.max():.4f}]")
     
     # Fit BOPDMD
     logger.info("  Fitting BOPDMD...")
@@ -82,12 +83,12 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     V_global = np.eye(r, dtype=np.float64)  # Identity in reduced space
     
     dmd_model = BOPDMD(
-        svd_rank=r,
+        svd_rank=20,
         num_trials=cfg.num_trials,
         proj_basis=V_global if cfg.use_proj else None,
         use_proj=cfg.use_proj,
         eig_sort=cfg.eig_sort,
-        init_alpha=init_alpha,
+        # init_alpha=init_alpha,
     )
     dmd_model.fit(X_dmd, t=t_train)
     
