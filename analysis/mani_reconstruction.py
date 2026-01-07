@@ -43,7 +43,7 @@ TEST_END = 16000
 R_VALUES = [25, 50, 100, 150, 200]
 
 # Manifold regularization values to test
-REG_VALUES = [1e-8, 1e-6, 1e-4, 1e-2]
+REG_VALUES = [1e-2, 1e-0, 1e-2, 1e4]
 
 # Greedy algorithm settings
 N_CHECK = 200  # Candidates per greedy step
@@ -52,7 +52,7 @@ N_CHECK = 200  # Candidates per greedy step
 OUTPUT_FILE = "pod_vs_manifold.npz"
 
 # Centering flag (if False, data is not centered)
-CENTERING = False
+CENTERING = True
 
 # =============================================================================
 # LOGGING
@@ -280,6 +280,12 @@ t0 = time.time()
 
 # Use training mean as shift (same centering)
 shift = train_mean.squeeze()
+
+# If we did not center, center now for SVD
+if not CENTERING:
+    Q_train = Q_train - train_mean
+    Q_test = Q_test - train_mean
+
 U, sigma, VT = np.linalg.svd(Q_train, full_matrices=False)
 mani_eigs = sigma**2
 
