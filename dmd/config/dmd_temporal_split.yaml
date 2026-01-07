@@ -64,8 +64,11 @@ model_selection:
   threshold_std: 0.4
 
 evaluation:
-  save_predictions: true
-  generate_plots: true
+  save_predictions: true   
+  generate_plots: true     
+  plot_state_error: true  
+  plot_state_snapshots: true  
+  n_snapshot_samples: 5    
 
 execution:
   verbose: true
