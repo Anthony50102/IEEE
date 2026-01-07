@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'opinf'))
 from utils import (
     OpInfConfig,
     load_config as load_opinf_config,
-    save_config,
+    save_config as save_opinf_config,
     get_run_directory,
     setup_logging,
     save_step_status,
@@ -31,6 +31,8 @@ from utils import (
     print_config_summary as print_opinf_config_summary,
     load_dataset as loader,
 )
+
+import yaml
 
 
 # =============================================================================
@@ -115,6 +117,98 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.n_snapshot_samples = evaluation.get("n_snapshot_samples", 5)
     
     return cfg
+
+
+def save_config(cfg: DMDConfig, output_path: str, step_name: str = None) -> str:
+    """
+    Save DMD configuration to YAML file.
+    
+    Extends OpInf save_config with DMD-specific parameters.
+    
+    Parameters
+    ----------
+    cfg : DMDConfig
+        Configuration object to save.
+    output_path : str
+        Directory to save the config file.
+    step_name : str, optional
+        Step name to include in filename (e.g., "step_1").
+    
+    Returns
+    -------
+    str
+        Path to saved config file.
+    """
+    config_dict = {
+        "run_name": cfg.run_name,
+        "run_dir": cfg.run_dir,
+        "paths": {
+            "output_base": cfg.output_base,
+            "data_dir": cfg.data_dir,
+            "training_files": cfg.training_files,
+            "test_files": cfg.test_files,
+        },
+        "physics": {
+            "dt": cfg.dt, 
+            "n_fields": cfg.n_fields, 
+            "n_x": cfg.n_x, 
+            "n_y": cfg.n_y,
+            "k0": cfg.k0,
+            "c1": cfg.c1,
+        },
+        "training_mode": {
+            "mode": cfg.training_mode,
+            "train_start": cfg.train_start,
+            "train_end": cfg.train_end,
+            "test_start": cfg.test_start,
+            "test_end": cfg.test_end,
+        },
+        "reduction": {
+            "method": cfg.reduction_method,
+            "r": cfg.r,
+            "target_energy": cfg.target_energy,
+        },
+        "dmd": {
+            "rank": cfg.dmd_rank,
+            "num_trials": cfg.num_trials,
+            "use_proj": cfg.use_proj,
+            "eig_sort": cfg.eig_sort,
+        },
+        "truncation": {
+            "enabled": cfg.truncation_enabled,
+            "method": cfg.truncation_method,
+            "snapshots": cfg.truncation_snapshots,
+            "time": cfg.truncation_time,
+        },
+        "preprocessing": {
+            "centering": cfg.centering_enabled, 
+            "scaling": cfg.scaling_enabled,
+        },
+        "training": {
+            "training_end": cfg.training_end, 
+            "n_steps": cfg.n_steps,
+        },
+        "evaluation": {
+            "save_predictions": cfg.save_predictions, 
+            "generate_plots": cfg.generate_plots,
+            "plot_state_error": cfg.plot_state_error,
+            "plot_state_snapshots": cfg.plot_state_snapshots,
+            "n_snapshot_samples": cfg.n_snapshot_samples,
+        },
+        "execution": {
+            "verbose": cfg.verbose, 
+            "log_level": cfg.log_level, 
+            "engine": cfg.engine,
+        },
+    }
+    
+    filename = f"config_{step_name}.yaml" if step_name else "config.yaml"
+    filepath = os.path.join(output_path, filename)
+    
+    with open(filepath, 'w') as f:
+        yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False)
+    
+    return filepath
 
 
 def get_dmd_output_paths(run_dir: str) -> dict:

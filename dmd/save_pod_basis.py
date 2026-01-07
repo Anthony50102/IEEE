@@ -30,12 +30,12 @@ from dmd.utils import (
     load_dmd_config,
     get_dmd_output_paths,
     DMDConfig,
+    save_config,
 )
 
 # Import shared utilities from opinf
 from opinf.utils import (
     setup_logging,
-    save_config,
     print_header,
     load_dataset as loader,
 )
