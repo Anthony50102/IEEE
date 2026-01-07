@@ -29,7 +29,41 @@ from utils import (
 )
 from data import load_ensemble, load_preprocessing_info
 from evaluation import compute_ensemble_predictions, compute_metrics
-from shared.plotting import plot_gamma_predictions
+from shared.plotting import plot_gamma_timeseries
+from utils import load_dataset
+
+
+def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndarray,
+                         dt: float, engine: str, output_dir: str, logger,
+                         start_offset: int = 0):
+    """
+    Generate Gamma plots for OpInf ensemble predictions.
+    
+    Loads reference data and calls the shared plotting function.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    n_traj = len(predictions['Gamma_n'])
+    
+    for i in range(n_traj):
+        fh = load_dataset(ref_files[i], engine)
+        n_steps = boundaries[i + 1] - boundaries[i]
+        
+        ref_n = fh["gamma_n"].values[start_offset:start_offset + n_steps]
+        ref_c = fh["gamma_c"].values[start_offset:start_offset + n_steps]
+        
+        pred_n = predictions['Gamma_n'][i]  # Shape: (n_ensemble, n_steps)
+        pred_c = predictions['Gamma_c'][i]
+        
+        output_path = os.path.join(output_dir, f'traj_{i+1}_gamma.png')
+        plot_gamma_timeseries(
+            pred_n=pred_n, pred_c=pred_c,
+            ref_n=ref_n, ref_c=ref_c,
+            dt=dt, output_path=output_path, logger=logger,
+            title_prefix=f'Trajectory {i+1}: ',
+            method_name="OpInf"
+        )
+    
+    logger.info(f"Plots saved to {output_dir}")
 
 
 def main():
@@ -138,15 +172,15 @@ def main():
         
         # Generate plots
         if cfg.generate_plots:
-            plot_gamma_predictions(train_pred, cfg.training_files, train_bounds,
-                                   cfg.dt, cfg.engine, 
-                                   os.path.join(paths["figures_dir"], "train"), logger,
-                                   start_offset=train_offset)
-            plot_gamma_predictions(test_pred, 
-                                   cfg.test_files if cfg.test_files else cfg.training_files,
-                                   test_bounds, cfg.dt, cfg.engine,
-                                   os.path.join(paths["figures_dir"], "test"), logger,
-                                   start_offset=test_offset)
+            generate_gamma_plots(train_pred, cfg.training_files, train_bounds,
+                                 cfg.dt, cfg.engine, 
+                                 os.path.join(paths["figures_dir"], "train"), logger,
+                                 start_offset=train_offset)
+            generate_gamma_plots(test_pred, 
+                                 cfg.test_files if cfg.test_files else cfg.training_files,
+                                 test_bounds, cfg.dt, cfg.engine,
+                                 os.path.join(paths["figures_dir"], "test"), logger,
+                                 start_offset=test_offset)
         
         # Print summary
         print_header("EVALUATION SUMMARY")
