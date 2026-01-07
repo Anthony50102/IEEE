@@ -131,6 +131,17 @@ def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
     n_traj = len(boundaries) - 1
     forecasts = {'X_hat': [], 'Gamma_n': [], 'Gamma_c': [], 'is_nan': []}
     
+    # Ensure ICs is 2D (n_traj, r)
+    if ICs.ndim == 1:
+        ICs = ICs.reshape(1, -1)
+    
+    # Validate ICs shape
+    if ICs.shape[0] != n_traj:
+        raise ValueError(
+            f"ICs shape {ICs.shape} doesn't match n_traj={n_traj}. "
+            f"Expected ({n_traj}, r)."
+        )
+    
     logger.info(f"Computing {n_traj} {name} forecast(s)...")
     
     for i in range(n_traj):

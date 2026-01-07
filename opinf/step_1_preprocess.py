@@ -208,10 +208,14 @@ def main():
         # =====================================================================
         # 5. Gather initial conditions
         # =====================================================================
+        # Use boundary counts for n_train/n_test (handles temporal_split mode correctly)
+        n_train_traj = len(train_boundaries) - 1
+        n_test_traj = len(test_boundaries) - 1
+        
         ics = gather_initial_conditions(
             Q_train_local, Q_test_local, Xhat_train, Xhat_test,
             train_boundaries, test_boundaries,
-            len(cfg.training_files), len(cfg.test_files), n_spatial, comm, rank
+            n_train_traj, n_test_traj, n_spatial, comm, rank
         )
         
         train_means = comm.gather(train_mean, root=0)

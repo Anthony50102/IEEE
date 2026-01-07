@@ -58,6 +58,13 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
     if ICs.ndim == 1:
         ICs = ICs.reshape(1, -1)
     
+    # Validate ICs shape matches number of trajectories
+    if ICs.shape[0] != n_traj:
+        raise ValueError(
+            f"ICs shape {ICs.shape} doesn't match n_traj={n_traj}. "
+            f"Expected ({n_traj}, r). This may indicate a bug in step_1 preprocessing."
+        )
+    
     logger.info(f"Processing {n_traj} {name}(s)...")
     
     for traj_idx in range(n_traj):
