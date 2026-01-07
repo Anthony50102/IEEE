@@ -120,21 +120,23 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
 # =============================================================================
 
 def load_training_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
-    """Load projected training data from Step 1."""
+    """Load training data from Step 1 (POD-projected or raw)."""
     logger.info("Loading training data...")
     
     Xhat_train = np.load(paths['xhat_train'])
     bounds = np.load(paths['boundaries'])
     train_boundaries = bounds['train_boundaries']
+    use_pod = bool(bounds.get('use_pod', True))  # Default to True for backward compatibility
     
     # Create time vector
     n_train = train_boundaries[-1]
     t_train = np.arange(n_train) * cfg.dt
     
-    logger.info(f"  Xhat_train shape: {Xhat_train.shape}")
+    logger.info(f"  Data shape: {Xhat_train.shape}")
     logger.info(f"  Time: {len(t_train)} steps, dt={cfg.dt}")
+    logger.info(f"  Use POD: {use_pod}")
     
-    return Xhat_train, train_boundaries, t_train
+    return Xhat_train, train_boundaries, t_train, use_pod
 
 
 # =============================================================================
@@ -171,18 +173,39 @@ def main():
     t_start = time.time()
     
     try:
-        # Load preprocessing info for r
+        # Load preprocessing info
         preproc = np.load(paths['preprocessing_info'])
         r_actual = int(preproc['r_actual'])
-        
-        # Determine DMD rank
-        dmd_rank = cfg.dmd_rank if cfg.dmd_rank else r_actual
-        if dmd_rank > r_actual:
-            logger.warning(f"DMD rank {dmd_rank} > POD rank {r_actual}, using {r_actual}")
-            dmd_rank = r_actual
+        use_pod = bool(preproc.get('use_pod', True))
         
         # Load training data
-        Xhat_train, train_boundaries, t_train = load_training_data(paths, cfg, logger)
+        Xhat_train, train_boundaries, t_train, _ = load_training_data(paths, cfg, logger)
+        n_features = Xhat_train.shape[1]
+        
+        # Determine DMD rank
+        if use_pod:
+            # POD mode: default to POD rank
+            dmd_rank = cfg.dmd_rank if cfg.dmd_rank else r_actual
+            if dmd_rank > r_actual:
+                logger.warning(f"DMD rank {dmd_rank} > POD rank {r_actual}, using {r_actual}")
+                dmd_rank = r_actual
+        else:
+            # Raw mode: must specify rank, or DMD will do its own SVD
+            if cfg.dmd_rank is None:
+                # Use cfg.r as default if available, otherwise warn
+                if cfg.r and cfg.r < n_features:
+                    dmd_rank = cfg.r
+                    logger.info(f"No POD, using config r={dmd_rank} for DMD rank")
+                else:
+                    # Let DMD determine rank via SVD
+                    dmd_rank = min(n_features, Xhat_train.shape[0] - 1)
+                    logger.warning(f"No POD and no dmd_rank set, DMD will use rank={dmd_rank}")
+            else:
+                dmd_rank = cfg.dmd_rank
+        
+        logger.info(f"  Use POD: {use_pod}")
+        logger.info(f"  DMD rank: {dmd_rank}")
+        logger.info(f"  Feature dimension: {n_features}")
         
         # For single trajectory (or first trajectory if multiple)
         n_traj = len(train_boundaries) - 1
@@ -193,7 +216,7 @@ def main():
         
         # Fit DMD
         dmd_result = fit_bopdmd(
-            X_train=Xhat_train[:, :dmd_rank],
+            X_train=Xhat_train[:, :dmd_rank] if use_pod else Xhat_train,
             t_train=t_train,
             r=dmd_rank,
             cfg=cfg,
@@ -209,6 +232,7 @@ def main():
             amplitudes=dmd_result['amplitudes'],
             dt=dmd_result['dt'],
             dmd_rank=dmd_rank,
+            use_pod=use_pod,
         )
         
         # Final timing
@@ -216,11 +240,13 @@ def main():
         
         save_step_status(args.run_dir, "step_2", "completed", {
             "dmd_rank": dmd_rank,
+            "use_pod": use_pod,
             "n_train_snapshots": Xhat_train.shape[0],
             "time_seconds": t_elapsed,
         })
         
         print_header("STEP 2 COMPLETE")
+        print(f"  Use POD: {use_pod}")
         print(f"  DMD rank: {dmd_rank}")
         print(f"  Runtime: {t_elapsed:.1f}s")
         

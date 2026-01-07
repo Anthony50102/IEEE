@@ -1,12 +1,22 @@
 """
-Step 1: Data Preprocessing and POD Basis Computation.
+Step 1: Data Preprocessing and Optional POD Basis Computation.
 
 This script orchestrates:
 1. Loading raw simulation data
-2. Computing POD basis via method of snapshots
-3. Projecting data onto POD basis
+2. (Optional) Computing POD basis via method of snapshots
+3. (Optional) Projecting data onto POD basis
 4. Saving initial conditions and boundaries
-5. Saving full POD basis for later reconstruction
+5. Saving data for DMD training
+
+When use_pod=True (default):
+  - Computes POD basis from training data
+  - Projects data onto POD modes
+  - DMD will operate in reduced POD space
+
+When use_pod=False:
+  - Skips POD computation
+  - Saves centered raw data directly
+  - DMD will operate in full state space (more expensive)
 
 Supports two training modes (set via config):
 - "multi_trajectory": Train on full trajectories, test on different ICs
@@ -31,6 +41,7 @@ from dmd.utils import (
 )
 from dmd.data import (
     load_trajectory, compute_pod_basis, project_data, save_basis_and_preprocessing,
+    save_raw_preprocessing,
 )
 from opinf.utils import (
     setup_logging, save_step_status, get_run_directory, print_header,
@@ -57,6 +68,7 @@ def main():
     print_header("STEP 1: DATA PREPROCESSING (DMD)")
     print(f"  Run directory: {run_dir}")
     print(f"  Training mode: {cfg.training_mode}")
+    print(f"  Use POD: {cfg.use_pod}")
     print_dmd_config_summary(cfg)
     
     save_step_status(run_dir, "step_1", "running")
@@ -139,86 +151,135 @@ def main():
             train_mean = np.zeros((n_spatial, 1))
         
         # =====================================================================
-        # 3. Compute POD basis
+        # 3. POD or Raw Mode
         # =====================================================================
-        U_r, S, V = compute_pod_basis(Q_train_centered, cfg.r, logger)
-        
-        # Report energy captured
-        energy = np.cumsum(S**2) / np.sum(S**2)
-        logger.info(f"  POD energy captured (r={cfg.r}): {energy[cfg.r-1]*100:.4f}%")
-        
-        # =====================================================================
-        # 4. Project data
-        # =====================================================================
-        Xhat_train = project_data(Q_train_centered, U_r, logger, "training")
-        Xhat_test = project_data(Q_test_centered, U_r, logger, "test")
-        
-        # =====================================================================
-        # 5. Extract initial conditions
-        # =====================================================================
-        if cfg.training_mode == "temporal_split":
-            # For temporal split: train IC is first snapshot, test IC is split point
-            train_ICs = Q_train_centered[:, 0:1]  # (n_spatial, 1)
-            test_ICs = Q_test_centered[:, 0:1]    # (n_spatial, 1)
-            train_ICs_reduced = Xhat_train[0:1, :]  # (1, r)
-            test_ICs_reduced = Xhat_test[0:1, :]    # (1, r)
+        if cfg.use_pod:
+            # -----------------------------------------------------------------
+            # POD Mode: Compute basis and project
+            # -----------------------------------------------------------------
+            U_r, S, V = compute_pod_basis(Q_train_centered, cfg.r, logger)
+            
+            # Report energy captured
+            energy = np.cumsum(S**2) / np.sum(S**2)
+            logger.info(f"  POD energy captured (r={cfg.r}): {energy[cfg.r-1]*100:.4f}%")
+            
+            # Project data
+            Xhat_train = project_data(Q_train_centered, U_r, logger, "training")
+            Xhat_test = project_data(Q_test_centered, U_r, logger, "test")
+            r_actual = cfg.r
+            
+            # Extract ICs
+            if cfg.training_mode == "temporal_split":
+                train_ICs = Q_train_centered[:, 0:1]
+                test_ICs = Q_test_centered[:, 0:1]
+                train_ICs_reduced = Xhat_train[0:1, :]
+                test_ICs_reduced = Xhat_test[0:1, :]
+            else:
+                n_train_traj = len(train_boundaries) - 1
+                n_test_traj = len(test_boundaries) - 1
+                
+                train_ICs = np.zeros((n_spatial, n_train_traj))
+                train_ICs_reduced = np.zeros((n_train_traj, cfg.r))
+                for i in range(n_train_traj):
+                    idx = train_boundaries[i]
+                    train_ICs[:, i] = Q_train_centered[:, idx]
+                    train_ICs_reduced[i, :] = Xhat_train[idx, :]
+                
+                test_ICs = np.zeros((n_spatial, n_test_traj))
+                test_ICs_reduced = np.zeros((n_test_traj, cfg.r))
+                for i in range(n_test_traj):
+                    idx = test_boundaries[i]
+                    test_ICs[:, i] = Q_test_centered[:, idx]
+                    test_ICs_reduced[i, :] = Xhat_test[idx, :]
+            
+            # Save POD outputs
+            save_basis_and_preprocessing(
+                run_dir=run_dir,
+                U_r=U_r,
+                S=S,
+                train_mean=train_mean.squeeze(),
+                Xhat_train=Xhat_train,
+                Xhat_test=Xhat_test,
+                train_boundaries=train_boundaries,
+                test_boundaries=test_boundaries,
+                train_ICs=train_ICs,
+                test_ICs=test_ICs,
+                train_ICs_reduced=train_ICs_reduced,
+                test_ICs_reduced=test_ICs_reduced,
+                n_y=n_y,
+                n_x=n_x,
+                r_actual=r_actual,
+                training_mode=cfg.training_mode,
+                logger=logger,
+            )
+            
+            energy_pct = energy[cfg.r-1]*100
         else:
-            # Multi-trajectory: IC at start of each trajectory
-            n_train_traj = len(train_boundaries) - 1
-            n_test_traj = len(test_boundaries) - 1
+            # -----------------------------------------------------------------
+            # Raw Mode: Skip POD, save centered data directly
+            # -----------------------------------------------------------------
+            logger.info("Skipping POD (use_pod=False), saving raw centered data...")
+            r_actual = n_spatial  # Full state dimension
             
-            train_ICs = np.zeros((n_spatial, n_train_traj))
-            train_ICs_reduced = np.zeros((n_train_traj, cfg.r))
-            for i in range(n_train_traj):
-                idx = train_boundaries[i]
-                train_ICs[:, i] = Q_train_centered[:, idx]
-                train_ICs_reduced[i, :] = Xhat_train[idx, :]
+            # Extract ICs from raw data
+            if cfg.training_mode == "temporal_split":
+                train_ICs = Q_train_centered[:, 0:1]
+                test_ICs = Q_test_centered[:, 0:1]
+            else:
+                n_train_traj = len(train_boundaries) - 1
+                n_test_traj = len(test_boundaries) - 1
+                
+                train_ICs = np.zeros((n_spatial, n_train_traj))
+                for i in range(n_train_traj):
+                    train_ICs[:, i] = Q_train_centered[:, train_boundaries[i]]
+                
+                test_ICs = np.zeros((n_spatial, n_test_traj))
+                for i in range(n_test_traj):
+                    test_ICs[:, i] = Q_test_centered[:, test_boundaries[i]]
             
-            test_ICs = np.zeros((n_spatial, n_test_traj))
-            test_ICs_reduced = np.zeros((n_test_traj, cfg.r))
-            for i in range(n_test_traj):
-                idx = test_boundaries[i]
-                test_ICs[:, i] = Q_test_centered[:, idx]
-                test_ICs_reduced[i, :] = Xhat_test[idx, :]
+            # Save raw outputs (no POD)
+            save_raw_preprocessing(
+                run_dir=run_dir,
+                Q_train=Q_train_centered,
+                Q_test=Q_test_centered,
+                train_mean=train_mean.squeeze(),
+                train_boundaries=train_boundaries,
+                test_boundaries=test_boundaries,
+                train_ICs=train_ICs,
+                test_ICs=test_ICs,
+                n_y=n_y,
+                n_x=n_x,
+                training_mode=cfg.training_mode,
+                logger=logger,
+            )
+            
+            energy_pct = None
         
         # =====================================================================
-        # 6. Save outputs
+        # Final timing and status
         # =====================================================================
-        save_basis_and_preprocessing(
-            run_dir=run_dir,
-            U_r=U_r,
-            S=S,
-            train_mean=train_mean.squeeze(),
-            Xhat_train=Xhat_train,
-            Xhat_test=Xhat_test,
-            train_boundaries=train_boundaries,
-            test_boundaries=test_boundaries,
-            train_ICs=train_ICs,
-            test_ICs=test_ICs,
-            train_ICs_reduced=train_ICs_reduced,
-            test_ICs_reduced=test_ICs_reduced,
-            n_y=n_y,
-            n_x=n_x,
-            r_actual=cfg.r,
-            training_mode=cfg.training_mode,
-            logger=logger,
-        )
-        
-        # Final timing
         t_elapsed = time.time() - t_start
         
-        save_step_status(run_dir, "step_1", "completed", {
-            "r": cfg.r,
+        status_info = {
+            "use_pod": cfg.use_pod,
             "n_train_snapshots": Q_train.shape[1],
             "n_test_snapshots": Q_test.shape[1],
             "training_mode": cfg.training_mode,
             "time_seconds": t_elapsed,
-        })
+        }
+        if cfg.use_pod:
+            status_info["r"] = cfg.r
+        
+        save_step_status(run_dir, "step_1", "completed", status_info)
         
         print_header("STEP 1 COMPLETE")
         print(f"  Run directory: {run_dir}")
-        print(f"  POD modes: {cfg.r}")
-        print(f"  Energy captured: {energy[cfg.r-1]*100:.4f}%")
+        print(f"  Use POD: {cfg.use_pod}")
+        if cfg.use_pod:
+            print(f"  POD modes: {cfg.r}")
+            print(f"  Energy captured: {energy_pct:.4f}%")
+        else:
+            print(f"  Raw state dimension: {n_spatial}")
         print(f"  Runtime: {t_elapsed:.1f}s")
         
     except Exception as e:

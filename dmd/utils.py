@@ -54,6 +54,7 @@ class DMDConfig(OpInfConfig):
     test_end: int = 16000     # End snapshot for testing (temporal_split only)
     
     # DMD-specific parameters
+    use_pod: bool = True  # Apply POD before DMD (False = direct DMD on raw data)
     dmd_rank: Optional[int] = None  # DMD rank (defaults to POD r if None)
     num_trials: int = 0  # Number of bagging trials for BOPDMD (0 = no bagging)
     use_proj: bool = True  # Use POD projection in BOPDMD
@@ -103,6 +104,7 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.train_end = dmd_section.get("train_end", 8000)
     cfg.test_start = dmd_section.get("test_start", 8000)
     cfg.test_end = dmd_section.get("test_end", 16000)
+    cfg.use_pod = dmd_section.get("use_pod", True)
     cfg.dmd_rank = dmd_section.get("rank", None)
     cfg.num_trials = dmd_section.get("num_trials", 0)
     cfg.use_proj = dmd_section.get("use_proj", True)
@@ -169,6 +171,7 @@ def save_config(cfg: DMDConfig, output_path: str, step_name: str = None) -> str:
             "target_energy": cfg.target_energy,
         },
         "dmd": {
+            "use_pod": cfg.use_pod,
             "rank": cfg.dmd_rank,
             "num_trials": cfg.num_trials,
             "use_proj": cfg.use_proj,

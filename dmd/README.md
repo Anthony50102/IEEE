@@ -4,17 +4,30 @@ This module implements **Optimized DMD (opt-DMD)** using the BOPDMD algorithm fr
 
 ## Overview
 
-The DMD pipeline fits a linear dynamical system in the POD-reduced space:
+The DMD pipeline fits a linear dynamical system to snapshot data:
 
 $$\frac{d\hat{x}}{dt} = A\hat{x}$$
 
-where $\hat{x}$ is the POD-projected state. DMD identifies eigenvalues and modes, enabling time-extrapolation (forecasting).
+DMD identifies eigenvalues and modes, enabling time-extrapolation (forecasting).
+
+### POD Mode vs Raw Mode
+
+The pipeline supports two approaches via the `use_pod` config option:
+
+| Mode | `use_pod` | Description | Trade-offs |
+|------|-----------|-------------|------------|
+| **POD-DMD** | `true` | First compute POD basis, then fit DMD in reduced space | Cheaper, regularized, double truncation |
+| **Direct DMD** | `false` | Fit DMD directly on full-state data | More expensive, single SVD, preserves all dynamics |
+
+**POD-DMD (default):** Reduces dimension before DMD. Good for large datasets and filtering noise. However, POD truncation removes variance-based information before DMD's frequency-based decomposition.
+
+**Direct DMD:** DMD operates on full state space. More computationally expensive but avoids information loss from double truncation. DMD's internal SVD handles rank selection.
 
 ## Pipeline Structure
 
 | Step | Script | Function |
 |------|--------|----------|
-| 1 | `step_1_preprocess.py` | Load data, compute POD, project snapshots |
+| 1 | `step_1_preprocess.py` | Load data, optionally compute POD, prepare training data |
 | 2 | `step_2_train.py` | Fit BOPDMD model |
 | 3 | `step_3_evaluate.py` | Compute predictions and metrics |
 
@@ -28,6 +41,7 @@ Train on complete trajectory(ies), test on trajectories with different initial c
 ```yaml
 dmd:
   training_mode: "multi_trajectory"
+  use_pod: true  # or false for direct DMD
 
 paths:
   training_files: [train1.h5]
@@ -40,7 +54,11 @@ Train on the first n snapshots of a single trajectory, predict the remaining por
 ```yaml
 dmd:
   training_mode: "temporal_split"
-  temporal_split_train: 2000   # Train on first 2000 snapshots
+  train_start: 0
+  train_end: 2000
+  test_start: 2000
+  test_end: 4000
+  use_pod: true
 
 paths:
   training_files: [trajectory.h5]
@@ -59,39 +77,43 @@ $$\Gamma_c = c_1 \int d^2x \, (\tilde{n} - \tilde{\phi})^2$$
 
 ## Quick Start
 
-### Temporal Split Mode
+### With POD (default)
 ```bash
 python dmd/step_1_preprocess.py --config config/dmd_temporal_split.yaml
 python dmd/step_2_train.py --config config/dmd_temporal_split.yaml --run-dir <run_dir>
 python dmd/step_3_evaluate.py --config config/dmd_temporal_split.yaml --run-dir <run_dir>
 ```
 
-### Multi-Trajectory Mode  
-```bash
-python dmd/step_1_preprocess.py --config config/dmd_1train_5test.yaml
-python dmd/step_2_train.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
-python dmd/step_3_evaluate.py --config config/dmd_1train_5test.yaml --run-dir <run_dir>
-```
+### Without POD (direct DMD)
+Set `use_pod: false` in config, then run the same commands.
 
 ## Configuration
 
 ```yaml
 dmd:
   training_mode: "temporal_split"  # or "multi_trajectory"
-  temporal_split_train: 2000       # snapshots for training (temporal_split)
-  rank: null                       # DMD rank (null = use POD r)
+  train_start: 0
+  train_end: 2000
+  test_start: 2000
+  test_end: 4000
+  
+  use_pod: true                    # true = POD-DMD, false = direct DMD
+  rank: null                       # DMD rank (null = use POD r or auto)
   num_trials: 0                    # Bagging trials (0 = no bagging)
   use_proj: true                   # Use projection in BOPDMD
   eig_sort: "real"                 # Eigenvalue sorting
   k0: 0.15                         # Wavenumber for grid spacing
   c1: 1.0                          # Adiabaticity parameter
+
+reduction:
+  r: 75                            # POD rank (used when use_pod: true)
 ```
 
 ## Module Structure
 
 ```
 dmd/
-├── step_1_preprocess.py  # Data loading + POD computation
+├── step_1_preprocess.py  # Data loading + optional POD
 ├── step_2_train.py       # BOPDMD fitting
 ├── step_3_evaluate.py    # Prediction and metrics
 ├── utils.py              # Configuration, forecasting utilities
@@ -103,10 +125,10 @@ dmd/
 
 ```
 <run_dir>/
-├── pod_basis.npz         # POD basis U_r and mean
-├── POD.npz               # Singular values
-├── Xhat_train.npy        # Projected training data
-├── Xhat_test.npy         # Projected test data
+├── pod_basis.npz         # POD basis U_r and mean (or just mean if use_pod=false)
+├── POD.npz               # Singular values (POD mode only)
+├── Xhat_train.npy        # Training data (projected or raw)
+├── Xhat_test.npy         # Test data (projected or raw)
 ├── dmd_model.npz         # DMD eigenvalues, modes, amplitudes
 ├── dmd_predictions.npz   # Forecasted Gamma values
 └── dmd_evaluation_metrics.yaml
@@ -123,12 +145,18 @@ Continuous-time eigenvalues $\alpha_j$ relate to discrete-time by: $\mu_j = e^{\
 
 ### Forecasting
 
-The reduced state at time $t$:
+The state at time $t$:
 $$\hat{x}(t) = \sum_j b_j \phi_j e^{\alpha_j t}$$
 
 ### Full State Reconstruction
 
+**POD mode:**
 $$Q(t) = U_r \hat{x}(t) + \bar{Q}$$
+
+**Raw mode:**
+$$Q(t) = \hat{x}(t) + \bar{Q}$$
+
+where $\hat{x}(t)$ is already in full state space.
 
 ## References
 

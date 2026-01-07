@@ -48,26 +48,35 @@ def load_dmd_model(paths: dict, logger) -> dict:
         'amplitudes': data['amplitudes'],
         'dt': float(data['dt']),
         'dmd_rank': int(data['dmd_rank']),
+        'use_pod': bool(data.get('use_pod', True)),  # Backward compatible
     }
-    logger.info(f"  Rank: {model['dmd_rank']}, dt: {model['dt']}")
+    logger.info(f"  Rank: {model['dmd_rank']}, dt: {model['dt']}, use_pod: {model['use_pod']}")
     return model
 
 
-def load_pod_basis(paths: dict, logger):
-    """Load POD basis for full-state reconstruction."""
+def load_pod_basis(paths: dict, logger, use_pod: bool = True):
+    """Load POD basis for full-state reconstruction (or mean for raw mode)."""
     pod_path = paths['pod_basis']
     if not os.path.exists(pod_path):
-        logger.warning("POD basis not found, will not compute physics-based Gamma")
+        logger.warning("POD basis/mean not found, will not compute physics-based Gamma")
         return None
     
-    logger.info(f"Loading POD basis from {pod_path}")
-    data = np.load(pod_path)
-    return {
-        'U_r': data['U_r'],
+    logger.info(f"Loading reconstruction data from {pod_path}")
+    data = np.load(pod_path, allow_pickle=True)
+    
+    result = {
         'mean': data['mean'],
         'n_y': int(data['n_y']),
         'n_x': int(data['n_x']),
+        'use_pod': bool(data.get('use_pod', True)),
     }
+    
+    if use_pod and data['U_r'] is not None:
+        result['U_r'] = data['U_r']
+    else:
+        result['U_r'] = None
+    
+    return result
 
 
 def load_supporting_data(paths: dict, logger) -> tuple:
@@ -91,9 +100,21 @@ def compute_amplitudes_from_ic(x0: np.ndarray, modes_reduced: np.ndarray) -> np.
 
 def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: dict, 
                         k0: float, c1: float) -> dict:
-    """Forecast a single trajectory."""
+    """
+    Forecast a single trajectory.
+    
+    Handles both POD mode (reconstruct via U_r) and raw mode (DMD modes are full-space).
+    """
     r = model['dmd_rank']
-    x0_r = x0[:r]
+    use_pod = model.get('use_pod', True)
+    
+    if use_pod:
+        # POD mode: x0 is in reduced space, truncate to DMD rank
+        x0_r = x0[:r]
+    else:
+        # Raw mode: x0 is full-space IC, need to use all features for amplitude computation
+        # modes_reduced is actually modes in full space
+        x0_r = x0
     
     # Compute amplitudes for this IC
     amplitudes = compute_amplitudes_from_ic(x0_r, model['modes_reduced'])
@@ -101,21 +122,31 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
     # Time vector
     t = np.arange(n_steps) * model['dt']
     
-    # Forecast in reduced space
+    # Forecast
     X_hat = dmd_forecast_reduced(model['eigs'], model['modes_reduced'], amplitudes, t)
-    X_hat = np.real(X_hat)  # (r, n_steps)
+    X_hat = np.real(X_hat)  # (n_features, n_steps)
     
     if np.any(np.isnan(X_hat)) or np.any(np.isinf(X_hat)):
         return {'is_nan': True}
     
     result = {'is_nan': False, 'X_hat': X_hat}
     
-    # Compute Gamma from physics if POD basis available
+    # Compute Gamma from physics
     if pod_basis is not None:
         mean_data = pod_basis.get('mean')
-        # DMD operates on first r POD modes, so truncate U_r to match
-        U_r_truncated = pod_basis['U_r'][:, :r]
-        Q_full = reconstruct_full_state(X_hat, U_r_truncated, mean_data)
+        
+        if use_pod and pod_basis.get('U_r') is not None:
+            # POD mode: reconstruct full state via U_r @ X_hat + mean
+            U_r_truncated = pod_basis['U_r'][:, :r]
+            Q_full = reconstruct_full_state(X_hat, U_r_truncated, mean_data)
+        else:
+            # Raw mode: DMD output is already in full state space, just add mean
+            # X_hat is (n_spatial, n_steps), need to add mean
+            if mean_data is not None:
+                Q_full = X_hat + mean_data.reshape(-1, 1)
+            else:
+                Q_full = X_hat
+        
         Gamma_n, Gamma_c = compute_gamma_from_state(
             Q_full, 2, pod_basis['n_y'], pod_basis['n_x'], k0, c1
         )
@@ -314,8 +345,11 @@ def main():
     try:
         # Load model and data
         model = load_dmd_model(paths, logger)
-        pod_basis = load_pod_basis(paths, logger)
+        use_pod = model.get('use_pod', True)
+        pod_basis = load_pod_basis(paths, logger, use_pod=use_pod)
         train_ICs, test_ICs, train_bounds, test_bounds = load_supporting_data(paths, logger)
+        
+        logger.info(f"  Use POD: {use_pod}")
         
         # Compute forecasts
         train_pred = compute_forecasts(model, train_ICs, train_bounds, pod_basis,
@@ -345,7 +379,7 @@ def main():
                                         ref_offset=test_ref_offset)
         
         # Save results
-        all_metrics = {'train': train_metrics, 'test': test_metrics}
+        all_metrics = {'train': train_metrics, 'test': test_metrics, 'use_pod': use_pod}
         with open(paths['dmd_metrics'], 'w') as f:
             yaml.dump(all_metrics, f, default_flow_style=False)
         logger.info(f"Saved metrics to {paths['dmd_metrics']}")
@@ -385,7 +419,10 @@ def main():
             figures_dir = os.path.join(args.run_dir, "figures")
             
             # Extract POD basis info for shared function
-            U_r = pod_basis['U_r'][:, :model['dmd_rank']] if pod_basis else None
+            if use_pod and pod_basis and pod_basis.get('U_r') is not None:
+                U_r = pod_basis['U_r'][:, :model['dmd_rank']]
+            else:
+                U_r = None  # Raw mode: predictions are already in full space
             mean = pod_basis.get('mean') if pod_basis else None
             n_y = pod_basis['n_y'] if pod_basis else cfg.n_y
             n_x = pod_basis['n_x'] if pod_basis else cfg.n_x
@@ -399,7 +436,8 @@ def main():
                 n_y=n_y, n_x=n_x,
                 engine=cfg.engine, dt=cfg.dt,
                 output_dir=figures_dir, logger=logger,
-                method_name="DMD", prefix="train_",
+                method_name="DMD" + (" (no POD)" if not use_pod else ""),
+                prefix="train_",
                 ref_offset=train_ref_offset,
                 plot_error=cfg.plot_state_error,
                 plot_snapshots=cfg.plot_state_snapshots,
@@ -415,7 +453,8 @@ def main():
                 n_y=n_y, n_x=n_x,
                 engine=cfg.engine, dt=cfg.dt,
                 output_dir=figures_dir, logger=logger,
-                method_name="DMD", prefix="test_",
+                method_name="DMD" + (" (no POD)" if not use_pod else ""),
+                prefix="test_",
                 ref_offset=test_ref_offset,
                 plot_error=cfg.plot_state_error,
                 plot_snapshots=cfg.plot_state_snapshots,
