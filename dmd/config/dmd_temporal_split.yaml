@@ -33,7 +33,7 @@ dmd:
   test_start: 16000      # Test from snapshot 16000
   test_end: 24000        # Test to snapshot 24000
   
-  rank: 20             # DMD rank (null = use POD r)
+  rank: 40             # DMD rank (null = use POD r)
   num_trials: 0          # Bagging trials (0 = no bagging)
   use_proj: true
   eig_sort: "real"

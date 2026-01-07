@@ -70,8 +70,11 @@ model_selection:
   threshold_std: 0.3
 
 evaluation:
-  save_predictions: true
-  generate_plots: true
+  save_predictions: true   # Save ensemble predictions to disk
+  generate_plots: true     # Generate Gamma diagnostic plots
+  plot_state_error: true  # Generate L2 state error over time plots
+  plot_state_snapshots: true  # Generate 2D snapshot comparison plots
+  n_snapshot_samples: 5    # Number of snapshots for comparison
 
 execution:
   verbose: true
