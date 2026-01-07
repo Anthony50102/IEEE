@@ -69,6 +69,8 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     
     # Initial eigenvalue guess via standard DMD
     logger.info("  Computing initial eigenvalue guess...")
+    print(r)
+    print(type(r))
     dmd0 = DMD(svd_rank=r)
     dmd0.fit(X_dmd)
     init_alpha = np.log(dmd0.eigs) / dt  # Convert to continuous-time
@@ -83,11 +85,12 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     V_global = np.eye(r, dtype=np.float64)  # Identity in reduced space
     
     dmd_model = BOPDMD(
-        svd_rank=20,
+        svd_rank=r,
         num_trials=cfg.num_trials,
         proj_basis=V_global if cfg.use_proj else None,
         use_proj=cfg.use_proj,
         eig_sort=cfg.eig_sort,
+        eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
         # init_alpha=init_alpha,
     )
     dmd_model.fit(X_dmd, t=t_train)
