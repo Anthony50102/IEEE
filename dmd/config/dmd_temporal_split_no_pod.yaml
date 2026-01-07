@@ -1,4 +1,4 @@
-run_name: "dmd_temporal_split"  # Train on first n snapshots, predict rest
+run_name: "dmd_temporal_split_no_pod"  # Direct DMD without POD preprocessing
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/"
@@ -18,10 +18,11 @@ physics:
   n_x: 512
   n_y: 512
 
-# Dimensionality reduction (for POD basis)
+# Dimensionality reduction settings
+# Note: r is still used as default DMD rank when use_pod=false
 reduction:
   method: "linear"
-  r: 75
+  r: 75                  # Used as default DMD rank
   target_energy: 0.9999
   svd_save: 250
 
@@ -33,8 +34,8 @@ dmd:
   test_start: 16000      # Test from snapshot 16000
   test_end: 24000        # Test to snapshot 24000
   
-  use_pod: true          # Apply POD before DMD (false = direct DMD on raw data)
-  rank: 40               # DMD rank (null = use POD r)
+  use_pod: false         # DIRECT DMD on raw data (no POD preprocessing)
+  rank: 75               # DMD rank - IMPORTANT when use_pod=false
   num_trials: 0          # Bagging trials (0 = no bagging)
   use_proj: true
   eig_sort: "real"
@@ -45,7 +46,7 @@ truncation:
   enabled: false                 # Not needed - using explicit snapshot ranges
 
 preprocessing:
-  centering: true
+  centering: true        # Still center the data
   scaling: false
 
 training:

@@ -224,7 +224,8 @@ def save_basis_and_preprocessing(
     np.savez(os.path.join(run_dir, "boundaries.npz"),
              train_boundaries=train_boundaries,
              test_boundaries=test_boundaries,
-             n_spatial=U_r.shape[0])
+             n_spatial=U_r.shape[0],
+             use_pod=True)
     logger.info(f"  Saved boundaries")
     
     # Initial conditions
@@ -240,7 +241,8 @@ def save_basis_and_preprocessing(
              r_actual=r_actual,
              n_y=n_y,
              n_x=n_x,
-             training_mode=training_mode)
+             training_mode=training_mode,
+             use_pod=True)
     logger.info(f"  Saved preprocessing info")
     
     # Learning matrices (for compatibility)
@@ -249,3 +251,90 @@ def save_basis_and_preprocessing(
              scaling_Xhat=np.max(np.abs(Xhat_train)))
     
     logger.info("All outputs saved successfully")
+
+
+def save_raw_preprocessing(
+    run_dir: str,
+    Q_train: np.ndarray,
+    Q_test: np.ndarray,
+    train_mean: np.ndarray,
+    train_boundaries: np.ndarray,
+    test_boundaries: np.ndarray,
+    train_ICs: np.ndarray,
+    test_ICs: np.ndarray,
+    n_y: int,
+    n_x: int,
+    training_mode: str,
+    logger,
+):
+    """
+    Save preprocessing outputs for raw (no POD) mode.
+    
+    In this mode, DMD operates directly on centered state data.
+    
+    Parameters
+    ----------
+    run_dir : str
+        Output directory.
+    Q_train, Q_test : np.ndarray, shape (n_spatial, n_time)
+        Centered training/test data.
+    train_mean : np.ndarray
+        Training data mean for reconstruction.
+    train_boundaries, test_boundaries : np.ndarray
+        Trajectory boundaries.
+    train_ICs, test_ICs : np.ndarray
+        Full-space initial conditions.
+    n_y, n_x : int
+        Grid dimensions.
+    training_mode : str
+        Training mode used.
+    logger : logging.Logger
+        Logger instance.
+    """
+    logger.info("Saving raw preprocessing outputs (no POD)...")
+    n_spatial = Q_train.shape[0]
+    
+    # Save mean for reconstruction
+    np.savez(os.path.join(run_dir, "pod_basis.npz"),
+             U_r=None, mean=train_mean, n_y=n_y, n_x=n_x, use_pod=False)
+    logger.info(f"  Saved mean (no POD basis)")
+    
+    # Save raw data (transposed to match POD output format: n_time, n_features)
+    # This is what DMD will operate on
+    np.save(os.path.join(run_dir, "Xhat_train.npy"), Q_train.T)  # (n_time, n_spatial)
+    np.save(os.path.join(run_dir, "Xhat_test.npy"), Q_test.T)
+    logger.info(f"  Saved raw data: train {Q_train.T.shape}, test {Q_test.T.shape}")
+    
+    # Boundaries
+    np.savez(os.path.join(run_dir, "boundaries.npz"),
+             train_boundaries=train_boundaries,
+             test_boundaries=test_boundaries,
+             n_spatial=n_spatial,
+             use_pod=False)
+    logger.info(f"  Saved boundaries")
+    
+    # Initial conditions (no reduced ICs in raw mode)
+    # For raw mode, "reduced" ICs are just the full ICs transposed
+    n_train_traj = train_ICs.shape[1] if train_ICs.ndim > 1 else 1
+    n_test_traj = test_ICs.shape[1] if test_ICs.ndim > 1 else 1
+    
+    train_ICs_flat = train_ICs.T if train_ICs.ndim > 1 else train_ICs.reshape(1, -1)
+    test_ICs_flat = test_ICs.T if test_ICs.ndim > 1 else test_ICs.reshape(1, -1)
+    
+    np.savez(os.path.join(run_dir, "initial_conditions.npz"),
+             train_ICs=train_ICs,
+             test_ICs=test_ICs,
+             train_ICs_reduced=train_ICs_flat,  # (n_traj, n_spatial)
+             test_ICs_reduced=test_ICs_flat)
+    logger.info(f"  Saved initial conditions")
+    
+    # Preprocessing info
+    np.savez(os.path.join(run_dir, "preprocessing_info.npz"),
+             r_actual=n_spatial,  # Full dimension
+             n_y=n_y,
+             n_x=n_x,
+             training_mode=training_mode,
+             use_pod=False)
+    logger.info(f"  Saved preprocessing info (n_spatial={n_spatial})")
+    
+    logger.info("All raw preprocessing outputs saved successfully")
