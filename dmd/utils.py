@@ -60,6 +60,11 @@ class DMDConfig(OpInfConfig):
     # Physics parameters for Gamma computation
     k0: float = 0.15  # Wave number (dx = 2*pi/k0)
     c1: float = 1.0   # Adiabaticity parameter
+    
+    # State diagnostic plots
+    plot_state_error: bool = False  # Plot L2 error over time
+    plot_state_snapshots: bool = False  # Plot 2D snapshot comparisons
+    n_snapshot_samples: int = 5  # Number of snapshots to compare
 
 
 def load_dmd_config(config_path: str) -> DMDConfig:
@@ -102,6 +107,12 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.eig_sort = dmd_section.get("eig_sort", "real")
     cfg.k0 = dmd_section.get("k0", 0.15)
     cfg.c1 = dmd_section.get("c1", 1.0)
+    
+    # State diagnostic plot settings
+    evaluation = raw.get("evaluation", {})
+    cfg.plot_state_error = evaluation.get("plot_state_error", False)
+    cfg.plot_state_snapshots = evaluation.get("plot_state_snapshots", False)
+    cfg.n_snapshot_samples = evaluation.get("n_snapshot_samples", 5)
     
     return cfg
 

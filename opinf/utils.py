@@ -99,6 +99,9 @@ class OpInfConfig:
     # Evaluation
     save_predictions: bool = True
     generate_plots: bool = True
+    plot_state_error: bool = False  # Plot L2 error over time
+    plot_state_snapshots: bool = False  # Plot 2D snapshot comparisons
+    n_snapshot_samples: int = 5  # Number of snapshots to compare
     
     # Execution
     verbose: bool = True
@@ -196,6 +199,9 @@ def load_config(config_path: str) -> OpInfConfig:
     evaluation = raw.get("evaluation", {})
     cfg.save_predictions = evaluation.get("save_predictions", True)
     cfg.generate_plots = evaluation.get("generate_plots", True)
+    cfg.plot_state_error = evaluation.get("plot_state_error", False)
+    cfg.plot_state_snapshots = evaluation.get("plot_state_snapshots", False)
+    cfg.n_snapshot_samples = evaluation.get("n_snapshot_samples", 5)
     
     # Execution
     execution = raw.get("execution", {})
@@ -243,7 +249,13 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
             "threshold_mean": cfg.threshold_mean,
             "threshold_std": cfg.threshold_std,
         },
-        "evaluation": {"save_predictions": cfg.save_predictions, "generate_plots": cfg.generate_plots},
+        "evaluation": {
+            "save_predictions": cfg.save_predictions, 
+            "generate_plots": cfg.generate_plots,
+            "plot_state_error": cfg.plot_state_error,
+            "plot_state_snapshots": cfg.plot_state_snapshots,
+            "n_snapshot_samples": cfg.n_snapshot_samples,
+        },
         "execution": {"verbose": cfg.verbose, "log_level": cfg.log_level, "engine": cfg.engine},
     }
     
