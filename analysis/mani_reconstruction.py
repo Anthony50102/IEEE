@@ -345,7 +345,7 @@ for i, r in enumerate(R_VALUES):
         
         # Training reconstruction error
         z_train = V_mani.T @ Q_train  # (r, n_train)
-        Q_train_rec = V_mani @ z_train + shift[:, None]
+        Q_train_rec = V_mani @ z_train
         for t in range(n_train):
             h = quadratic_features(z_train[:, t:t+1]).squeeze()
             Q_train_rec[:, t] += W @ h
@@ -356,7 +356,7 @@ for i, r in enumerate(R_VALUES):
         
         # Test reconstruction error
         z_test = V_mani.T @ Q_test  # (r, n_test)
-        Q_test_rec = V_mani @ z_test + shift[:, None]
+        Q_test_rec = V_mani @ z_test
         for t in range(n_test):
             h = quadratic_features(z_test[:, t:t+1]).squeeze()
             Q_test_rec[:, t] += W @ h
