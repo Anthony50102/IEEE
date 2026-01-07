@@ -214,6 +214,7 @@ __marimo__/
 *.out
 *.png
 *.gif
+*.np*
 *.jpg
 
 # Local output
