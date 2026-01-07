@@ -31,6 +31,7 @@ from opinf.utils import (
     setup_logging, save_config, save_step_status, check_step_completed,
     print_header, load_dataset as loader,
 )
+from shared.plotting import plot_gamma_comparison
 
 
 # =============================================================================
@@ -229,6 +230,47 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
 
 
 # =============================================================================
+# PLOTTING
+# =============================================================================
+
+def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarray,
+                         engine: str, dt: float, output_dir: str, logger, 
+                         prefix: str = "", ref_offset: int = 0):
+    """
+    Generate plots comparing predicted vs reference Gamma values.
+    
+    Uses the shared plotting module for consistent styling across methods.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    n_traj = len(boundaries) - 1
+    
+    for i in range(n_traj):
+        if forecasts['is_nan'][i] or forecasts['Gamma_n'][i] is None:
+            continue
+        
+        # Load reference
+        fh = loader(ref_files[i], engine=engine)
+        n_steps = boundaries[i + 1] - boundaries[i]
+        ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
+        ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
+        
+        pred_n = forecasts['Gamma_n'][i]
+        pred_c = forecasts['Gamma_c'][i]
+        
+        # Use shared plotting function
+        output_path = os.path.join(output_dir, f'{prefix}traj_{i+1}_gamma.png')
+        plot_gamma_comparison(
+            pred_n=pred_n, pred_c=pred_c,
+            ref_n=ref_n, ref_c=ref_c,
+            dt=dt, output_path=output_path, logger=logger,
+            title_prefix=f'{prefix.replace("_", " ").title()}Trajectory {i+1}: ',
+            method_name="DMD"
+        )
+    
+    logger.info(f"Plots saved to {output_dir}")
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -310,6 +352,22 @@ def main():
                     save_dict[f'test_traj_{i}_Gamma_n'] = gn
             np.savez(paths['dmd_predictions'], **save_dict)
             logger.info(f"Saved predictions to {paths['dmd_predictions']}")
+        
+        # Generate plots
+        if cfg.generate_plots:
+            figures_dir = os.path.join(args.run_dir, "figures")
+            logger.info("Generating Gamma comparison plots...")
+            
+            generate_gamma_plots(
+                train_pred, train_ref_files, train_bounds,
+                cfg.engine, cfg.dt, figures_dir, logger,
+                prefix="train_", ref_offset=train_ref_offset
+            )
+            generate_gamma_plots(
+                test_pred, test_ref_files, test_bounds,
+                cfg.engine, cfg.dt, figures_dir, logger,
+                prefix="test_", ref_offset=test_ref_offset
+            )
         
         # Final timing
         t_elapsed = time.time() - t_start

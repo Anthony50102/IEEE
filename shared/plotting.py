@@ -93,79 +93,105 @@ def plot_pod_energy(eigs, r, output_dir, logger, filename="pod_energy.png"):
 # GAMMA PREDICTION PLOTS
 # =============================================================================
 
-def plot_gamma_predictions(predictions: dict, ref_files: list, boundaries: np.ndarray,
-                           dt: float, engine: str, output_dir: str, logger,
-                           start_offset: int = 0):
+def plot_gamma_timeseries(pred_n: np.ndarray, pred_c: np.ndarray,
+                          ref_n: np.ndarray, ref_c: np.ndarray,
+                          dt: float, output_path: str, logger,
+                          title_prefix: str = "", method_name: str = "ROM"):
     """
-    Generate Gamma time series comparison plots.
+    Generate a Gamma comparison plot (reference vs prediction).
     
-    Creates one figure per trajectory showing:
-    - Reference vs ensemble mean
-    - ±2σ uncertainty band
+    This is the standard plotting function for all ROM methods.
+    Handles both single predictions and ensemble predictions (with uncertainty).
     
-    Args:
-        start_offset: For temporal_split mode, the starting snapshot index
-                      for loading reference data.
+    Parameters
+    ----------
+    pred_n : np.ndarray, shape (n_steps,) or (n_ensemble, n_steps)
+        Predicted particle flux. If 2D, ensemble mean and ±2σ are plotted.
+    pred_c : np.ndarray, shape (n_steps,) or (n_ensemble, n_steps)
+        Predicted conductive flux.
+    ref_n : np.ndarray, shape (n_steps,)
+        Reference particle flux.
+    ref_c : np.ndarray, shape (n_steps,)
+        Reference conductive flux.
+    dt : float
+        Time step size.
+    output_path : str
+        Full path to save the figure.
+    logger : logging.Logger
+        Logger instance.
+    title_prefix : str
+        Prefix for the plot title (e.g., "Train Trajectory 1: ").
+    method_name : str
+        Name of the method for legend (e.g., "DMD", "OpInf").
     """
     if not HAS_MATPLOTLIB:
         logger.warning("matplotlib not available, skipping plots")
         return
     
-    # Import here to avoid circular imports
-    from utils import load_dataset
+    n_steps = len(ref_n)
+    t = np.arange(n_steps) * dt
     
-    os.makedirs(output_dir, exist_ok=True)
-    logger.info(f"Generating Gamma plots in {output_dir}")
+    # Check if ensemble (2D) or single prediction (1D)
+    is_ensemble = pred_n.ndim == 2
     
-    n_traj = len(predictions['Gamma_n'])
-    
-    for traj_idx in range(n_traj):
-        fh = load_dataset(ref_files[traj_idx], engine)
-        traj_len = boundaries[traj_idx + 1] - boundaries[traj_idx]
-        
-        # Apply offset for temporal_split mode
-        ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
-        ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
-        
-        pred_n = predictions['Gamma_n'][traj_idx]
-        pred_c = predictions['Gamma_c'][traj_idx]
-        
+    if is_ensemble:
         mean_n, std_n = np.mean(pred_n, axis=0), np.std(pred_n, axis=0)
         mean_c, std_c = np.mean(pred_c, axis=0), np.std(pred_c, axis=0)
-        
-        time = np.arange(traj_len) * dt
-        
-        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-        
-        # Gamma_n
-        ax = axes[0]
-        ax.plot(time, ref_n, 'k-', label='Reference', linewidth=1)
-        ax.plot(time, mean_n, 'b-', label='Ensemble Mean', linewidth=1)
-        ax.fill_between(time, mean_n - 2*std_n, mean_n + 2*std_n,
-                       alpha=0.3, color='blue', label='±2σ')
-        ax.set_ylabel(r'$\Gamma_n$')
-        ax.legend(loc='upper right')
-        ax.set_title(f'Trajectory {traj_idx + 1}: Particle Flux')
-        ax.grid(True, alpha=0.3)
-        
-        # Gamma_c
-        ax = axes[1]
-        ax.plot(time, ref_c, 'k-', label='Reference', linewidth=1)
-        ax.plot(time, mean_c, 'r-', label='Ensemble Mean', linewidth=1)
-        ax.fill_between(time, mean_c - 2*std_c, mean_c + 2*std_c,
-                       alpha=0.3, color='red', label='±2σ')
-        ax.set_xlabel('Time')
-        ax.set_ylabel(r'$\Gamma_c$')
-        ax.legend(loc='upper right')
-        ax.set_title(f'Trajectory {traj_idx + 1}: Conductive Flux')
-        ax.grid(True, alpha=0.3)
-        
-        plt.tight_layout()
-        fig_path = os.path.join(output_dir, f'traj_{traj_idx + 1}_gamma.png')
-        plt.savefig(fig_path, dpi=150)
-        plt.close(fig)
-        
-        logger.info(f"  Saved {fig_path}")
+    else:
+        mean_n, std_n = pred_n, None
+        mean_c, std_c = pred_c, None
+    
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    
+    # Gamma_n plot
+    ax = axes[0]
+    ax.plot(t, ref_n, 'k-', label='Reference', linewidth=1, alpha=0.8)
+    ax.plot(t, mean_n, 'b--', label=f'{method_name} Prediction', linewidth=1)
+    if is_ensemble and std_n is not None:
+        ax.fill_between(t, mean_n - 2*std_n, mean_n + 2*std_n,
+                        alpha=0.3, color='blue', label='±2σ')
+    ax.set_ylabel(r'$\Gamma_n$ (Particle Flux)', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.set_title(f'{title_prefix}Transport Coefficients', fontsize=14)
+    ax.grid(True, alpha=0.3)
+    
+    # Add error annotation
+    err_n = np.abs(np.mean(ref_n) - np.mean(mean_n)) / np.abs(np.mean(ref_n))
+    ax.text(0.02, 0.95, f'Mean Error: {err_n:.2%}', transform=ax.transAxes,
+            fontsize=10, verticalalignment='top', 
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    # Gamma_c plot
+    ax = axes[1]
+    ax.plot(t, ref_c, 'k-', label='Reference', linewidth=1, alpha=0.8)
+    ax.plot(t, mean_c, 'r--', label=f'{method_name} Prediction', linewidth=1)
+    if is_ensemble and std_c is not None:
+        ax.fill_between(t, mean_c - 2*std_c, mean_c + 2*std_c,
+                        alpha=0.3, color='red', label='±2σ')
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel(r'$\Gamma_c$ (Conductive Flux)', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+    
+    # Add error annotation
+    err_c = np.abs(np.mean(ref_c) - np.mean(mean_c)) / np.abs(np.mean(ref_c))
+    ax.text(0.02, 0.95, f'Mean Error: {err_c:.2%}', transform=ax.transAxes,
+            fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    plt.tight_layout()
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    
+    logger.info(f"  Saved {output_path}")
+
+
+# Alias for backwards compatibility
+plot_gamma_comparison = plot_gamma_timeseries
 
 
 # =============================================================================
