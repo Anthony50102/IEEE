@@ -224,6 +224,13 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
             "test_files": cfg.test_files,
         },
         "physics": {"dt": cfg.dt, "n_fields": cfg.n_fields, "n_x": cfg.n_x, "n_y": cfg.n_y},
+        "training_mode": {
+            "mode": cfg.training_mode,
+            "train_start": cfg.train_start,
+            "train_end": cfg.train_end,
+            "test_start": cfg.test_start,
+            "test_end": cfg.test_end,
+        },
         "reduction": {
             "method": cfg.reduction_method,
             "r": cfg.r,
