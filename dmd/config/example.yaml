@@ -109,8 +109,11 @@ model_selection:
 # EVALUATION OPTIONS
 # =============================================================================
 evaluation:
-  save_predictions: true # Save DMD predictions to disk
-  generate_plots: true   # Generate diagnostic plots
+  save_predictions: true   # Save DMD predictions to disk
+  generate_plots: true     # Generate Gamma diagnostic plots
+  plot_state_error: false  # Generate L2 state error over time plots
+  plot_state_snapshots: false  # Generate 2D snapshot comparison plots
+  n_snapshot_samples: 5    # Number of snapshots for comparison
 
 # =============================================================================
 # EXECUTION OPTIONS

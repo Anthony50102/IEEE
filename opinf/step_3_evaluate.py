@@ -19,6 +19,7 @@ import os
 import time
 import numpy as np
 import yaml
+from typing import Optional
 
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -29,7 +30,7 @@ from utils import (
 )
 from data import load_ensemble, load_preprocessing_info
 from evaluation import compute_ensemble_predictions, compute_metrics
-from shared.plotting import plot_gamma_timeseries
+from shared.plotting import plot_gamma_timeseries, generate_state_diagnostic_plots
 from utils import load_dataset
 
 
@@ -181,6 +182,56 @@ def main():
                                  test_bounds, cfg.dt, cfg.engine,
                                  os.path.join(paths["figures_dir"], "test"), logger,
                                  start_offset=test_offset)
+        
+        # Generate state diagnostic plots (optional)
+        if cfg.plot_state_error or cfg.plot_state_snapshots:
+            # Load POD basis and temporal mean for state reconstruction
+            pod_basis = None
+            temporal_mean = None
+            
+            if os.path.exists(paths["pod_basis"]):
+                pod_basis = np.load(paths["pod_basis"])
+                logger.info(f"Loaded POD basis: {pod_basis.shape}")
+            
+            # Try to get temporal mean from initial_conditions
+            if 'train_temporal_mean' in ICs:
+                temporal_mean = ICs['train_temporal_mean']
+                logger.info(f"Loaded temporal mean: {temporal_mean.shape}")
+            
+            # Get grid dimensions from preprocessing info
+            preproc = np.load(paths["preprocessing_info"])
+            n_y = int(preproc.get('n_y', cfg.n_y))
+            n_x = int(preproc.get('n_x', cfg.n_x))
+            
+            train_ref_files = cfg.training_files
+            test_ref_files = cfg.test_files if cfg.test_files else cfg.training_files
+            
+            # Prepare reduced states for plotting (ensemble mean)
+            train_reduced = [np.mean(X, axis=0).T for X in train_pred['X_OpInf']]  # each becomes (r, n_time)
+            test_reduced = [np.mean(X, axis=0).T for X in test_pred['X_OpInf']]
+            
+            generate_state_diagnostic_plots(
+                train_reduced, train_ref_files, train_bounds,
+                pod_basis, temporal_mean, n_y, n_x,
+                cfg.engine, cfg.dt,
+                os.path.join(paths["figures_dir"], "train"), logger,
+                method_name="OpInf",
+                prefix="train_", ref_offset=train_offset,
+                plot_error=cfg.plot_state_error,
+                plot_snapshots=cfg.plot_state_snapshots,
+                n_snapshots=cfg.n_snapshot_samples
+            )
+            generate_state_diagnostic_plots(
+                test_reduced, test_ref_files, test_bounds,
+                pod_basis, temporal_mean, n_y, n_x,
+                cfg.engine, cfg.dt,
+                os.path.join(paths["figures_dir"], "test"), logger,
+                method_name="OpInf",
+                prefix="test_", ref_offset=test_offset,
+                plot_error=cfg.plot_state_error,
+                plot_snapshots=cfg.plot_state_snapshots,
+                n_snapshots=cfg.n_snapshot_samples
+            )
         
         # Print summary
         print_header("EVALUATION SUMMARY")

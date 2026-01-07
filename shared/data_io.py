@@ -234,3 +234,97 @@ def compute_truncation_snapshots(
         dt = get_dt_from_file(file_path, default_dt)
         return int(truncate_time / dt)
     return None
+
+
+# =============================================================================
+# STATE LOADING AND RECONSTRUCTION
+# =============================================================================
+
+def load_reference_states(
+    ref_file: str, 
+    engine: str, 
+    n_steps: int, 
+    ref_offset: int = 0
+) -> Tuple[np.ndarray, int, int]:
+    """
+    Load reference full states from simulation file.
+    
+    Returns states in shape (n_spatial, n_steps) with [density; phi] stacking.
+    
+    Parameters
+    ----------
+    ref_file : str
+        Path to HDF5 simulation file.
+    engine : str
+        xarray engine for loading data.
+    n_steps : int
+        Number of timesteps to load.
+    ref_offset : int
+        Starting offset into the file (for temporal_split mode).
+    
+    Returns
+    -------
+    Q : np.ndarray, shape (n_spatial, n_steps)
+        Stacked state matrix [density; phi].
+    n_y : int
+        Grid size in y.
+    n_x : int
+        Grid size in x.
+    """
+    fh = load_dataset(ref_file, engine=engine)
+    density = fh["density"].values[ref_offset:ref_offset + n_steps]
+    phi = fh["phi"].values[ref_offset:ref_offset + n_steps]
+    
+    n_time = density.shape[0]
+    
+    # Handle flattened vs 3D arrays
+    if density.ndim == 2:
+        grid_size = int(np.sqrt(density.shape[1]))
+        density = density.reshape(n_time, grid_size, grid_size)
+        phi = phi.reshape(n_time, grid_size, grid_size)
+    
+    n_y, n_x = density.shape[1], density.shape[2]
+    
+    # Stack fields: (n_fields, n_time, n_y, n_x) -> (n_spatial, n_time)
+    Q = np.stack([density, phi], axis=0).transpose(0, 2, 3, 1)  # (2, n_y, n_x, n_time)
+    Q = Q.reshape(2 * n_y * n_x, n_time)  # (n_spatial, n_time)
+    
+    return Q, n_y, n_x
+
+
+def reconstruct_full_state(
+    X_hat: np.ndarray,
+    pod_basis: np.ndarray,
+    temporal_mean: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Reconstruct full state from reduced state using POD basis.
+    
+    Q_reconstructed = U @ X_hat + mean
+    
+    Parameters
+    ----------
+    X_hat : np.ndarray, shape (r, n_time) or (n_time, r)
+        Reduced state trajectory.
+    pod_basis : np.ndarray, shape (n_spatial, r)
+        POD basis matrix U.
+    temporal_mean : np.ndarray, shape (n_spatial,), optional
+        Temporal mean to add back.
+    
+    Returns
+    -------
+    Q : np.ndarray, shape (n_spatial, n_time)
+        Reconstructed full state.
+    """
+    # Ensure X_hat is (r, n_time)
+    if X_hat.shape[0] != pod_basis.shape[1]:
+        X_hat = X_hat.T
+    
+    # Reconstruct
+    Q = pod_basis @ X_hat  # (n_spatial, n_time)
+    
+    # Add back mean if provided
+    if temporal_mean is not None:
+        Q = Q + temporal_mean[:, np.newaxis]
+    
+    return Q

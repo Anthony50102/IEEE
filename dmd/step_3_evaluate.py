@@ -31,7 +31,7 @@ from opinf.utils import (
     setup_logging, save_config, save_step_status, check_step_completed,
     print_header, load_dataset as loader,
 )
-from shared.plotting import plot_gamma_comparison
+from shared.plotting import plot_gamma_comparison, generate_state_diagnostic_plots
 
 
 # =============================================================================
@@ -367,6 +367,49 @@ def main():
                 test_pred, test_ref_files, test_bounds,
                 cfg.engine, cfg.dt, figures_dir, logger,
                 prefix="test_", ref_offset=test_ref_offset
+            )
+        
+        # Generate state diagnostic plots (optional)
+        if cfg.plot_state_error or cfg.plot_state_snapshots:
+            figures_dir = os.path.join(args.run_dir, "figures")
+            
+            # Extract POD basis info for shared function
+            U_r = pod_basis['U_r'][:, :model['dmd_rank']] if pod_basis else None
+            mean = pod_basis.get('mean') if pod_basis else None
+            n_y = pod_basis['n_y'] if pod_basis else cfg.n_y
+            n_x = pod_basis['n_x'] if pod_basis else cfg.n_x
+            
+            generate_state_diagnostic_plots(
+                reduced_states=train_pred['X_hat'],
+                ref_files=train_ref_files,
+                boundaries=train_bounds,
+                pod_basis=U_r,
+                temporal_mean=mean,
+                n_y=n_y, n_x=n_x,
+                engine=cfg.engine, dt=cfg.dt,
+                output_dir=figures_dir, logger=logger,
+                method_name="DMD", prefix="train_",
+                ref_offset=train_ref_offset,
+                plot_error=cfg.plot_state_error,
+                plot_snapshots=cfg.plot_state_snapshots,
+                n_snapshots=cfg.n_snapshot_samples,
+                is_nan_flags=train_pred['is_nan']
+            )
+            generate_state_diagnostic_plots(
+                reduced_states=test_pred['X_hat'],
+                ref_files=test_ref_files,
+                boundaries=test_bounds,
+                pod_basis=U_r,
+                temporal_mean=mean,
+                n_y=n_y, n_x=n_x,
+                engine=cfg.engine, dt=cfg.dt,
+                output_dir=figures_dir, logger=logger,
+                method_name="DMD", prefix="test_",
+                ref_offset=test_ref_offset,
+                plot_error=cfg.plot_state_error,
+                plot_snapshots=cfg.plot_state_snapshots,
+                n_snapshots=cfg.n_snapshot_samples,
+                is_nan_flags=test_pred['is_nan']
             )
         
         # Final timing
