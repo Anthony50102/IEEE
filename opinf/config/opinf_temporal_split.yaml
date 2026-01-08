@@ -24,7 +24,7 @@ training_mode:
   train_start: 8000      # Train from snapshot 8000
   train_end: 16000       # Train to snapshot 16000  
   test_start: 16000      # Test from snapshot 16000
-  test_end: 24000        # Test to snapshot 24000
+  test_end: 20000        # Test to snapshot 24000
 
 reduction:
   method: "linear"                 # "linear" (POD) or "manifold"
@@ -40,27 +40,27 @@ preprocessing:
 
 training:
   training_end: 8000               # Match temporal_split_train
-  n_steps: 16000                    # Total steps to predict
+  n_steps: 20000                    # Total steps to predict
 
 regularization:
   state_lin:
-    min: 1.0e-4
-    max: 1.0e7
-    num: 20
+    min: 1.0e2
+    max: 1.0e5
+    num: 10
     scale: "linear"
   state_quad:
-    min: 1.0e0
-    max: 1.0e12
-    num: 20
+    min: 1.0e11
+    max: 1.0e14
+    num: 10
     scale: "linear"
   output_lin:
-    min: 1.0e-6
-    max: 1.0e4
+    min: 1.0e-4
+    max: 1.0e1
     num: 20
     scale: "linear"
   output_quad:
-    min: 1.0e-6
-    max: 1.0e6
+    min: 1.0e-3
+    max: 1.0e2
     num: 20
     scale: "linear"
 
