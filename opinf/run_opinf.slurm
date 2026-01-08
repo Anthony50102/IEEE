@@ -27,10 +27,12 @@
 #SBATCH -n 560
 #SBATCH --cpus-per-task=1
 #SBATCH -t 2:00:00
+export OMP_NUM_THREADS=1
 
 # Recommended values
-# Step 1: N=2, n=2, cpus=56, t=1:00:00
-# Step 2: N=10, 560, cpus=1, t=2:00:00
+# Step 1: N=2, n=2, cpus=56, t=1:00:00, OMP_NUM_THREADS=56
+# Step 2: N=10, 560, cpus=1, t=2:00:00, OMP_NUM_THREADS=1
+# Step 3: N=1, n=1, cpus=56, t=2:00:00, OMP_NUM_THREADS=56
 
 set -e
 
@@ -53,9 +55,6 @@ cd $WORK/repos/IEEE
 
 # Install dependencies
 pip install -q -c frontera_pip_constraints.txt h5netcdf
-
-# Set environment
-export OMP_NUM_THREADS=1
 
 # =============================================================================
 # Functions
