@@ -80,7 +80,8 @@ def solve_difference_model(
     for k in range(n_steps - 1):
         X[:, k + 1] = f(X[:, k])
         
-        if np.any(np.isnan(X[:, k + 1])):
+        # Check for NaN or Inf (model blew up)
+        if np.any(np.isnan(X[:, k + 1])) or np.any(np.isinf(X[:, k + 1])):
             return True, X
     
     return False, X

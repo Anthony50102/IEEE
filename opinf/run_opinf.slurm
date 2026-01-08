@@ -23,16 +23,17 @@
 #SBATCH -o opinf_%j.out
 #SBATCH -e opinf_%j.err
 #SBATCH -p normal
-#SBATCH -N 10 # Increase for step 1
-#SBATCH -n 560
-#SBATCH --cpus-per-task=1
-#SBATCH -t 2:00:00
-export OMP_NUM_THREADS=1
 
-# Recommended values
-# Step 1: N=2, n=2, cpus=56, t=1:00:00, OMP_NUM_THREADS=56
-# Step 2: N=10, 560, cpus=1, t=2:00:00, OMP_NUM_THREADS=1
-# Step 3: N=1, n=1, cpus=56, t=2:00:00, OMP_NUM_THREADS=56
+# NOTE: Node/task/time settings are overridden by submit_opinf.sh
+# These are just fallback defaults if running sbatch directly:
+#SBATCH -N 2
+#SBATCH -n 2
+#SBATCH --cpus-per-task=56
+#SBATCH -t 1:00:00
+
+# OMP_NUM_THREADS is set by submit_opinf.sh, default for direct sbatch:
+: ${OMP_NUM_THREADS:=56}
+export OMP_NUM_THREADS
 
 set -e
 
