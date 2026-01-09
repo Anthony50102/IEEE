@@ -64,6 +64,11 @@ class DMDConfig(OpInfConfig):
     k0: float = 0.15  # Wave number (dx = 2*pi/k0)
     c1: float = 1.0   # Adiabaticity parameter
     
+    # Output model (quadratic, like OpInf)
+    use_learned_output: bool = False  # Use learned C, G, c operators for Gamma
+    output_alpha_lin: float = 1e-4    # Regularization for linear output terms
+    output_alpha_quad: float = 1e-4   # Regularization for quadratic output terms
+    
     # State diagnostic plots
     plot_state_error: bool = False  # Plot L2 error over time
     plot_state_snapshots: bool = False  # Plot 2D snapshot comparisons
@@ -117,6 +122,12 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.plot_state_error = evaluation.get("plot_state_error", False)
     cfg.plot_state_snapshots = evaluation.get("plot_state_snapshots", False)
     cfg.n_snapshot_samples = evaluation.get("n_snapshot_samples", 5)
+    
+    # Output model settings
+    output_section = raw.get("output_model", {})
+    cfg.use_learned_output = output_section.get("enabled", False)
+    cfg.output_alpha_lin = output_section.get("alpha_lin", 1e-4)
+    cfg.output_alpha_quad = output_section.get("alpha_quad", 1e-4)
     
     return cfg
 
@@ -405,6 +416,149 @@ def dmd_forecast_reduced(
     X_hat = W @ (b[:, None] * Et)  # (r, m)
     
     return X_hat
+
+
+# =============================================================================
+# QUADRATIC OUTPUT MODEL (OpInf-style)
+# =============================================================================
+
+def get_quadratic_terms(X: np.ndarray) -> np.ndarray:
+    """
+    Compute non-redundant quadratic terms of X.
+    
+    For a vector x of length r, computes the upper triangular products:
+    [x1*x1, x1*x2, ..., x1*xr, x2*x2, x2*x3, ..., xr*xr]
+    
+    Parameters
+    ----------
+    X : np.ndarray
+        Input vector (r,) or matrix (K, r).
+    
+    Returns
+    -------
+    np.ndarray
+        Quadratic terms: (s,) for vector input or (K, s) for matrix input,
+        where s = r*(r+1)/2.
+    """
+    if X.ndim == 1:
+        r = X.size
+        prods = [X[i] * X[i:] for i in range(r)]
+        return np.concatenate(prods)
+    
+    elif X.ndim == 2:
+        K, r = X.shape
+        prods = [X[:, i:i+1] * X[:, i:] for i in range(r)]
+        return np.concatenate(prods, axis=1)
+    
+    else:
+        raise ValueError(f"Invalid input shape: {X.shape}")
+
+
+def fit_output_operators(
+    X_train: np.ndarray,
+    Y_Gamma: np.ndarray,
+    alpha_lin: float,
+    alpha_quad: float,
+) -> dict:
+    """
+    Fit quadratic output operators C, G, c for Gamma prediction.
+    
+    Solves: Y = C @ X + G @ X2 + c
+    
+    where X is centered and scaled reduced state, X2 is quadratic terms.
+    
+    Parameters
+    ----------
+    X_train : np.ndarray, shape (K, r)
+        Training reduced states (already centered/scaled or raw).
+    Y_Gamma : np.ndarray, shape (K, 2)
+        Target Gamma values [Gamma_n, Gamma_c].
+    alpha_lin : float
+        Regularization for linear terms.
+    alpha_quad : float
+        Regularization for quadratic terms.
+    
+    Returns
+    -------
+    dict
+        Dictionary with operators C, G, c and scaling parameters.
+    """
+    K, r = X_train.shape
+    s = r * (r + 1) // 2
+    
+    # Center and scale the state for output learning
+    mean_X = np.mean(X_train, axis=0)
+    X_centered = X_train - mean_X
+    scaling_X = max(np.abs(X_centered).max(), 1e-14)
+    X_scaled = X_centered / scaling_X
+    
+    # Build data matrix [X_scaled, X2, 1]
+    X2 = get_quadratic_terms(X_scaled)
+    D_out = np.concatenate([X_scaled, X2, np.ones((K, 1))], axis=1)
+    
+    # Build regularization
+    d_out = r + s + 1
+    reg = np.zeros(d_out)
+    reg[:r] = alpha_lin
+    reg[r:r+s] = alpha_quad
+    reg[r+s:] = alpha_lin  # constant term
+    
+    # Solve regularized least squares
+    DtD = D_out.T @ D_out + np.diag(reg)
+    DtY = D_out.T @ Y_Gamma
+    O = np.linalg.solve(DtD, DtY).T  # (2, d_out)
+    
+    # Extract operators
+    C = O[:, :r]           # (2, r)
+    G = O[:, r:r+s]        # (2, s)
+    c = O[:, r+s]          # (2,)
+    
+    return {
+        'C': C,
+        'G': G,
+        'c': c,
+        'mean_X': mean_X,
+        'scaling_X': scaling_X,
+    }
+
+
+def predict_gamma_learned(
+    X_pred: np.ndarray,
+    output_model: dict,
+) -> tuple:
+    """
+    Predict Gamma using learned quadratic output model.
+    
+    Parameters
+    ----------
+    X_pred : np.ndarray, shape (r, n_time) or (n_time, r)
+        Predicted reduced states.
+    output_model : dict
+        Output model with C, G, c, mean_X, scaling_X.
+    
+    Returns
+    -------
+    tuple
+        (Gamma_n, Gamma_c) arrays of shape (n_time,).
+    """
+    C, G, c = output_model['C'], output_model['G'], output_model['c']
+    mean_X = output_model['mean_X']
+    scaling_X = output_model['scaling_X']
+    
+    # Ensure X_pred is (n_time, r)
+    if X_pred.shape[0] == C.shape[1]:
+        X_pred = X_pred.T
+    
+    # Center and scale
+    X_scaled = (X_pred - mean_X) / scaling_X
+    
+    # Compute quadratic terms
+    X2 = get_quadratic_terms(X_scaled)
+    
+    # Compute output: Y = C @ X.T + G @ X2.T + c
+    Y = C @ X_scaled.T + G @ X2.T + c[:, np.newaxis]  # (2, n_time)
+    
+    return Y[0, :], Y[1, :]  # Gamma_n, Gamma_c
 
 
 def compute_initial_condition_reduced(

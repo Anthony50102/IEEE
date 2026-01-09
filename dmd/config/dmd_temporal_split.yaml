@@ -40,6 +40,12 @@ dmd:
   eig_sort: "real"
   k0: 0.15
   c1: 1.0
+
+# Quadratic output model (OpInf-style, for fair comparison)
+output_model:
+  enabled: true           # Use learned C, G, c operators for Gamma (like OpInf)
+  alpha_lin: 1.0e-4       # Regularization for linear output terms
+  alpha_quad: 1.0e-4      # Regularization for quadratic output terms
   
 truncation:
   enabled: false                 # Not needed - using explicit snapshot ranges
