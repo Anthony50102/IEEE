@@ -10,24 +10,13 @@ $$\frac{d\hat{x}}{dt} = A\hat{x}$$
 
 DMD identifies eigenvalues and modes, enabling time-extrapolation (forecasting).
 
-### POD Mode vs Raw Mode
-
-The pipeline supports two approaches via the `use_pod` config option:
-
-| Mode | `use_pod` | Description | Trade-offs |
-|------|-----------|-------------|------------|
-| **POD-DMD** | `true` | First compute POD basis, then fit DMD in reduced space | Cheaper, regularized, double truncation |
-| **Direct DMD** | `false` | Fit DMD directly on full-state data | More expensive, single SVD, preserves all dynamics |
-
-**POD-DMD (default):** Reduces dimension before DMD. Good for large datasets and filtering noise. However, POD truncation removes variance-based information before DMD's frequency-based decomposition.
-
-**Direct DMD:** DMD operates on full state space. More computationally expensive but avoids information loss from double truncation. DMD's internal SVD handles rank selection.
+The pipeline computes a POD basis first, then fits DMD in the reduced space. This provides regularization and reduces computational cost for large datasets.
 
 ## Pipeline Structure
 
 | Step | Script | Function |
 |------|--------|----------|
-| 1 | `step_1_preprocess.py` | Load data, optionally compute POD, prepare training data |
+| 1 | `step_1_preprocess.py` | Load data, compute POD, prepare training data |
 | 2 | `step_2_train.py` | Fit BOPDMD model |
 | 3 | `step_3_evaluate.py` | Compute predictions and metrics |
 
@@ -41,7 +30,6 @@ Train on complete trajectory(ies), test on trajectories with different initial c
 ```yaml
 dmd:
   training_mode: "multi_trajectory"
-  use_pod: true  # or false for direct DMD
 
 paths:
   training_files: [train1.h5]
@@ -58,7 +46,6 @@ dmd:
   train_end: 2000
   test_start: 2000
   test_end: 4000
-  use_pod: true
 
 paths:
   training_files: [trajectory.h5]
@@ -77,15 +64,11 @@ $$\Gamma_c = c_1 \int d^2x \, (\tilde{n} - \tilde{\phi})^2$$
 
 ## Quick Start
 
-### With POD (default)
 ```bash
 python dmd/step_1_preprocess.py --config config/dmd_temporal_split.yaml
 python dmd/step_2_train.py --config config/dmd_temporal_split.yaml --run-dir <run_dir>
 python dmd/step_3_evaluate.py --config config/dmd_temporal_split.yaml --run-dir <run_dir>
 ```
-
-### Without POD (direct DMD)
-Set `use_pod: false` in config, then run the same commands.
 
 ## Configuration
 
@@ -97,8 +80,7 @@ dmd:
   test_start: 2000
   test_end: 4000
   
-  use_pod: true                    # true = POD-DMD, false = direct DMD
-  rank: null                       # DMD rank (null = use POD r or auto)
+  rank: null                       # DMD rank (null = use POD r)
   num_trials: 0                    # Bagging trials (0 = no bagging)
   use_proj: true                   # Use projection in BOPDMD
   eig_sort: "real"                 # Eigenvalue sorting
@@ -106,14 +88,14 @@ dmd:
   c1: 1.0                          # Adiabaticity parameter
 
 reduction:
-  r: 75                            # POD rank (used when use_pod: true)
+  r: 75                            # POD rank
 ```
 
 ## Module Structure
 
 ```
 dmd/
-├── step_1_preprocess.py  # Data loading + optional POD
+├── step_1_preprocess.py  # Data loading + POD computation
 ├── step_2_train.py       # BOPDMD fitting
 ├── step_3_evaluate.py    # Prediction and metrics
 ├── utils.py              # Configuration, forecasting utilities
@@ -125,10 +107,10 @@ dmd/
 
 ```
 <run_dir>/
-├── pod_basis.npz         # POD basis U_r and mean (or just mean if use_pod=false)
-├── POD.npz               # Singular values (POD mode only)
-├── Xhat_train.npy        # Training data (projected or raw)
-├── Xhat_test.npy         # Test data (projected or raw)
+├── pod_basis.npz         # POD basis U_r and mean
+├── POD.npz               # Singular values
+├── Xhat_train.npy        # Training data (projected)
+├── Xhat_test.npy         # Test data (projected)
 ├── dmd_model.npz         # DMD eigenvalues, modes, amplitudes
 ├── dmd_predictions.npz   # Forecasted Gamma values
 └── dmd_evaluation_metrics.yaml
