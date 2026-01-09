@@ -341,6 +341,9 @@ def compute_manifold_greedy(Q_full: np.ndarray, r: int, n_check: int, reg: float
     The manifold approximates: x ≈ V·z + W·h(z) + μ
     where h(z) are quadratic features z_i·z_j.
     
+    Uses the method of snapshots (Gram matrix eigendecomposition) which is
+    more efficient when n_spatial >> n_time.
+    
     Parameters
     ----------
     Q_full : ndarray (n_spatial, n_time)
@@ -359,17 +362,50 @@ def compute_manifold_greedy(Q_full: np.ndarray, r: int, n_check: int, reg: float
     """
     logger.info(f"Computing quadratic manifold: r={r}, n_check={n_check}, reg={reg:.1e}")
     
-    # Center and SVD
+    # Center data
     shift = np.mean(Q_full, axis=1)
     Q_centered = Q_full - shift[:, None]
     
-    logger.info("  Computing SVD...")
-    t0 = time.time()
-    U, sigma, VT = np.linalg.svd(Q_centered, full_matrices=False)
-    logger.info(f"  SVD done in {time.time()-t0:.1f}s, rank={len(sigma)}")
+    n_spatial, n_time = Q_centered.shape
     
-    # Cumulative energy
-    eigs = sigma**2
+    # Use method of snapshots (Gram matrix)
+    logger.info(f"  Computing POD via Gram matrix (n_spatial={n_spatial}, n_time={n_time})...")
+    t0 = time.time()
+    
+    # Gram matrix: D = Q^T @ Q (n_time x n_time)
+    D = Q_centered.T @ Q_centered
+    
+    # Eigendecomposition of Gram matrix
+    try:
+        from scipy.linalg import eigh as scipy_eigh
+        logger.info("  Using scipy.linalg.eigh...")
+        eigs_raw, eigv = scipy_eigh(D)
+    except ImportError:
+        logger.info("  Using numpy.linalg.eigh...")
+        eigs_raw, eigv = np.linalg.eigh(D)
+    
+    # Sort by decreasing eigenvalue
+    idx_sort = np.argsort(eigs_raw)[::-1]
+    eigs_raw = eigs_raw[idx_sort]
+    eigv = eigv[:, idx_sort]
+    
+    # Singular values from eigenvalues (handle numerical issues)
+    eigs_positive = np.maximum(eigs_raw, 0)
+    sigma = np.sqrt(eigs_positive)
+    
+    # Compute U from Q @ V @ Sigma^{-1} (only for non-zero singular values)
+    # VT = eigv.T (right singular vectors)
+    n_nonzero = np.sum(sigma > 1e-14)
+    sigma_inv = np.where(sigma > 1e-14, 1.0 / sigma, 0.0)
+    
+    # U = Q @ V @ Sigma^{-1}
+    U = Q_centered @ (eigv * sigma_inv[None, :])
+    VT = eigv.T
+    
+    logger.info(f"  Gram-based POD done in {time.time()-t0:.1f}s, rank={n_nonzero}")
+    
+    # Cumulative energy (use eigs_positive which equals sigma**2)
+    eigs = eigs_positive
     energy = np.cumsum(eigs) / np.sum(eigs)
     logger.info(f"  Energy: r=10 → {energy[9]*100:.2f}%, r=50 → {energy[49]*100:.2f}%, r=100 → {energy[min(99, len(energy)-1)]*100:.2f}%")
     
