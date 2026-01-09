@@ -21,7 +21,7 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 100
+  r: 1000
   target_energy: 0.95
   svd_save: 250
 
@@ -43,7 +43,7 @@ dmd:
 
 # Quadratic output model (OpInf-style, for fair comparison)
 output_model:
-  enabled: true           # Use learned C, G, c operators for Gamma (like OpInf)
+  enabled: false           # Use learned C, G, c operators for Gamma (like OpInf)
   alpha_lin: 1.0e-4       # Regularization for linear output terms
   alpha_quad: 1.0e-4      # Regularization for quadratic output terms
   
