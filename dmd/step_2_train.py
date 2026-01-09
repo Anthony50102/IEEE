@@ -194,13 +194,12 @@ def train_output_model(
 # =============================================================================
 
 def load_training_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
-    """Load training data from Step 1 (POD-projected or raw)."""
+    """Load training data from Step 1 (POD-projected)."""
     logger.info("Loading training data...")
     
     Xhat_train = np.load(paths['xhat_train'])
     bounds = np.load(paths['boundaries'])
     train_boundaries = bounds['train_boundaries']
-    use_pod = bool(bounds.get('use_pod', True))  # Default to True for backward compatibility
     
     # Create time vector
     n_train = train_boundaries[-1]
@@ -208,9 +207,8 @@ def load_training_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
     
     logger.info(f"  Data shape: {Xhat_train.shape}")
     logger.info(f"  Time: {len(t_train)} steps, dt={cfg.dt}")
-    logger.info(f"  Use POD: {use_pod}")
     
-    return Xhat_train, train_boundaries, t_train, use_pod
+    return Xhat_train, train_boundaries, t_train
 
 
 # =============================================================================
@@ -250,34 +248,17 @@ def main():
         # Load preprocessing info
         preproc = np.load(paths['preprocessing_info'])
         r_actual = int(preproc['r_actual'])
-        use_pod = bool(preproc.get('use_pod', True))
         
         # Load training data
-        Xhat_train, train_boundaries, t_train, _ = load_training_data(paths, cfg, logger)
+        Xhat_train, train_boundaries, t_train = load_training_data(paths, cfg, logger)
         n_features = Xhat_train.shape[1]
         
-        # Determine DMD rank
-        if use_pod:
-            # POD mode: default to POD rank
-            dmd_rank = cfg.dmd_rank if cfg.dmd_rank else r_actual
-            if dmd_rank > r_actual:
-                logger.warning(f"DMD rank {dmd_rank} > POD rank {r_actual}, using {r_actual}")
-                dmd_rank = r_actual
-        else:
-            # Raw mode: must specify rank, or DMD will do its own SVD
-            if cfg.dmd_rank is None:
-                # Use cfg.r as default if available, otherwise warn
-                if cfg.r and cfg.r < n_features:
-                    dmd_rank = cfg.r
-                    logger.info(f"No POD, using config r={dmd_rank} for DMD rank")
-                else:
-                    # Let DMD determine rank via SVD
-                    dmd_rank = min(n_features, Xhat_train.shape[0] - 1)
-                    logger.warning(f"No POD and no dmd_rank set, DMD will use rank={dmd_rank}")
-            else:
-                dmd_rank = cfg.dmd_rank
+        # Determine DMD rank (default to POD rank)
+        dmd_rank = cfg.dmd_rank if cfg.dmd_rank else r_actual
+        if dmd_rank > r_actual:
+            logger.warning(f"DMD rank {dmd_rank} > POD rank {r_actual}, using {r_actual}")
+            dmd_rank = r_actual
         
-        logger.info(f"  Use POD: {use_pod}")
         logger.info(f"  DMD rank: {dmd_rank}")
         logger.info(f"  Feature dimension: {n_features}")
         
@@ -290,7 +271,7 @@ def main():
         
         # Fit DMD
         dmd_result = fit_bopdmd(
-            X_train=Xhat_train[:, :dmd_rank] if use_pod else Xhat_train,
+            X_train=Xhat_train[:, :dmd_rank],
             t_train=t_train,
             r=dmd_rank,
             cfg=cfg,
@@ -304,7 +285,7 @@ def main():
             Y_Gamma = load_gamma_reference(cfg, n_train, logger)
             output_model = train_output_model(
                 dmd_result=dmd_result,
-                Xhat_train=Xhat_train[:, :dmd_rank] if use_pod else Xhat_train,
+                Xhat_train=Xhat_train[:, :dmd_rank],
                 Y_Gamma=Y_Gamma,
                 cfg=cfg,
                 logger=logger,
@@ -318,7 +299,6 @@ def main():
             'amplitudes': dmd_result['amplitudes'],
             'dt': dmd_result['dt'],
             'dmd_rank': dmd_rank,
-            'use_pod': use_pod,
             'use_learned_output': cfg.use_learned_output,
         }
         
@@ -340,14 +320,12 @@ def main():
         
         save_step_status(args.run_dir, "step_2", "completed", {
             "dmd_rank": dmd_rank,
-            "use_pod": use_pod,
             "use_learned_output": cfg.use_learned_output,
             "n_train_snapshots": Xhat_train.shape[0],
             "time_seconds": t_elapsed,
         })
         
         print_header("STEP 2 COMPLETE")
-        print(f"  Use POD: {use_pod}")
         print(f"  DMD rank: {dmd_rank}")
         print(f"  Learned output model: {cfg.use_learned_output}")
         print(f"  Runtime: {t_elapsed:.1f}s")
