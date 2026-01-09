@@ -22,9 +22,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dmd.utils import (
     load_dmd_config, get_dmd_output_paths, print_dmd_config_summary, DMDConfig, save_config,
+    fit_output_operators, dmd_forecast_reduced,
 )
 from opinf.utils import (
     setup_logging, save_step_status, check_step_completed, print_header,
+    load_dataset,
 )
 
 
@@ -113,6 +115,78 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
         'amplitudes': amplitudes,
         'dt': dt,
     }
+
+
+# =============================================================================
+# OUTPUT MODEL TRAINING
+# =============================================================================
+
+def load_gamma_reference(cfg: DMDConfig, n_train: int, logger) -> np.ndarray:
+    """Load reference Gamma values for output model training."""
+    logger.info("Loading reference Gamma for output model...")
+    
+    if cfg.training_mode == "temporal_split":
+        # Single file, use train portion
+        fh = load_dataset(cfg.training_files[0], cfg.engine)
+        gamma_n = fh["gamma_n"].values[cfg.train_start:cfg.train_start + n_train]
+        gamma_c = fh["gamma_c"].values[cfg.train_start:cfg.train_start + n_train]
+    else:
+        # Multi-trajectory: concatenate all training files
+        gamma_n_list, gamma_c_list = [], []
+        for f in cfg.training_files:
+            fh = load_dataset(f, cfg.engine)
+            gamma_n_list.append(fh["gamma_n"].values[:n_train])
+            gamma_c_list.append(fh["gamma_c"].values[:n_train])
+        gamma_n = np.concatenate(gamma_n_list)
+        gamma_c = np.concatenate(gamma_c_list)
+    
+    Y_Gamma = np.column_stack([gamma_n, gamma_c])  # (K, 2)
+    logger.info(f"  Loaded {Y_Gamma.shape[0]} Gamma samples")
+    return Y_Gamma
+
+
+def train_output_model(
+    dmd_result: dict,
+    Xhat_train: np.ndarray,
+    Y_Gamma: np.ndarray,
+    cfg: DMDConfig,
+    logger,
+) -> dict:
+    """
+    Train quadratic output model using DMD predictions on training data.
+    
+    Parameters
+    ----------
+    dmd_result : dict
+        Fitted DMD model with eigs, modes_reduced, amplitudes.
+    Xhat_train : np.ndarray, shape (n_time, r)
+        Training data in reduced space.
+    Y_Gamma : np.ndarray, shape (n_time, 2)
+        Reference Gamma values [Gamma_n, Gamma_c].
+    cfg : DMDConfig
+        Configuration with regularization parameters.
+    logger
+        Logger instance.
+    
+    Returns
+    -------
+    dict
+        Output model operators {C, G, c, mean_X, scaling_X}.
+    """
+    logger.info("Training quadratic output model...")
+    logger.info(f"  Regularization: alpha_lin={cfg.output_alpha_lin}, alpha_quad={cfg.output_alpha_quad}")
+    
+    # Use the training reduced states directly (not DMD predictions)
+    # This ensures the output model learns from the actual training data
+    output_model = fit_output_operators(
+        X_train=Xhat_train,
+        Y_Gamma=Y_Gamma,
+        alpha_lin=cfg.output_alpha_lin,
+        alpha_quad=cfg.output_alpha_quad,
+    )
+    
+    logger.info(f"  Output operators: C {output_model['C'].shape}, G {output_model['G'].shape}")
+    return output_model
 
 
 # =============================================================================
@@ -223,17 +297,43 @@ def main():
             logger=logger,
         )
         
+        # Train output model if enabled
+        output_model = None
+        if cfg.use_learned_output:
+            n_train = Xhat_train.shape[0]
+            Y_Gamma = load_gamma_reference(cfg, n_train, logger)
+            output_model = train_output_model(
+                dmd_result=dmd_result,
+                Xhat_train=Xhat_train[:, :dmd_rank] if use_pod else Xhat_train,
+                Y_Gamma=Y_Gamma,
+                cfg=cfg,
+                logger=logger,
+            )
+        
         # Save model
         logger.info("Saving DMD model...")
-        np.savez(
-            paths['dmd_model'],
-            eigs=dmd_result['eigs'],
-            modes_reduced=dmd_result['modes_reduced'],
-            amplitudes=dmd_result['amplitudes'],
-            dt=dmd_result['dt'],
-            dmd_rank=dmd_rank,
-            use_pod=use_pod,
-        )
+        save_dict = {
+            'eigs': dmd_result['eigs'],
+            'modes_reduced': dmd_result['modes_reduced'],
+            'amplitudes': dmd_result['amplitudes'],
+            'dt': dmd_result['dt'],
+            'dmd_rank': dmd_rank,
+            'use_pod': use_pod,
+            'use_learned_output': cfg.use_learned_output,
+        }
+        
+        # Add output model if trained
+        if output_model is not None:
+            save_dict.update({
+                'output_C': output_model['C'],
+                'output_G': output_model['G'],
+                'output_c': output_model['c'],
+                'output_mean_X': output_model['mean_X'],
+                'output_scaling_X': output_model['scaling_X'],
+            })
+            logger.info("  Saved learned output model operators")
+        
+        np.savez(paths['dmd_model'], **save_dict)
         
         # Final timing
         t_elapsed = time.time() - t_start
@@ -241,6 +341,7 @@ def main():
         save_step_status(args.run_dir, "step_2", "completed", {
             "dmd_rank": dmd_rank,
             "use_pod": use_pod,
+            "use_learned_output": cfg.use_learned_output,
             "n_train_snapshots": Xhat_train.shape[0],
             "time_seconds": t_elapsed,
         })
@@ -248,6 +349,7 @@ def main():
         print_header("STEP 2 COMPLETE")
         print(f"  Use POD: {use_pod}")
         print(f"  DMD rank: {dmd_rank}")
+        print(f"  Learned output model: {cfg.use_learned_output}")
         print(f"  Runtime: {t_elapsed:.1f}s")
         
     except Exception as e:

@@ -359,16 +359,24 @@ def recompute_operators_parallel(selected: list, data: dict, r: int,
         model = compute_operators(selected[idx], data, r)
         filepath = os.path.join(operators_dir, f"model_{idx:04d}.npz")
         np.savez(filepath, **model)
-        local_results.append((model['total_error'], model))
+        # Only store metadata (error and index) to avoid MPI size overflow
+        local_results.append((model['total_error'], idx))
     
-    # Gather results
+    # Gather only lightweight metadata (avoids MPI 2GB limit)
     all_results = comm.gather(local_results, root=0)
     
     if rank == 0:
-        combined = sorted(
+        # Sort by error and reload models from disk
+        combined_meta = sorted(
             [r for rank_results in all_results for r in rank_results],
             key=lambda x: x[0]
         )
+        # Reload full models from saved files
+        combined = []
+        for total_error, idx in combined_meta:
+            filepath = os.path.join(operators_dir, f"model_{idx:04d}.npz")
+            model = dict(np.load(filepath))
+            combined.append((total_error, model))
         logger.info(f"  Saved {len(combined)} models to {operators_dir}")
         return combined
     return []

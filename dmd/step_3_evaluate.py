@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dmd.utils import (
     load_dmd_config, get_dmd_output_paths, print_dmd_config_summary, save_config,
     dmd_forecast_reduced, compute_gamma_from_state, reconstruct_full_state,
+    predict_gamma_learned,
 )
 from opinf.utils import (
     setup_logging, save_step_status, check_step_completed,
@@ -49,8 +50,21 @@ def load_dmd_model(paths: dict, logger) -> dict:
         'dt': float(data['dt']),
         'dmd_rank': int(data['dmd_rank']),
         'use_pod': bool(data.get('use_pod', True)),  # Backward compatible
+        'use_learned_output': bool(data.get('use_learned_output', False)),
     }
-    logger.info(f"  Rank: {model['dmd_rank']}, dt: {model['dt']}, use_pod: {model['use_pod']}")
+    
+    # Load output model if present
+    if model['use_learned_output'] and 'output_C' in data:
+        model['output_model'] = {
+            'C': data['output_C'],
+            'G': data['output_G'],
+            'c': data['output_c'],
+            'mean_X': data['output_mean_X'],
+            'scaling_X': float(data['output_scaling_X']),
+        }
+        logger.info(f"  Loaded learned output model (C: {model['output_model']['C'].shape})")
+    
+    logger.info(f"  Rank: {model['dmd_rank']}, dt: {model['dt']}, use_pod: {model['use_pod']}, learned_output: {model['use_learned_output']}")
     return model
 
 
@@ -99,11 +113,27 @@ def compute_amplitudes_from_ic(x0: np.ndarray, modes_reduced: np.ndarray) -> np.
 
 
 def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: dict, 
-                        k0: float, c1: float) -> dict:
+                        k0: float, c1: float, use_learned_output: bool = False) -> dict:
     """
     Forecast a single trajectory.
     
     Handles both POD mode (reconstruct via U_r) and raw mode (DMD modes are full-space).
+    Can use either physics-based or learned output model for Gamma.
+    
+    Parameters
+    ----------
+    model : dict
+        DMD model with eigs, modes_reduced, and optionally output_model.
+    x0 : np.ndarray
+        Initial condition in reduced space.
+    n_steps : int
+        Number of time steps to forecast.
+    pod_basis : dict
+        POD basis for full-state reconstruction (only needed for physics Gamma).
+    k0, c1 : float
+        Physics parameters for Gamma computation.
+    use_learned_output : bool
+        If True, use learned C, G, c operators instead of physics-based Gamma.
     """
     r = model['dmd_rank']
     use_pod = model.get('use_pod', True)
@@ -131,8 +161,13 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
     
     result = {'is_nan': False, 'X_hat': X_hat}
     
-    # Compute Gamma from physics
-    if pod_basis is not None:
+    # Compute Gamma using learned output model
+    if use_learned_output and 'output_model' in model:
+        Gamma_n, Gamma_c = predict_gamma_learned(X_hat, model['output_model'])
+        result['Gamma_n'] = Gamma_n
+        result['Gamma_c'] = Gamma_c
+    # Compute Gamma from physics (fallback or default)
+    elif pod_basis is not None:
         mean_data = pod_basis.get('mean')
         
         if use_pod and pod_basis.get('U_r') is not None:
@@ -157,7 +192,8 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
 
 
 def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
-                      pod_basis, k0: float, c1: float, logger, name: str) -> dict:
+                      pod_basis, k0: float, c1: float, logger, name: str,
+                      use_learned_output: bool = False) -> dict:
     """Compute forecasts for all trajectories."""
     n_traj = len(boundaries) - 1
     forecasts = {'X_hat': [], 'Gamma_n': [], 'Gamma_c': [], 'is_nan': []}
@@ -174,12 +210,15 @@ def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
         )
     
     logger.info(f"Computing {n_traj} {name} forecast(s)...")
+    if use_learned_output:
+        logger.info("  Using learned output model for Gamma")
     
     for i in range(n_traj):
         n_steps = boundaries[i + 1] - boundaries[i]
         x0 = ICs[i, :]
         
-        result = forecast_trajectory(model, x0, n_steps, pod_basis, k0, c1)
+        result = forecast_trajectory(model, x0, n_steps, pod_basis, k0, c1,
+                                      use_learned_output=use_learned_output)
         
         forecasts['is_nan'].append(result['is_nan'])
         if result['is_nan']:
@@ -346,16 +385,20 @@ def main():
         # Load model and data
         model = load_dmd_model(paths, logger)
         use_pod = model.get('use_pod', True)
+        use_learned_output = model.get('use_learned_output', False)
         pod_basis = load_pod_basis(paths, logger, use_pod=use_pod)
         train_ICs, test_ICs, train_bounds, test_bounds = load_supporting_data(paths, logger)
         
         logger.info(f"  Use POD: {use_pod}")
+        logger.info(f"  Use learned output: {use_learned_output}")
         
         # Compute forecasts
         train_pred = compute_forecasts(model, train_ICs, train_bounds, pod_basis,
-                                        cfg.k0, cfg.c1, logger, "training")
+                                        cfg.k0, cfg.c1, logger, "training",
+                                        use_learned_output=use_learned_output)
         test_pred = compute_forecasts(model, test_ICs, test_bounds, pod_basis,
-                                       cfg.k0, cfg.c1, logger, "test")
+                                       cfg.k0, cfg.c1, logger, "test",
+                                       use_learned_output=use_learned_output)
         
         # Determine reference files and offsets for metrics
         if cfg.training_mode == "temporal_split":
@@ -379,7 +422,12 @@ def main():
                                         ref_offset=test_ref_offset)
         
         # Save results
-        all_metrics = {'train': train_metrics, 'test': test_metrics, 'use_pod': use_pod}
+        all_metrics = {
+            'train': train_metrics, 
+            'test': test_metrics, 
+            'use_pod': use_pod,
+            'use_learned_output': use_learned_output,
+        }
         with open(paths['dmd_metrics'], 'w') as f:
             yaml.dump(all_metrics, f, default_flow_style=False)
         logger.info(f"Saved metrics to {paths['dmd_metrics']}")
