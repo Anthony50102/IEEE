@@ -21,7 +21,7 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 500
+  r: 750
   target_energy: 0.95
   svd_save: 250
 
