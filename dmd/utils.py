@@ -9,11 +9,16 @@ This module provides shared utilities for the DMD ROM pipeline:
 Author: Anthony Poole
 """
 
+import gc
 import os
 import sys
 import numpy as np
 from dataclasses import dataclass, field
 from typing import List, Optional
+
+# Use single precision for memory efficiency with large ranks (r=1000+)
+DTYPE = np.float32
+CDTYPE = np.complex64
 
 # Add parent directory to path for importing opinf utilities
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'opinf'))
