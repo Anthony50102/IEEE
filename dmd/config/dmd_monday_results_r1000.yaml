@@ -1,7 +1,7 @@
 run_name: "dmd_temporal_split"  # Train on first n snapshots, predict rest
 
 paths:
-  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/monday_results/"
   
   data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
   
@@ -21,9 +21,9 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 750
+  r: 1000
   target_energy: 0.95
-  svd_save: 250
+  svd_save: 4000
 
 # DMD-specific settings
 dmd:
