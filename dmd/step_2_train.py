@@ -13,12 +13,16 @@ Author: Anthony Poole
 """
 
 import argparse
+import gc
 import os
 import sys
 import time
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Use single precision for memory efficiency with large ranks
+DTYPE = np.float32
 
 from dmd.utils import (
     load_dmd_config, get_dmd_output_paths, print_dmd_config_summary, DMDConfig, save_config,
@@ -81,33 +85,44 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     logger.info(f"  Initial eigenvalues: imag in [{init_alpha.imag.min():.4f}, {init_alpha.imag.max():.4f}]")
     
     # Fit BOPDMD
-    logger.info("  Fitting BOPDMD...")
+    logger.info(f"  Fitting BOPDMD...")
     t0 = time.time()
     
-    V_global = np.eye(r, dtype=np.float64)  # Identity in reduced space
+    # Note: We avoid creating the V_global identity matrix when possible
+    # as it's r×r float64 = 8*r^2 bytes (e.g., 8GB for r=1000)
+    # Setting use_proj=False and proj_basis=None saves this memory
     
     dmd_model = BOPDMD(
         svd_rank=r,
         num_trials=cfg.num_trials,
-        proj_basis=V_global if cfg.use_proj else None,
-        use_proj=cfg.use_proj,
+        proj_basis=None,  # Don't use projection to save memory
+        use_proj=False,   # Disable projection
         eig_sort=cfg.eig_sort,
         eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
         # init_alpha=init_alpha,
     )
-    dmd_model.fit(X_dmd, t=t_train)
+    
+    # Convert to float64 for pydmd fitting (required by optimizer)
+    logger.info(f"  Input data memory: {X_dmd.nbytes / 1e6:.1f} MB")
+    dmd_model.fit(X_dmd.astype(np.float64), t=t_train.astype(np.float64))
     
     logger.info(f"  Fit completed in {time.time() - t0:.2f}s")
     
-    # Extract components
+    # Extract components - modes are already in reduced space since no projection
     eigs = dmd_model.eigs  # Continuous-time eigenvalues
-    modes_reduced = V_global.conj().T @ dmd_model.modes
+    modes_reduced = dmd_model.modes  # (r, r) complex modes
     amplitudes = dmd_model._b
+    
+    # Free pydmd internal storage
+    del dmd_model, dmd0
+    gc.collect()
+    logger.info("  Freed pydmd model from memory")
     
     # Log info
     n_stable = np.sum(eigs.real < 0)
     n_unstable = np.sum(eigs.real > 0)
     logger.info(f"  Eigenvalues: {len(eigs)} ({n_stable} stable, {n_unstable} unstable)")
+    logger.info(f"  Modes dtype: {modes_reduced.dtype}, size: {modes_reduced.nbytes / 1e6:.1f} MB")
     
     return {
         'eigs': eigs,
@@ -269,14 +284,30 @@ def main():
             Xhat_train = Xhat_train[:train_boundaries[1], :]
             t_train = t_train[:train_boundaries[1]]
         
+        # Extract only the columns we need for DMD (truncate to dmd_rank)
+        # Make a copy so we can free the original
+        X_dmd_input = Xhat_train[:, :dmd_rank].copy()
+        t_dmd_input = t_train.copy()
+        n_train_snapshots = Xhat_train.shape[0]  # Save for later
+        
+        # Keep Xhat_train only if we need it for output model
+        if not cfg.use_learned_output:
+            del Xhat_train, t_train, train_boundaries, preproc
+            gc.collect()
+            logger.info("  Freed preprocessing data from memory before DMD fit")
+        
         # Fit DMD
         dmd_result = fit_bopdmd(
-            X_train=Xhat_train[:, :dmd_rank],
-            t_train=t_train,
+            X_train=X_dmd_input,
+            t_train=t_dmd_input,
             r=dmd_rank,
             cfg=cfg,
             logger=logger,
         )
+        
+        # Free DMD input data
+        del X_dmd_input, t_dmd_input
+        gc.collect()
         
         # Train output model if enabled
         output_model = None
@@ -290,6 +321,9 @@ def main():
                 cfg=cfg,
                 logger=logger,
             )
+            # Now free the training data
+            del Xhat_train, Y_Gamma
+            gc.collect()
         
         # Save model
         logger.info("Saving DMD model...")
@@ -321,7 +355,7 @@ def main():
         save_step_status(args.run_dir, "step_2", "completed", {
             "dmd_rank": dmd_rank,
             "use_learned_output": cfg.use_learned_output,
-            "n_train_snapshots": Xhat_train.shape[0],
+            "n_train_snapshots": n_train_snapshots,
             "time_seconds": t_elapsed,
         })
         
