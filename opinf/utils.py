@@ -214,7 +214,10 @@ def load_config(config_path: str) -> OpInfConfig:
 
 def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> str:
     """Save configuration to YAML file."""
+    from datetime import datetime
     config_dict = {
+        "_saved_at": datetime.now().isoformat(),
+        "_step": step_name,
         "run_name": cfg.run_name,
         "run_dir": cfg.run_dir,
         "paths": {

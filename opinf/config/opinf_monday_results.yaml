@@ -1,0 +1,82 @@
+run_name: "opinf_monday_results"  # Train on first n snapshots, predict rest
+
+paths:
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/monday_results"
+  
+  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
+  
+  # Single trajectory for temporal split mode
+  training_files: 
+      - test_nu5e-9.h5
+
+  # test_files not used in temporal_split mode
+  test_files: []
+
+physics:
+  dt: 0.025
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+
+# Training mode configuration
+training_mode:
+  mode: "temporal_split"
+  train_start: 8000      # Train from snapshot 8000
+  train_end: 16000       # Train to snapshot 16000  
+  test_start: 16000      # Test from snapshot 16000
+  test_end: 20000        # Test to snapshot 24000
+
+reduction:
+  method: "linear"                 # "linear" (POD) or "manifold"
+  r: 84
+  target_energy: 0.95
+
+truncation:
+  enabled: false                   # Not needed - using explicit snapshot ranges
+
+preprocessing:
+  centering: false
+  scaling: false
+
+training:
+  training_end: 8000               # Match temporal_split_train
+  n_steps: 20000                    # Total steps to predict
+
+regularization:
+  state_lin:
+    min: 1.0e1
+    max: 1.0e6
+    num: 20
+    scale: "linear"
+  state_quad:
+    min: 1.0e8
+    max: 1.0e14
+    num: 10
+    scale: "linear"
+  output_lin:
+    min: 1.0e-4
+    max: 1.0e1
+    num: 20
+    scale: "linear"
+  output_quad:
+    min: 1.0e-3
+    max: 1.0e2
+    num: 20
+    scale: "linear"
+
+model_selection:
+  method: "threshold"
+  threshold_mean: 0.03
+  threshold_std: 0.2
+
+evaluation:
+  save_predictions: true   # Save ensemble predictions to disk
+  generate_plots: true     # Generate Gamma diagnostic plots
+  plot_state_error: true  # Generate L2 state error over time plots
+  plot_state_snapshots: true  # Generate 2D snapshot comparison plots
+  n_snapshot_samples: 5    # Number of snapshots for comparison
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

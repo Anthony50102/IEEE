@@ -155,7 +155,10 @@ def save_config(cfg: DMDConfig, output_path: str, step_name: str = None) -> str:
     str
         Path to saved config file.
     """
+    from datetime import datetime
     config_dict = {
+        "_saved_at": datetime.now().isoformat(),
+        "_step": step_name,
         "run_name": cfg.run_name,
         "run_dir": cfg.run_dir,
         "paths": {
@@ -203,6 +206,11 @@ def save_config(cfg: DMDConfig, output_path: str, step_name: str = None) -> str:
         "training": {
             "training_end": cfg.training_end, 
             "n_steps": cfg.n_steps,
+        },
+        "output_model": {
+            "enabled": cfg.use_learned_output,
+            "alpha_lin": cfg.output_alpha_lin,
+            "alpha_quad": cfg.output_alpha_quad,
         },
         "evaluation": {
             "save_predictions": cfg.save_predictions, 
