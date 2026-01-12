@@ -1,4 +1,4 @@
-run_name: "mani_opinf_temporal_split"  # Train on first n snapshots, predict rest
+run_name: "opinf_temporal_split"  # Train on first n snapshots, predict rest
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/"
@@ -27,12 +27,9 @@ training_mode:
   test_end: 20000        # Test to snapshot 24000
 
 reduction:
-  method: "manifold"                 # "linear" (POD) or "manifold"
+  method: "linear"                 # "linear" (POD) or "manifold"
   r: 84
   target_energy: 0.95
-
-  n_vectors_to_check: 200  # Max candidates per greedy step
-  reg_magnitude: 7.0e6    # Tikhonov regularization for coefficient solve
 
 truncation:
   enabled: false                   # Not needed - using explicit snapshot ranges
@@ -57,14 +54,14 @@ regularization:
     num: 10
     scale: "linear"
   output_lin:
-    min: 1.0e-4
-    max: 1.0e1
+    min: 1.0e1
+    max: 1.0e6
     num: 20
     scale: "linear"
   output_quad:
-    min: 1.0e-3
-    max: 1.0e2
-    num: 20
+    min: 1.0e8
+    max: 1.0e14
+    num: 10
     scale: "linear"
 
 model_selection:

@@ -32,6 +32,15 @@ case $STEP in
         TIME="1:00:00"
         OMP_THREADS=56
         ;;
+    1.1)
+        # Step 1.1: Preprocessing - Manifold
+        NODES=1
+        NTASKS=1
+        CPUS=56
+        TIME="8:00:00"
+        OMP_THREADS=56
+        STEP=1
+        ;;
     2)
         # Step 2: Hyperparameter sweep - many tasks, 1 thread each
         NODES=10
@@ -45,12 +54,12 @@ case $STEP in
         NODES=1
         NTASKS=1
         CPUS=56
-        TIME="2:00:00"
+        TIME="4:00:00"
         OMP_THREADS=56
         ;;
     *)
         echo "Invalid step: $STEP"
-        echo "Valid steps: 1, 2, 3"
+        echo "Valid steps: 1, 1.1, 2, 3"
         exit 1
         ;;
 esac
