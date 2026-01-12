@@ -298,7 +298,7 @@ def reconstruct_full_state(
     temporal_mean: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    Reconstruct full state from reduced state using POD basis.
+    Reconstruct full state from reduced state using linear POD basis.
     
     Q_reconstructed = U @ X_hat + mean
     
@@ -326,5 +326,68 @@ def reconstruct_full_state(
     # Add back mean if provided
     if temporal_mean is not None:
         Q = Q + temporal_mean[:, np.newaxis]
+    
+    return Q
+
+
+def _quadratic_features(z: np.ndarray) -> np.ndarray:
+    """Compute quadratic features: z_i * z_j for j <= i.
+    
+    Parameters
+    ----------
+    z : np.ndarray, shape (r,) or (r, n_time)
+        Reduced coordinates.
+    
+    Returns
+    -------
+    h : np.ndarray, shape (r*(r+1)//2,) or (r*(r+1)//2, n_time)
+        Quadratic features.
+    """
+    if z.ndim == 1:
+        r = z.shape[0]
+        return np.concatenate([z[i:i+1] * z[:i+1] for i in range(r)], axis=0)
+    else:
+        r = z.shape[0]
+        return np.concatenate([z[i:i+1, :] * z[:i+1, :] for i in range(r)], axis=0)
+
+
+def reconstruct_full_state_manifold(
+    X_hat: np.ndarray,
+    V: np.ndarray,
+    W: np.ndarray,
+    shift: np.ndarray,
+) -> np.ndarray:
+    """
+    Reconstruct full state from reduced state using quadratic manifold.
+    
+    Q_reconstructed = V @ z + W @ h(z) + shift
+    
+    where h(z) are the quadratic features z_i * z_j for j <= i.
+    
+    Parameters
+    ----------
+    X_hat : np.ndarray, shape (r, n_time) or (n_time, r)
+        Reduced state trajectory.
+    V : np.ndarray, shape (n_spatial, r)
+        Linear basis matrix.
+    W : np.ndarray, shape (n_spatial, r*(r+1)//2)
+        Quadratic coefficient matrix.
+    shift : np.ndarray, shape (n_spatial,)
+        Mean shift vector.
+    
+    Returns
+    -------
+    Q : np.ndarray, shape (n_spatial, n_time)
+        Reconstructed full state.
+    """
+    # Ensure X_hat is (r, n_time)
+    if X_hat.shape[0] != V.shape[1]:
+        X_hat = X_hat.T
+    
+    # Compute quadratic features
+    H = _quadratic_features(X_hat)  # (r*(r+1)//2, n_time)
+    
+    # Reconstruct: Q = V @ z + W @ h(z) + shift
+    Q = V @ X_hat + W @ H + shift[:, np.newaxis]
     
     return Q

@@ -306,6 +306,7 @@ def get_output_paths(run_dir: str) -> dict:
         # Step 1 outputs
         "pod_file": os.path.join(run_dir, "POD.npz"),
         "pod_basis": os.path.join(run_dir, "POD_basis_Ur.npy"),
+        "manifold_basis": os.path.join(run_dir, "POD_basis_Ur_basis.npz"),  # Full manifold basis
         "xhat_train": os.path.join(run_dir, "X_hat_train.npy"),
         "xhat_test": os.path.join(run_dir, "X_hat_test.npy"),
         "boundaries": os.path.join(run_dir, "data_boundaries.npz"),

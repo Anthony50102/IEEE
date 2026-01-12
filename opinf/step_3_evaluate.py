@@ -188,20 +188,43 @@ def main():
             # Load POD basis and temporal mean for state reconstruction
             pod_basis = None
             temporal_mean = None
+            manifold_W = None
+            manifold_shift = None
             
-            if os.path.exists(paths["pod_basis"]):
-                pod_basis = np.load(paths["pod_basis"])
-                logger.info(f"Loaded POD basis: {pod_basis.shape}")
-            
-            # Try to get temporal mean from initial_conditions
-            if 'train_temporal_mean' in ICs:
-                temporal_mean = ICs['train_temporal_mean']
-                logger.info(f"Loaded temporal mean: {temporal_mean.shape}")
-            
-            # Get grid dimensions from preprocessing info
+            # Get reduction method from preprocessing info
             preproc = np.load(paths["preprocessing_info"])
+            reduction_method = str(preproc.get('reduction_method', cfg.reduction_method))
             n_y = int(preproc.get('n_y', cfg.n_y))
             n_x = int(preproc.get('n_x', cfg.n_x))
+            
+            logger.info(f"Loading basis for {reduction_method} reconstruction...")
+            
+            if reduction_method == "manifold":
+                # Load full manifold basis (V, W, shift)
+                if os.path.exists(paths["manifold_basis"]):
+                    from pod import load_basis
+                    basis = load_basis(paths["manifold_basis"])
+                    pod_basis = basis.V
+                    manifold_W = basis.W
+                    manifold_shift = basis.shift
+                    logger.info(f"Loaded manifold basis: V={basis.V.shape}, W={basis.W.shape}")
+                else:
+                    logger.warning(f"Manifold basis not found at {paths['manifold_basis']}")
+                    # Fall back to linear POD basis
+                    if os.path.exists(paths["pod_basis"]):
+                        pod_basis = np.load(paths["pod_basis"])
+                        logger.warning(f"Falling back to linear basis: {pod_basis.shape}")
+                        reduction_method = "linear"
+            else:
+                # Load linear POD basis
+                if os.path.exists(paths["pod_basis"]):
+                    pod_basis = np.load(paths["pod_basis"])
+                    logger.info(f"Loaded POD basis: {pod_basis.shape}")
+            
+            # Try to get temporal mean from initial_conditions (for linear POD)
+            if reduction_method == "linear" and 'train_temporal_mean' in ICs:
+                temporal_mean = ICs['train_temporal_mean']
+                logger.info(f"Loaded temporal mean: {temporal_mean.shape}")
             
             train_ref_files = cfg.training_files
             test_ref_files = cfg.test_files if cfg.test_files else cfg.training_files
@@ -219,7 +242,10 @@ def main():
                 prefix="train_", ref_offset=train_offset,
                 plot_error=cfg.plot_state_error,
                 plot_snapshots=cfg.plot_state_snapshots,
-                n_snapshots=cfg.n_snapshot_samples
+                n_snapshots=cfg.n_snapshot_samples,
+                reduction_method=reduction_method,
+                manifold_W=manifold_W,
+                manifold_shift=manifold_shift
             )
             generate_state_diagnostic_plots(
                 test_reduced, test_ref_files, test_bounds,
@@ -230,7 +256,10 @@ def main():
                 prefix="test_", ref_offset=test_offset,
                 plot_error=cfg.plot_state_error,
                 plot_snapshots=cfg.plot_state_snapshots,
-                n_snapshots=cfg.n_snapshot_samples
+                n_snapshots=cfg.n_snapshot_samples,
+                reduction_method=reduction_method,
+                manifold_W=manifold_W,
+                manifold_shift=manifold_shift
             )
         
         # Print summary

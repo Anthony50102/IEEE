@@ -610,6 +610,9 @@ def generate_state_diagnostic_plots(
     plot_snapshots: bool = True,
     n_snapshots: int = 5,
     is_nan_flags: Optional[List[bool]] = None,
+    reduction_method: str = "linear",
+    manifold_W: Optional[np.ndarray] = None,
+    manifold_shift: Optional[np.ndarray] = None,
 ):
     """
     Generate state-based diagnostic plots (L2 error and snapshots).
@@ -656,13 +659,27 @@ def generate_state_diagnostic_plots(
         Number of snapshots for comparison plots.
     is_nan_flags : list of bool, optional
         Flags indicating which trajectories have NaN predictions.
+    reduction_method : str
+        Reduction method used ("linear" for POD or "manifold" for quadratic).
+    manifold_W : np.ndarray, optional
+        Quadratic coefficient matrix for manifold reconstruction.
+        Required if reduction_method == "manifold".
+    manifold_shift : np.ndarray, optional
+        Mean shift vector for manifold reconstruction.
+        Required if reduction_method == "manifold".
     """
     # Import here to avoid circular imports
-    from shared.data_io import load_reference_states, reconstruct_full_state
+    from shared.data_io import load_reference_states, reconstruct_full_state, reconstruct_full_state_manifold
     
     if pod_basis is None:
         logger.warning("POD basis not available, skipping state diagnostic plots")
         return
+    
+    # Validate manifold parameters
+    if reduction_method == "manifold":
+        if manifold_W is None or manifold_shift is None:
+            logger.warning("Manifold reconstruction requires W and shift matrices. Skipping plots.")
+            return
     
     if not plot_error and not plot_snapshots:
         return
@@ -671,6 +688,7 @@ def generate_state_diagnostic_plots(
     n_traj = len(boundaries) - 1
     
     logger.info(f"Generating state diagnostic plots for {n_traj} {prefix.strip('_') or 'trajectory'}(ies)...")
+    logger.info(f"  Using {reduction_method} reconstruction")
     
     for i in range(n_traj):
         # Check for NaN/missing predictions
@@ -694,8 +712,11 @@ def generate_state_diagnostic_plots(
         r = X_hat.shape[0] if X_hat.shape[0] < X_hat.shape[1] else X_hat.shape[1]
         U_r = pod_basis[:, :r] if pod_basis.shape[1] >= r else pod_basis
         
-        # Reconstruct predicted full state
-        pred_Q = reconstruct_full_state(X_hat, U_r, temporal_mean)
+        # Reconstruct predicted full state based on reduction method
+        if reduction_method == "manifold":
+            pred_Q = reconstruct_full_state_manifold(X_hat, U_r, manifold_W, manifold_shift)
+        else:
+            pred_Q = reconstruct_full_state(X_hat, U_r, temporal_mean)
         
         title_prefix = f'{prefix.replace("_", " ").title()}Trajectory {i+1}: '
         
