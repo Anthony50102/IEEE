@@ -61,6 +61,9 @@ C1 = 1.0
 ALPHA_LIN = 1e-4
 ALPHA_QUAD = 1e-2
 
+# Whether to center data before POD
+CENTERING = False
+
 # Output plot
 OUTPUT_PLOT = "dmd_output_comparison.png"
 
@@ -209,12 +212,19 @@ log(f"Load time: {time.time()-t0:.1f}s")
 # =============================================================================
 
 log("")
-log("STEP 2: Centering and computing POD basis")
+log("STEP 2: Computing POD basis")
 log("-" * 40)
 
-train_mean = np.mean(Q_train, axis=1, keepdims=True)
-Q_train_c = Q_train - train_mean
-Q_test_c = Q_test - train_mean
+if CENTERING:
+    log("Centering data...")
+    train_mean = np.mean(Q_train, axis=1, keepdims=True)
+    Q_train_c = Q_train - train_mean
+    Q_test_c = Q_test - train_mean
+else:
+    log("Skipping centering (CENTERING=False)")
+    train_mean = np.zeros((Q_train.shape[0], 1))
+    Q_train_c = Q_train
+    Q_test_c = Q_test
 
 log("Computing Gram matrix...")
 G = Q_train_c.T @ Q_train_c
