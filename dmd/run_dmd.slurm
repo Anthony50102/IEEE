@@ -22,11 +22,11 @@
 #SBATCH -J dmd_pipeline
 #SBATCH -o dmd_%j.out
 #SBATCH -e dmd_%j.err
-#SBATCH -p normal
+#SBATCH -p nvdimm
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --cpus-per-task=56
-#SBATCH -t 16:00:00
+#SBATCH -t 24:00:00
 
 set -e
 
