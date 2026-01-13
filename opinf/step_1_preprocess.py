@@ -158,14 +158,17 @@ def main():
                 eigs = basis.eigs
                 r_actual = basis.r
                 r_energy = np.argmax(np.cumsum(eigs)/np.sum(eigs) >= cfg.target_energy) + 1
+                selected_modes = basis.selected_indices
             else:
                 Xhat_train = Xhat_test = Ur_full = eigs = None
                 r_actual = r_energy = cfg.r
+                selected_modes = None
             
             # Broadcast results
             r_actual = comm.bcast(r_actual, root=0)
             Xhat_train = comm.bcast(Xhat_train, root=0)
             Xhat_test = comm.bcast(Xhat_test, root=0)
+            selected_modes = comm.bcast(selected_modes, root=0)
             
         else:  # Linear POD (default)
             # Distributed Gram matrix computation
@@ -173,6 +176,7 @@ def main():
                 Q_train_centered, comm, rank, size, logger, cfg.target_energy
             )
             r_actual = min(cfg.r, r_energy)
+            selected_modes = np.arange(r_actual)  # Linear POD uses first r modes
             
             if rank == 0:
                 logger.info(f"  Using r={r_actual} (config: {cfg.r}, energy-based: {r_energy})")
@@ -272,6 +276,18 @@ def main():
             print(f"  Method: {cfg.reduction_method}")
             print(f"  Modes: r={r_actual}")
             print(f"  Runtime: {total_time:.1f}s")
+            
+            # Log selected modes
+            if cfg.reduction_method == "manifold":
+                logger.info(f"Selected mode indices (greedy): {selected_modes.tolist()}")
+                # Show which POD modes were kept vs skipped
+                max_mode = int(np.max(selected_modes))
+                skipped = sorted(set(range(max_mode + 1)) - set(selected_modes))
+                if skipped:
+                    logger.info(f"Skipped POD modes (within range 0-{max_mode}): {skipped[:20]}{'...' if len(skipped) > 20 else ''}")
+            else:
+                logger.info(f"Selected mode indices (POD): 0 to {r_actual - 1}")
+            
             logger.info(f"Step 1 completed in {total_time:.1f}s")
     
     except Exception as e:
