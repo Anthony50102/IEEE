@@ -57,9 +57,17 @@ DT = 0.025
 K0 = 0.15
 C1 = 1.0
 
-# Output operator regularization
+# Output operator regularization (single values for reference)
 ALPHA_LIN = 1e-4
 ALPHA_QUAD = 1e-2
+
+# Regularization search grid
+ALPHA_LIN_GRID = np.logspace(-6, 0, 13)   # 1e-6 to 1e0
+ALPHA_QUAD_GRID = np.logspace(-6, 0, 13)  # 1e-6 to 1e0
+
+# Thresholds for "good" predictions
+MEAN_ERR_THRESH = 0.05   # 5%
+STD_ERR_THRESH = 0.30    # 30%
 
 # Whether to center data before POD
 CENTERING = False
@@ -276,16 +284,17 @@ n_stable = np.sum(eigs_dmd.real < 0)
 log(f"Eigenvalues: {len(eigs_dmd)} ({n_stable} stable)")
 
 # =============================================================================
-# STEP 4: TRAIN OUTPUT OPERATORS
+# STEP 4: TRAIN OUTPUT OPERATORS + REGULARIZATION SEARCH
 # =============================================================================
 
 log("")
-log("STEP 4: Training output operators")
+log("STEP 4: Training output operators + regularization search")
 log("-" * 40)
 
 Y_Gamma_train = np.column_stack([train_gamma_n, train_gamma_c])
-output_model = fit_output_operators(Xhat_train, Y_Gamma_train, ALPHA_LIN, ALPHA_QUAD)
 
+# Single model for reference
+output_model = fit_output_operators(Xhat_train, Y_Gamma_train, ALPHA_LIN, ALPHA_QUAD)
 log(f"Output operators: C {output_model['C'].shape}, G {output_model['G'].shape}")
 
 # =============================================================================
@@ -341,6 +350,40 @@ gamma_n_learned, gamma_c_learned = predict_gamma_learned(X_hat_pred, output_mode
 
 log(f"Learned Gamma_n: mean={gamma_n_learned.mean():.6f}, std={gamma_n_learned.std():.6f}")
 log(f"Learned Gamma_c: mean={gamma_c_learned.mean():.6f}, std={gamma_c_learned.std():.6f}")
+
+# =============================================================================
+# STEP 7b: REGULARIZATION SEARCH
+# =============================================================================
+
+log("")
+log("STEP 7b: Regularization search")
+log("-" * 40)
+
+# Store results: (alpha_lin, alpha_quad, mean_err_n, std_err_n, mean_err_c, std_err_c, gamma_n, gamma_c)
+search_results = []
+
+for a_lin in ALPHA_LIN_GRID:
+    for a_quad in ALPHA_QUAD_GRID:
+        om = fit_output_operators(Xhat_train, Y_Gamma_train, a_lin, a_quad)
+        gn, gc = predict_gamma_learned(X_hat_pred, om)
+        
+        me_n = np.abs(gt_gamma_n.mean() - gn.mean()) / np.abs(gt_gamma_n.mean())
+        se_n = np.abs(gt_gamma_n.std() - gn.std()) / gt_gamma_n.std()
+        me_c = np.abs(gt_gamma_c.mean() - gc.mean()) / np.abs(gt_gamma_c.mean())
+        se_c = np.abs(gt_gamma_c.std() - gc.std()) / gt_gamma_c.std()
+        
+        search_results.append((a_lin, a_quad, me_n, se_n, me_c, se_c, gn, gc))
+
+log(f"Searched {len(search_results)} (alpha_lin, alpha_quad) combinations")
+
+# Filter passing results
+passing_n = [(r[0], r[1], r[2], r[3], r[6]) for r in search_results 
+             if r[2] < MEAN_ERR_THRESH and r[3] < STD_ERR_THRESH]
+passing_c = [(r[0], r[1], r[4], r[5], r[7]) for r in search_results 
+             if r[4] < MEAN_ERR_THRESH and r[5] < STD_ERR_THRESH]
+
+log(f"Gamma_n: {len(passing_n)} pass (mean_err<{MEAN_ERR_THRESH*100:.0f}%, std_err<{STD_ERR_THRESH*100:.0f}%)")
+log(f"Gamma_c: {len(passing_c)} pass (mean_err<{MEAN_ERR_THRESH*100:.0f}%, std_err<{STD_ERR_THRESH*100:.0f}%)")
 
 # =============================================================================
 # STEP 8: COMPUTE ERRORS
@@ -415,9 +458,57 @@ textstr_c += f'Learned: mean_err={err_mean_c_learn:.3f}, std_err={err_std_c_lear
 ax2.text(0.02, 0.98, textstr_c, transform=ax2.transAxes, fontsize=9,
          verticalalignment='top', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
+# Add passing ensemble as light lines
+for r in passing_n:
+    ax1.plot(t_test, r[4], 'g-', linewidth=0.3, alpha=0.3)
+for r in passing_c:
+    ax2.plot(t_test, r[4], 'g-', linewidth=0.3, alpha=0.3)
+
+# Add legend entry for ensemble
+if passing_n:
+    ax1.plot([], [], 'g-', linewidth=1, alpha=0.5, label=f'Passing ensemble ({len(passing_n)})')
+    ax1.legend(loc='upper right', fontsize=10)
+if passing_c:
+    ax2.plot([], [], 'g-', linewidth=1, alpha=0.5, label=f'Passing ensemble ({len(passing_c)})')
+    ax2.legend(loc='upper right', fontsize=10)
+
 plt.tight_layout()
 plt.savefig(OUTPUT_PLOT, dpi=150, bbox_inches='tight')
 log(f"Saved plot to {OUTPUT_PLOT}")
+
+# =============================================================================
+# STEP 10: SUMMARY TABLE
+# =============================================================================
+
+log("")
+log("STEP 10: Best regularization summary")
+log("-" * 40)
+
+# Find best for each metric
+results_arr = np.array([(r[0], r[1], r[2], r[3], r[4], r[5]) for r in search_results])
+
+best_mean_n_idx = np.argmin(results_arr[:, 2])
+best_std_n_idx = np.argmin(results_arr[:, 3])
+best_mean_c_idx = np.argmin(results_arr[:, 4])
+best_std_c_idx = np.argmin(results_arr[:, 5])
+
+log("")
+log("BEST REGULARIZATION VALUES:")
+log(f"{'Metric':<20} {'alpha_lin':<12} {'alpha_quad':<12} {'Error':<10}")
+log("-" * 54)
+log(f"{'Gamma_n mean':<20} {results_arr[best_mean_n_idx, 0]:<12.2e} {results_arr[best_mean_n_idx, 1]:<12.2e} {results_arr[best_mean_n_idx, 2]:<10.4f}")
+log(f"{'Gamma_n std':<20} {results_arr[best_std_n_idx, 0]:<12.2e} {results_arr[best_std_n_idx, 1]:<12.2e} {results_arr[best_std_n_idx, 3]:<10.4f}")
+log(f"{'Gamma_c mean':<20} {results_arr[best_mean_c_idx, 0]:<12.2e} {results_arr[best_mean_c_idx, 1]:<12.2e} {results_arr[best_mean_c_idx, 4]:<10.4f}")
+log(f"{'Gamma_c std':<20} {results_arr[best_std_c_idx, 0]:<12.2e} {results_arr[best_std_c_idx, 1]:<12.2e} {results_arr[best_std_c_idx, 5]:<10.4f}")
+
+# Range of passing values
+if passing_n:
+    pn_arr = np.array([(p[0], p[1]) for p in passing_n])
+    log(f"")
+    log(f"Gamma_n passing range: alpha_lin=[{pn_arr[:,0].min():.2e}, {pn_arr[:,0].max():.2e}], alpha_quad=[{pn_arr[:,1].min():.2e}, {pn_arr[:,1].max():.2e}]")
+if passing_c:
+    pc_arr = np.array([(p[0], p[1]) for p in passing_c])
+    log(f"Gamma_c passing range: alpha_lin=[{pc_arr[:,0].min():.2e}, {pc_arr[:,0].max():.2e}], alpha_quad=[{pc_arr[:,1].min():.2e}, {pc_arr[:,1].max():.2e}]")
 
 # =============================================================================
 # DONE
