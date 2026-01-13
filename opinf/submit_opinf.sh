@@ -37,7 +37,7 @@ case $STEP in
         NODES=1
         NTASKS=1
         CPUS=56
-        TIME="8:00:00"
+        TIME="24:00:00"
         OMP_THREADS=56
         STEP=1
         ;;
