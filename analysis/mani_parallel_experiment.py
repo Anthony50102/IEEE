@@ -97,13 +97,18 @@ def compute_pod_basis(Q_train, r, log):
     t0 = time.time()
     
     n_spatial, n_time = Q_train.shape
+    log(f"  Data shape: {n_spatial} x {n_time}, dtype: {Q_train.dtype}")
     
-    # Gram matrix: D = Q^T @ Q
-    D = Q_train.T @ Q_train
-    log(f"  Gram matrix shape: {D.shape}")
+    # Gram matrix: D = Q^T @ Q (use float64 for stability)
+    D = (Q_train.T @ Q_train).astype(np.float64)
+    log(f"  Gram matrix shape: {D.shape}, memory: {D.nbytes / 1e6:.1f} MB")
     
     # Eigendecomposition
     eigs, eigv = np.linalg.eigh(D)
+    
+    # Free Gram matrix immediately
+    del D
+    gc.collect()
     
     # Sort descending
     idx = np.argsort(eigs)[::-1]
@@ -117,26 +122,37 @@ def compute_pod_basis(Q_train, r, log):
     
     log(f"  Energy: r=10 → {cum_energy[9]*100:.4f}%, r=50 → {cum_energy[49]*100:.4f}%, r=100 → {cum_energy[min(99, len(cum_energy)-1)]*100:.4f}%")
     
-    # Compute POD basis
+    # Compute POD basis - only r columns needed
     eigs_r = eigs[:r]
     eigv_r = eigv[:, :r]
     eigs_safe = np.where(eigs_r > 1e-14, eigs_r, 1e-14)
     Tr = eigv_r @ np.diag(eigs_safe ** (-0.5))
     V_pod = Q_train @ Tr  # (n_spatial, r)
+    V_pod = V_pod.astype(np.float32)  # Keep in float32
     
     # Verify orthonormality
     ortho_err = np.linalg.norm(V_pod.T @ V_pod - np.eye(r))
     log(f"  Orthonormality error: {ortho_err:.6e}")
+    log(f"  V_pod memory: {V_pod.nbytes / 1e6:.1f} MB")
     log(f"  POD computed in {time.time()-t0:.1f}s")
     
     return V_pod, eigs, cum_energy
 
 
 def compute_pod_reconstruction_error(Q, V):
-    """Compute POD reconstruction error."""
-    z = V.T @ Q
-    Q_rec = V @ z
-    abs_err = np.linalg.norm(Q - Q_rec, 'fro')
+    """Compute POD reconstruction error (memory-efficient chunked version)."""
+    n_spatial, n_time = Q.shape
+    chunk_size = 500  # Process 500 snapshots at a time
+    sq_err_sum = 0.0
+    
+    for start in range(0, n_time, chunk_size):
+        end = min(start + chunk_size, n_time)
+        Q_chunk = Q[:, start:end]
+        z_chunk = V.T @ Q_chunk  # (r, chunk)
+        Q_rec_chunk = V @ z_chunk  # (n_spatial, chunk)
+        sq_err_sum += np.sum((Q_chunk - Q_rec_chunk) ** 2)
+    
+    abs_err = np.sqrt(sq_err_sum)
     rel_err = abs_err / np.linalg.norm(Q, 'fro')
     return abs_err, rel_err
 
@@ -149,19 +165,31 @@ def compute_manifold(Q_train, r, n_check, reg, log):
     """
     Compute quadratic manifold using greedy mode selection.
     
-    Returns V, W, shift, selected_indices, eigs
+    Memory-efficient version: avoids storing full U matrix (n_spatial x n_time).
+    Instead, we store only eigv and compute V/W columns on-demand from Q_train.
+    
+    Returns V, W, selected_indices, eigs
     """
     log(f"Computing quadratic manifold: r={r}, n_check={n_check}, reg={reg:.1e}")
     t0_total = time.time()
     
     n_spatial, n_time = Q_train.shape
+    log(f"  Data shape: {n_spatial} x {n_time}, dtype: {Q_train.dtype}")
+    log(f"  Data memory: {Q_train.nbytes / 1e9:.2f} GB")
     
     # Compute SVD via Gram matrix
+    # D is n_time x n_time (8000 x 8000 = 512 MB in float64)
     log("  Computing SVD via Gram matrix...")
     t0 = time.time()
     
-    D = Q_train.T @ Q_train
+    # Compute Gram matrix - use float64 for numerical stability
+    D = (Q_train.T @ Q_train).astype(np.float64)
+    log(f"  Gram matrix memory: {D.nbytes / 1e6:.1f} MB")
+    
+    # Eigendecomposition (always float64 for stability)
     eigs_raw, eigv = np.linalg.eigh(D)
+    del D  # Free Gram matrix
+    gc.collect()
     
     # Sort descending
     idx_sort = np.argsort(eigs_raw)[::-1]
@@ -171,11 +199,10 @@ def compute_manifold(Q_train, r, n_check, reg, log):
     # Singular values
     eigs_positive = np.maximum(eigs_raw, 0)
     sigma = np.sqrt(eigs_positive)
+    VT = eigv.T  # Right singular vectors (n_time x n_time)
     
-    # U = Q @ V @ Sigma^{-1}
+    # Precompute sigma_inv for later use
     sigma_inv = np.where(sigma > 1e-14, 1.0 / sigma, 0.0)
-    U = Q_train @ (eigv * sigma_inv[None, :])
-    VT = eigv.T
     
     log(f"  SVD done in {time.time()-t0:.1f}s")
     
@@ -184,7 +211,7 @@ def compute_manifold(Q_train, r, n_check, reg, log):
     energy = np.cumsum(eigs) / np.sum(eigs)
     log(f"  Energy: r=10 → {energy[9]*100:.2f}%, r=50 → {energy[49]*100:.2f}%")
     
-    # Greedy selection
+    # Greedy selection (only uses sigma and VT, not U)
     log("  Starting greedy selection...")
     idx_in = np.array([0], dtype=np.int64)
     idx_out = np.arange(1, len(sigma), dtype=np.int64)
@@ -206,15 +233,47 @@ def compute_manifold(Q_train, r, n_check, reg, log):
         if len(idx_in) % 10 == 0 or len(idx_in) == r:
             log(f"    Step {len(idx_in)}/{r}: mode {idx_in[-1]}, t={time.time()-t0:.1f}s")
     
-    # Compute W matrix
-    log("  Computing quadratic coefficients...")
-    V = U[:, idx_in]
-    z = sigma[idx_in, None] * VT[idx_in]
-    target = VT[idx_out].T * sigma[idx_out]
-    H = quadratic_features(z)
-    W_coeffs, residual = lstsq_reg(H.T, target, reg)
-    W = U[:, idx_out] @ W_coeffs.T
+    # Now compute V and W using memory-efficient approach
+    # V = Q @ eigv[:, idx_in] * sigma_inv[idx_in]  (n_spatial x r)
+    # W = Q @ eigv[:, idx_out] @ W_coeffs.T        (n_spatial x n_quad)
+    log("  Computing V basis (memory-efficient)...")
     
+    # Compute V: only selected r columns of U
+    V = Q_train @ (eigv[:, idx_in] * sigma_inv[idx_in])  # (n_spatial, r)
+    V = V.astype(np.float32)  # Keep in float32
+    log(f"  V shape: {V.shape}, memory: {V.nbytes / 1e6:.1f} MB")
+    
+    # Compute quadratic coefficients W_coeffs
+    log("  Computing quadratic coefficients...")
+    z = sigma[idx_in, None] * VT[idx_in]  # (r, n_time)
+    target = VT[idx_out].T * sigma[idx_out]  # (n_time, n_out)
+    H = quadratic_features(z)  # (n_quad, n_time)
+    W_coeffs, residual = lstsq_reg(H.T, target, reg)  # (n_out, n_quad)
+    
+    # Compute W: Q @ eigv[:, idx_out] @ diag(sigma_inv[idx_out]) @ W_coeffs.T
+    # Break into steps to avoid large intermediate matrices
+    log("  Computing W basis (memory-efficient)...")
+    
+    # W_coeffs.T is (n_quad, n_out), we need (n_spatial, n_quad)
+    # W = U[:, idx_out] @ W_coeffs.T where U[:, idx_out] = Q @ eigv[:, idx_out] * sigma_inv[idx_out]
+    # So W = Q @ (eigv[:, idx_out] * sigma_inv[idx_out]) @ W_coeffs.T
+    
+    # Compute in chunks if idx_out is large
+    n_out = len(idx_out)
+    n_quad = W_coeffs.shape[1]
+    
+    # First compute: eigv[:, idx_out] * sigma_inv[idx_out] @ W_coeffs.T
+    # This is (n_time, n_out) @ (n_out, n_quad) = (n_time, n_quad)
+    temp = (eigv[:, idx_out] * sigma_inv[idx_out]) @ W_coeffs.T  # (n_time, n_quad)
+    
+    # Now W = Q @ temp (n_spatial, n_quad)
+    W = Q_train @ temp
+    W = W.astype(np.float32)
+    
+    del temp, z, target, H, W_coeffs
+    gc.collect()
+    
+    log(f"  W shape: {W.shape}, memory: {W.nbytes / 1e6:.1f} MB")
     log(f"  Final residual: {residual:.6e}")
     log(f"  Total manifold time: {time.time()-t0_total:.1f}s")
     
@@ -222,14 +281,27 @@ def compute_manifold(Q_train, r, n_check, reg, log):
 
 
 def compute_manifold_reconstruction_error(Q, V, W):
-    """Compute manifold reconstruction error."""
-    n_time = Q.shape[1]
-    z = V.T @ Q
-    Q_rec = V @ z
-    for t in range(n_time):
-        h = quadratic_features(z[:, t:t+1]).squeeze()
-        Q_rec[:, t] += W @ h
-    abs_err = np.linalg.norm(Q - Q_rec, 'fro')
+    """Compute manifold reconstruction error (memory-efficient chunked version)."""
+    n_spatial, n_time = Q.shape
+    z = V.T @ Q  # (r, n_time)
+    
+    # Compute error in chunks to avoid storing full reconstruction
+    chunk_size = 500  # Process 500 snapshots at a time
+    sq_err_sum = 0.0
+    
+    for start in range(0, n_time, chunk_size):
+        end = min(start + chunk_size, n_time)
+        z_chunk = z[:, start:end]
+        Q_rec_chunk = V @ z_chunk  # (n_spatial, chunk)
+        
+        # Add quadratic correction
+        for t in range(end - start):
+            h = quadratic_features(z_chunk[:, t:t+1]).squeeze()
+            Q_rec_chunk[:, t] += W @ h
+        
+        sq_err_sum += np.sum((Q[:, start:end] - Q_rec_chunk) ** 2)
+    
+    abs_err = np.sqrt(sq_err_sum)
     rel_err = abs_err / np.linalg.norm(Q, 'fro')
     return abs_err, rel_err
 
@@ -544,15 +616,16 @@ def main():
     log(f"Train snapshots: {n_train}, Test snapshots: {n_test}")
     
     # Stack into Q matrices: (n_spatial, n_time)
+    # Keep as float32 to save memory - data is single precision
     Q_train = np.vstack([
         train_density.reshape(n_train, -1).T,
         train_phi.reshape(n_train, -1).T
-    ]).astype(np.float64)
+    ]).astype(np.float32)
     
     Q_test = np.vstack([
         test_density.reshape(n_test, -1).T,
         test_phi.reshape(n_test, -1).T
-    ]).astype(np.float64)
+    ]).astype(np.float32)
     
     del train_density, train_phi, test_density, test_phi
     gc.collect()
@@ -569,13 +642,20 @@ def main():
     log("STEP 2: Centering data")
     log("=" * 70)
     
-    train_mean = np.mean(Q_train, axis=1, keepdims=True)
+    train_mean = np.mean(Q_train, axis=1, keepdims=True).astype(np.float32)
     Q_train_centered = Q_train - train_mean
     Q_test_centered = Q_test - train_mean
     shift = train_mean.squeeze()
     
+    # Free original data - we only need centered versions
+    del Q_train, Q_test, train_mean
+    gc.collect()
+    
+    log(f"Q_train_centered: {Q_train_centered.nbytes/1e9:.2f} GB")
+    log(f"Q_test_centered:  {Q_test_centered.nbytes/1e9:.2f} GB")
+    
     if args.centering:
-        log(f"Centering enabled. Train mean norm: {np.linalg.norm(train_mean):.6e}")
+        log(f"Centering enabled. Shift norm: {np.linalg.norm(shift):.6e}")
     else:
         log("Centering for manifold computation (data will use centered form)")
     
@@ -612,8 +692,9 @@ def main():
             pod_train_err, pod_test_err, n_spatial, log
         )
         
-        del V_pod, Xhat_train_pod, Xhat_test_pod
+        del V_pod, Xhat_train_pod, Xhat_test_pod, learning_pod, eigs_pod, cum_energy
         gc.collect()
+        log("  POD data freed from memory")
     
     # =========================================================================
     # STEP 4: Compute Manifold
