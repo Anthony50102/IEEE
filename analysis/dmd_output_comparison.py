@@ -62,8 +62,8 @@ ALPHA_LIN = 1e-4
 ALPHA_QUAD = 1e-2
 
 # Regularization search grid
-ALPHA_LIN_GRID = np.logspace(-6, 0, 13)   # 1e-6 to 1e0
-ALPHA_QUAD_GRID = np.logspace(-6, 0, 13)  # 1e-6 to 1e0
+ALPHA_LIN_GRID = np.logspace(-6, 6, 25)   # 1e-6 to 1e0
+ALPHA_QUAD_GRID = np.logspace(-6, 6, 25)  # 1e-6 to 1e0
 
 # Thresholds for "good" predictions
 MEAN_ERR_THRESH = 0.05   # 5%
