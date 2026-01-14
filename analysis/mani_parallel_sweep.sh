@@ -21,7 +21,7 @@ OUTPUT_BASE="/scratch2/10407/anthony50102/IEEE/output/mani_sweep"
 RUN_NAME="mani_reg_sweep"
 
 # Regularization values (one job per value)
-REG_VALUES=(1e6 5e6 1e7 5e7 1e8)
+REG_VALUES=(1e3 1e4 1e5 1e6 1e7 1e8 1e9 1e10)
 
 # Manifold parameters
 R=84
@@ -42,7 +42,7 @@ NY=512
 
 # SLURM settings
 PARTITION="normal"
-TIME="06:00:00"
+TIME="20:00:00"
 NODES=1
 CPUS=56
 
