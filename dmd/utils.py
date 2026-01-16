@@ -477,6 +477,9 @@ def fit_output_operators(
     
     where X is centered and scaled reduced state, X2 is quadratic terms.
     
+    For large ranks (r > 500), uses LSQR iterative solver to avoid forming
+    the full normal equations matrix which would require O(r^4) memory.
+    
     Parameters
     ----------
     X_train : np.ndarray, shape (K, r)
@@ -493,8 +496,12 @@ def fit_output_operators(
     dict
         Dictionary with operators C, G, c and scaling parameters.
     """
+    from scipy.sparse.linalg import lsqr
+    from scipy.sparse.linalg import LinearOperator
+    
     K, r = X_train.shape
     s = r * (r + 1) // 2
+    d_out = r + s + 1
     
     # Center and scale the state for output learning
     mean_X = np.mean(X_train, axis=0)
@@ -506,17 +513,55 @@ def fit_output_operators(
     X2 = get_quadratic_terms(X_scaled)
     D_out = np.concatenate([X_scaled, X2, np.ones((K, 1))], axis=1)
     
-    # Build regularization
-    d_out = r + s + 1
-    reg = np.zeros(d_out)
-    reg[:r] = alpha_lin
-    reg[r:r+s] = alpha_quad
-    reg[r+s:] = alpha_lin  # constant term
+    # Build regularization weights (sqrt for Tikhonov formulation)
+    reg_weights = np.zeros(d_out)
+    reg_weights[:r] = np.sqrt(alpha_lin)
+    reg_weights[r:r+s] = np.sqrt(alpha_quad)
+    reg_weights[r+s:] = np.sqrt(alpha_lin)  # constant term
     
-    # Solve regularized least squares
-    DtD = D_out.T @ D_out + np.diag(reg)
-    DtY = D_out.T @ Y_Gamma
-    O = np.linalg.solve(DtD, DtY).T  # (2, d_out)
+    # Decide solver based on problem size
+    # Normal equations require O(d_out^2) memory; use iterative for large d_out
+    use_iterative = d_out > 50000  # ~20GB threshold for normal equations
+    
+    if use_iterative:
+        # Use LSQR with LinearOperator to avoid materializing augmented matrix
+        # The augmented system is: [D_out; diag(reg_weights)] @ x = [y; 0]
+        # LinearOperator defines matvec and rmatvec without storing the full matrix
+        
+        m_aug = K + d_out  # augmented rows
+        
+        def matvec(x):
+            """Compute [D_out; diag(reg)] @ x"""
+            result = np.zeros(m_aug)
+            result[:K] = D_out @ x
+            result[K:] = reg_weights * x
+            return result
+        
+        def rmatvec(y):
+            """Compute [D_out; diag(reg)]^T @ y = D_out^T @ y[:K] + diag(reg) @ y[K:]"""
+            return D_out.T @ y[:K] + reg_weights * y[K:]
+        
+        A_aug = LinearOperator((m_aug, d_out), matvec=matvec, rmatvec=rmatvec)
+        
+        O = np.zeros((2, d_out))
+        for i in range(2):
+            y_aug = np.zeros(m_aug)
+            y_aug[:K] = Y_Gamma[:, i]
+            # y_aug[K:] = 0 (already zeros)
+            
+            result = lsqr(
+                A_aug, y_aug,
+                atol=1e-8,
+                btol=1e-8,
+                iter_lim=min(2 * d_out, 10000),
+            )
+            O[i, :] = result[0]
+    else:
+        # Direct solver via normal equations (memory efficient for small problems)
+        reg = reg_weights ** 2  # Square back for normal equations
+        DtD = D_out.T @ D_out + np.diag(reg)
+        DtY = D_out.T @ Y_Gamma
+        O = np.linalg.solve(DtD, DtY).T  # (2, d_out)
     
     # Extract operators
     C = O[:, :r]           # (2, r)
