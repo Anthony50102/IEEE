@@ -98,8 +98,8 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
         proj_basis=None,  # Don't use projection to save memory
         use_proj=False,   # Disable projection
         eig_sort=cfg.eig_sort,
-        eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
-        # init_alpha=init_alpha,
+        #eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
+        init_alpha=init_alpha,
     )
     
     # Convert to float64 for pydmd fitting (required by optimizer)

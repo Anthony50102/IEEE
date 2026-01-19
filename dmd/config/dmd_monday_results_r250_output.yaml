@@ -1,4 +1,4 @@
-run_name: "dmd_temporal_split_r1000"  # Train on first n snapshots, predict rest
+run_name: "dmd_temporal_split_output_250"  # Train on first n snapshots, predict rest
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/monday_results/"
@@ -21,7 +21,7 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 1000
+  r: 250
   target_energy: 0.95
   svd_save: 4000
 
@@ -42,9 +42,9 @@ dmd:
 
 # Quadratic output model (OpInf-style, for fair comparison)
 output_model:
-  enabled: false           # Use learned C, G, c operators for Gamma (like OpInf)
-  alpha_lin: 1.0e-4       # Regularization for linear output terms
-  alpha_quad: 1.0e-4      # Regularization for quadratic output terms
+  enabled: true           # Use learned C, G, c operators for Gamma (like OpInf)
+  alpha_lin: 1.0e-2       # Regularization for linear output terms
+  alpha_quad: 1.0e0      # Regularization for quadratic output terms
   
 truncation:
   enabled: false                 # Not needed - using explicit snapshot ranges

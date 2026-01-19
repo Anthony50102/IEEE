@@ -1,4 +1,4 @@
-run_name: "dmd_temporal_split_r1000"  # Train on first n snapshots, predict rest
+run_name: "dmd_temporal_split_r500"  # Train on first n snapshots, predict rest
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/monday_results/"
@@ -21,7 +21,7 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 1000
+  r: 500
   target_energy: 0.95
   svd_save: 4000
 

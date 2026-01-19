@@ -26,7 +26,7 @@
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --cpus-per-task=56
-#SBATCH -t 24:00:00
+#SBATCH -t 48:00:00
 
 set -e
 
