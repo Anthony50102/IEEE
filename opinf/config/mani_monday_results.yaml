@@ -31,8 +31,8 @@ reduction:
   r: 84
   target_energy: 0.95
 
-  n_vectors_to_check: 200  # Max candidates per greedy step
-  reg_magnitude: 7.0e6    # Tikhonov regularization for coefficient solve
+  n_vectors_to_check: 300  # Max candidates per greedy step
+  reg_magnitude: 1.5e7    # Tikhonov regularization for coefficient solve
 
 truncation:
   enabled: false                   # Not needed - using explicit snapshot ranges
