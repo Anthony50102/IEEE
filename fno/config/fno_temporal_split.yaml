@@ -1,0 +1,54 @@
+run_name: "fno_temporal_split"  # Train on first n snapshots, predict rest
+
+paths:
+  output_base: "./output/"
+  
+  data_dir: "/work/10407/anthony50102/frontera/data/hw2d_sim/t600_d256x256_raw/"
+  
+  # Single trajectory for temporal split mode
+  training_files: 
+    - "hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
+
+  # test_files not used in temporal_split mode (we use later part of training file)
+  test_files: []
+
+physics:
+  dt: 0.025
+  n_fields: 2
+  n_x: 256
+  n_y: 256
+
+# Training mode configuration
+training_mode: "temporal_split"
+train_start: 0          # Train from snapshot 0
+train_end: 400          # Train to snapshot 400  
+test_start: 400         # Test from snapshot 400
+test_end: 500           # Test to snapshot 500
+
+# FNO model configuration
+model:
+  n_modes: [32, 32]     # Fourier modes in each dimension
+  in_channels: 2        # density + potential
+  out_channels: 2       # predict next density + potential
+  hidden_channels: 64   # Width of the network
+  n_layers: 4           # Number of Fourier layers
+
+# Training configuration
+training:
+  batch_size: 16        # Pairs per mini-batch
+  n_epochs: 100         # Number of training epochs
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0        # Gradient clipping norm
+  
+  # Learning rate scheduler
+  scheduler:
+    type: "cosine"      # "cosine", "step", or "none"
+    warmup_epochs: 5
+  
+  # Checkpointing
+  save_every: 20        # Save checkpoint every N epochs
+  eval_every: 10        # Evaluate on test set every N epochs
+
+# Logging
+log_level: "INFO"
