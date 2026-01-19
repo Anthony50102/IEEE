@@ -173,17 +173,279 @@ def evaluate_hyperparameters(
     }
 
 
-def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm) -> list:
-    """Run hyperparameter sweep in parallel using MPI."""
+# =============================================================================
+# MANIFOLD-AWARE HYPERPARAMETER EVALUATION
+# =============================================================================
+
+def _quadratic_features_batch(z: np.ndarray) -> np.ndarray:
+    """
+    Compute quadratic features for a batch of vectors.
+    
+    Parameters
+    ----------
+    z : np.ndarray, shape (r, n_time) or (n_time, r)
+        Reduced coordinates.
+    
+    Returns
+    -------
+    np.ndarray, shape (s, n_time) or (n_time, s)
+        Quadratic features where s = r*(r+1)/2.
+    """
+    if z.ndim == 1:
+        r = z.shape[0]
+        return np.concatenate([z[i:i+1] * z[:i+1] for i in range(r)], axis=0)
+    
+    # Batch case: assume shape (r, n_time)
+    r = z.shape[0]
+    features = [z[i:i+1, :] * z[:i+1, :] for i in range(r)]
+    return np.concatenate(features, axis=0)
+
+
+def _manifold_decode(z: np.ndarray, V: np.ndarray, W: np.ndarray, shift: np.ndarray) -> np.ndarray:
+    """
+    Decode reduced coordinates to full state using quadratic manifold.
+    
+    x = V @ z + W @ h(z) + shift
+    
+    Parameters
+    ----------
+    z : np.ndarray, shape (r,) or (r, n_time)
+        Reduced coordinates.
+    V : np.ndarray, shape (n_spatial, r)
+        Linear basis.
+    W : np.ndarray, shape (n_spatial, s)
+        Quadratic coefficient matrix.
+    shift : np.ndarray, shape (n_spatial,)
+        Mean shift.
+    
+    Returns
+    -------
+    np.ndarray, shape (n_spatial,) or (n_spatial, n_time)
+        Reconstructed full state.
+    """
+    h_z = _quadratic_features_batch(z)
+    if z.ndim == 1:
+        return V @ z + W @ h_z + shift
+    else:
+        return V @ z + W @ h_z + shift[:, None]
+
+
+def _manifold_encode(x: np.ndarray, V: np.ndarray, shift: np.ndarray) -> np.ndarray:
+    """
+    Encode full state to reduced coordinates (linear projection only).
+    
+    z = V.T @ (x - shift)
+    
+    Parameters
+    ----------
+    x : np.ndarray, shape (n_spatial,) or (n_spatial, n_time)
+        Full state.
+    V : np.ndarray, shape (n_spatial, r)
+        Linear basis.
+    shift : np.ndarray, shape (n_spatial,)
+        Mean shift.
+    
+    Returns
+    -------
+    np.ndarray, shape (r,) or (r, n_time)
+        Reduced coordinates.
+    """
+    if x.ndim == 1:
+        return V.T @ (x - shift)
+    else:
+        return V.T @ (x - shift[:, None])
+
+
+def evaluate_hyperparameters_manifold(
+    alpha_state_lin: float, alpha_state_quad: float,
+    alpha_out_lin: float, alpha_out_quad: float,
+    data: dict, manifold_data: dict, r: int, n_steps: int, training_end: int,
+    consistency_weight: float = 1.0, reencode_output: bool = True,
+) -> dict:
+    """
+    Evaluate hyperparameters with manifold-aware training.
+    
+    This extends the standard evaluation with:
+    1. Consistency loss: penalizes predictions that don't decode well in full space
+    2. Re-encode for output: decodes prediction, re-encodes, then computes output
+    
+    The consistency loss measures how well predicted reduced states 
+    can be decoded to full space and re-encoded:
+        ||z_pred - encode(decode(z_pred))||
+    
+    For a perfect manifold approximation, this should be small.
+    For predictions that stray from the training manifold, this grows.
+    
+    Parameters
+    ----------
+    alpha_state_lin, alpha_state_quad : float
+        State operator regularization.
+    alpha_out_lin, alpha_out_quad : float
+        Output operator regularization.
+    data : dict
+        Training data (same as standard evaluate_hyperparameters).
+    manifold_data : dict
+        Manifold basis: {'V': array, 'W': array, 'shift': array, 'r': int}.
+    r : int
+        Number of modes.
+    n_steps : int
+        Number of integration steps.
+    training_end : int
+        End of training period for metrics.
+    consistency_weight : float
+        Weight for manifold consistency error in total error.
+    reencode_output : bool
+        If True, decode→re-encode before computing output operator prediction.
+    
+    Returns
+    -------
+    dict
+        Evaluation results including manifold consistency error.
+    """
+    s = r * (r + 1) // 2
+    d_state = r + s
+    d_out = r + s + 1
+    
+    # Extract manifold basis
+    V = manifold_data['V']
+    W = manifold_data['W']
+    shift = manifold_data['shift']
+    
+    # Solve state operator learning
+    reg_state = np.zeros(d_state)
+    reg_state[:r] = alpha_state_lin
+    reg_state[r:] = alpha_state_quad
+    
+    DtD_state = data['D_state_2'] + np.diag(reg_state)
+    O = np.linalg.solve(DtD_state, data['D_state'].T @ data['Y_state']).T
+    A, F = O[:, :r], O[:, r:]
+    del DtD_state
+    
+    # Integrate model
+    f = lambda x: A @ x + F @ get_quadratic_terms(x)
+    u0 = data['X_state'][0, :]
+    is_nan, Xhat_pred = solve_difference_model(u0, n_steps, f)
+    
+    if is_nan:
+        return {'is_nan': True, 'alpha_state_lin': alpha_state_lin,
+                'alpha_state_quad': alpha_state_quad, 'alpha_out_lin': alpha_out_lin,
+                'alpha_out_quad': alpha_out_quad}
+    
+    # Xhat_pred is (r, n_steps)
+    
+    # =========================================================================
+    # MANIFOLD CONSISTENCY ERROR
+    # =========================================================================
+    # Decode to full space, then re-encode
+    # This measures how well predictions stay on the learned manifold
+    
+    # Sample subset for efficiency (full consistency check is expensive)
+    n_check = min(500, n_steps)
+    check_indices = np.linspace(0, n_steps - 1, n_check, dtype=int)
+    z_subset = Xhat_pred[:, check_indices]
+    
+    # Decode and re-encode
+    x_decoded = _manifold_decode(z_subset, V, W, shift)  # (n_spatial, n_check)
+    z_reencoded = _manifold_encode(x_decoded, V, shift)   # (r, n_check)
+    
+    # Consistency error: how much does decode→encode change z?
+    # Note: for linear POD, z_reencoded == z_subset exactly
+    # For manifold, difference comes from V.T @ W @ h(z) term
+    consistency_err = np.linalg.norm(z_reencoded - z_subset, 'fro') / np.linalg.norm(z_subset, 'fro')
+    
+    del x_decoded
+    
+    # =========================================================================
+    # OUTPUT PREDICTION (with optional re-encoding)
+    # =========================================================================
+    X_OpInf = Xhat_pred.T  # (n_steps, r)
+    
+    if reencode_output:
+        # Use re-encoded coordinates for output prediction
+        # This makes the quadratic manifold structure influence the output
+        x_full = _manifold_decode(Xhat_pred, V, W, shift)  # (n_spatial, n_steps)
+        z_corrected = _manifold_encode(x_full, V, shift)    # (r, n_steps)
+        X_for_output = z_corrected.T  # (n_steps, r)
+        del x_full
+    else:
+        X_for_output = X_OpInf
+    
+    del Xhat_pred
+    
+    # Prepare for output operator
+    Xhat_scaled = (X_for_output - data['mean_Xhat']) / data['scaling_Xhat']
+    Xhat_2 = get_quadratic_terms(Xhat_scaled)
+    del X_for_output, X_OpInf
+    
+    # Solve output operator learning
+    reg_out = np.zeros(d_out)
+    reg_out[:r] = alpha_out_lin
+    reg_out[r:r+s] = alpha_out_quad
+    reg_out[r+s:] = alpha_out_lin
+    
+    DtD_out = data['D_out_2'] + np.diag(reg_out)
+    O_out = np.linalg.solve(DtD_out, data['D_out'].T @ data['Y_Gamma'].T).T
+    C, G, c = O_out[:, :r], O_out[:, r:r+s], O_out[:, r+s]
+    
+    # Compute output predictions
+    Y_OpInf = C @ Xhat_scaled.T + G @ Xhat_2.T + c[:, np.newaxis]
+    del Xhat_scaled, Xhat_2
+    
+    ts_Gamma_n = Y_OpInf[0, :training_end]
+    ts_Gamma_c = Y_OpInf[1, :training_end]
+    
+    # Compute error metrics (relative errors in statistics)
+    mean_err_n = abs(data['mean_Gamma_n'] - np.mean(ts_Gamma_n)) / abs(data['mean_Gamma_n'])
+    std_err_n = abs(data['std_Gamma_n'] - np.std(ts_Gamma_n, ddof=1)) / data['std_Gamma_n']
+    mean_err_c = abs(data['mean_Gamma_c'] - np.mean(ts_Gamma_c)) / abs(data['mean_Gamma_c'])
+    std_err_c = abs(data['std_Gamma_c'] - np.std(ts_Gamma_c, ddof=1)) / data['std_Gamma_c']
+    
+    # Total error includes weighted manifold consistency
+    gamma_error = mean_err_n + std_err_n + mean_err_c + std_err_c
+    total_error = gamma_error + consistency_weight * consistency_err
+    
+    return {
+        'is_nan': False,
+        'total_error': total_error,
+        'gamma_error': gamma_error,
+        'manifold_consistency_err': consistency_err,
+        'mean_err_Gamma_n': mean_err_n, 'std_err_Gamma_n': std_err_n,
+        'mean_err_Gamma_c': mean_err_c, 'std_err_Gamma_c': std_err_c,
+        'alpha_state_lin': alpha_state_lin, 'alpha_state_quad': alpha_state_quad,
+        'alpha_out_lin': alpha_out_lin, 'alpha_out_quad': alpha_out_quad,
+    }
+
+
+def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm, manifold_data: dict = None) -> list:
+    """
+    Run hyperparameter sweep in parallel using MPI.
+    
+    If manifold_data is provided and cfg.manifold_aware_training is True,
+    uses manifold-aware evaluation that includes:
+    - Consistency loss for staying on manifold
+    - Optional decode→re-encode for output prediction
+    """
     rank = comm.Get_rank()
     size = comm.Get_size()
+    
+    # Determine if we should use manifold-aware training
+    use_manifold = (
+        manifold_data is not None 
+        and cfg.reduction_method == "manifold"
+        and getattr(cfg, 'manifold_aware_training', True)
+    )
     
     # Build parameter grid
     param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
     n_total = len(param_grid)
     
     if rank == 0:
-        logger.info(f"Parallel sweep: {n_total:,} combinations across {size} ranks")
+        if use_manifold:
+            logger.info(f"Parallel sweep (MANIFOLD-AWARE): {n_total:,} combinations across {size} ranks")
+            logger.info(f"  Consistency weight: {cfg.manifold_consistency_weight}")
+            logger.info(f"  Re-encode for output: {cfg.manifold_reencode_output}")
+        else:
+            logger.info(f"Parallel sweep: {n_total:,} combinations across {size} ranks")
     
     # Distribute work
     per_rank = n_total // size
@@ -203,9 +465,16 @@ def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm) -> list:
     n_nan = 0
     
     for i, (asl, asq, aol, aoq) in enumerate(my_params):
-        result = evaluate_hyperparameters(
-            asl, asq, aol, aoq, data, cfg.r, cfg.n_steps, cfg.training_end
-        )
+        if use_manifold:
+            result = evaluate_hyperparameters_manifold(
+                asl, asq, aol, aoq, data, manifold_data, cfg.r, cfg.n_steps, cfg.training_end,
+                consistency_weight=cfg.manifold_consistency_weight,
+                reencode_output=cfg.manifold_reencode_output,
+            )
+        else:
+            result = evaluate_hyperparameters(
+                asl, asq, aol, aoq, data, cfg.r, cfg.n_steps, cfg.training_end
+            )
         
         if result['is_nan']:
             n_nan += 1
@@ -222,6 +491,13 @@ def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm) -> list:
     if rank == 0:
         combined = [r for rank_results in all_results for r in rank_results]
         logger.info(f"Sweep complete: {len(combined)} valid, {sum(all_nan)} NaN")
+        
+        # Log manifold-specific statistics if applicable
+        if use_manifold and combined:
+            consistency_errs = [r.get('manifold_consistency_err', 0) for r in combined]
+            logger.info(f"Manifold consistency error: min={min(consistency_errs):.4f}, "
+                       f"max={max(consistency_errs):.4f}, mean={np.mean(consistency_errs):.4f}")
+        
         return combined
     return []
 

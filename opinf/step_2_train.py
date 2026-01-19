@@ -25,7 +25,7 @@ from utils import (
     save_step_status, check_step_completed, get_output_paths,
     print_header, print_config_summary,
 )
-from data import load_data_shared_memory, save_ensemble
+from data import load_data_shared_memory, load_manifold_basis, save_ensemble
 from training import (
     parallel_hyperparameter_sweep, log_error_statistics, 
     select_models, recompute_operators_parallel,
@@ -77,9 +77,17 @@ def main():
         data, windows = load_data_shared_memory(paths, comm, logger)
         comm.Barrier()
         
+        # Load manifold basis if using manifold reduction with aware training
+        manifold_data = None
+        if cfg.reduction_method == "manifold" and getattr(cfg, 'manifold_aware_training', True):
+            manifold_data = load_manifold_basis(paths, comm, logger)
+            if manifold_data is None and rank == 0:
+                logger.warning("Manifold-aware training requested but no manifold basis found. "
+                             "Falling back to standard training.")
+        
         # Run sweep
         t_start = MPI.Wtime()
-        results = parallel_hyperparameter_sweep(cfg, data, logger, comm)
+        results = parallel_hyperparameter_sweep(cfg, data, logger, comm, manifold_data=manifold_data)
         t_elapsed = MPI.Wtime() - t_start
         
         if rank == 0:

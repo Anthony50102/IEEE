@@ -31,6 +31,35 @@ x ≈ V @ z + W @ h(z) + μ
 ```
 where `h(z)` are quadratic features `z_i * z_j`.
 
+#### Manifold-Aware Training (New)
+
+When using the manifold method, you can enable **manifold-aware training** which
+makes the ROM operators respect the manifold structure during optimization:
+
+1. **Consistency Loss**: Penalizes predictions that don't decode well in full space.
+   The ROM is trained to stay on the learned manifold by adding:
+   ```
+   ||z_pred - encode(decode(z_pred))||
+   ```
+   to the loss function.
+
+2. **Re-encode for Output**: Before computing output quantities (like Gamma),
+   the predicted reduced state is decoded to full space and re-encoded:
+   ```
+   z_corrected = V.T @ (V @ z + W @ h(z))
+   ```
+   This adds a quadratic correction `V.T @ W @ h(z)` that better captures
+   nonlinear output dependence on the modes.
+
+Enable via config:
+```yaml
+reduction:
+  method: "manifold"
+  manifold_aware_training: true      # Use consistency loss
+  manifold_consistency_weight: 1.0   # Weight for consistency term
+  manifold_reencode_output: true     # Decode→re-encode for output
+```
+
 Both methods report **reconstruction error** so you can compare them directly.
 
 ## ROM Learning

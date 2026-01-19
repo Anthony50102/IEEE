@@ -65,6 +65,12 @@ reduction:
   # Quadratic manifold settings (only used if method="manifold")
   n_vectors_to_check: 200  # Max candidates per greedy step
   reg_magnitude: 1.0e-6    # Tikhonov regularization for coefficient solve
+  
+  # Manifold-aware training (only used if method="manifold")
+  # These settings help the ROM operators respect the manifold structure
+  manifold_aware_training: true  # Use manifold consistency loss in training
+  manifold_consistency_weight: 1.0  # Weight for full-space consistency loss
+  manifold_reencode_output: true   # Decode→re-encode before computing output
 
 # =============================================================================
 # DATA TRUNCATION

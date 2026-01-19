@@ -72,6 +72,11 @@ class OpInfConfig:
     n_vectors_to_check: int = 200
     reg_magnitude: float = 1e-6
     
+    # Manifold-aware training (only used if reduction_method="manifold")
+    manifold_aware_training: bool = True  # Use manifold consistency loss in training
+    manifold_consistency_weight: float = 1.0  # Weight for full-space consistency loss
+    manifold_reencode_output: bool = True  # Decode→re-encode before computing output
+    
     # Truncation
     truncation_enabled: bool = False
     truncation_method: str = "time"
@@ -157,6 +162,9 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.target_energy = reduction.get("target_energy", 0.9999)
     cfg.n_vectors_to_check = reduction.get("n_vectors_to_check", 200)
     cfg.reg_magnitude = float(reduction.get("reg_magnitude", 1e-6))
+    cfg.manifold_aware_training = reduction.get("manifold_aware_training", True)
+    cfg.manifold_consistency_weight = float(reduction.get("manifold_consistency_weight", 1.0))
+    cfg.manifold_reencode_output = reduction.get("manifold_reencode_output", True)
     
     # Training mode
     training_mode = raw.get("training_mode", {})

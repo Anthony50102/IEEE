@@ -6,6 +6,7 @@ This module handles:
 - Data centering and scaling
 - Initial condition extraction
 - Reference data loading
+- Manifold basis loading
 
 Author: Anthony Poole
 """
@@ -463,6 +464,44 @@ def load_data_shared_memory(paths: dict, comm, logger):
         logger.info("Data loaded with shared memory")
     
     return data, windows
+
+
+def load_manifold_basis(paths: dict, comm, logger) -> dict:
+    """
+    Load manifold basis (V, W, shift) for manifold-aware training.
+    
+    Only loads if manifold_basis file exists. Returns None if not found
+    or if method is linear POD.
+    
+    The manifold data is broadcast to all ranks since it's relatively small
+    compared to training data.
+    """
+    rank = comm.Get_rank()
+    
+    manifold_data = None
+    
+    if rank == 0:
+        if os.path.exists(paths["manifold_basis"]):
+            from pod import load_basis
+            basis = load_basis(paths["manifold_basis"])
+            
+            if basis.method == "manifold" and basis.W is not None:
+                manifold_data = {
+                    'V': basis.V,           # (n_spatial, r)
+                    'W': basis.W,           # (n_spatial, s) where s = r*(r+1)/2
+                    'shift': basis.shift,   # (n_spatial,)
+                    'r': basis.r,
+                }
+                logger.info(f"Loaded manifold basis: V={basis.V.shape}, W={basis.W.shape}")
+            else:
+                logger.info("Basis file found but not manifold method, skipping manifold-aware training")
+        else:
+            logger.info(f"No manifold basis found at {paths['manifold_basis']}")
+    
+    # Broadcast manifold data to all ranks
+    manifold_data = comm.bcast(manifold_data, root=0)
+    
+    return manifold_data
 
 
 # =============================================================================
