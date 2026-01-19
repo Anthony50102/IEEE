@@ -473,12 +473,14 @@ def load_manifold_basis(paths: dict, comm, logger) -> dict:
     Only loads if manifold_basis file exists. Returns None if not found
     or if method is linear POD.
     
-    The manifold data is broadcast to all ranks since it's relatively small
-    compared to training data.
+    Uses chunked broadcasts to avoid MPI 32-bit integer overflow for large
+    arrays (V and W can be n_spatial × r which easily exceeds 2GB).
     """
     rank = comm.Get_rank()
     
-    manifold_data = None
+    # First, determine if manifold data exists (small metadata broadcast)
+    has_manifold = False
+    r_val = 0
     
     if rank == 0:
         if os.path.exists(paths["manifold_basis"]):
@@ -486,22 +488,42 @@ def load_manifold_basis(paths: dict, comm, logger) -> dict:
             basis = load_basis(paths["manifold_basis"])
             
             if basis.method == "manifold" and basis.W is not None:
-                manifold_data = {
-                    'V': basis.V,           # (n_spatial, r)
-                    'W': basis.W,           # (n_spatial, s) where s = r*(r+1)/2
-                    'shift': basis.shift,   # (n_spatial,)
-                    'r': basis.r,
-                }
-                logger.info(f"Loaded manifold basis: V={basis.V.shape}, W={basis.W.shape}")
+                has_manifold = True
+                r_val = basis.r
+                # Store locally for chunked broadcast
+                V_data = basis.V
+                W_data = basis.W
+                shift_data = basis.shift
+                logger.info(f"Loaded manifold basis: V={V_data.shape}, W={W_data.shape}")
             else:
                 logger.info("Basis file found but not manifold method, skipping manifold-aware training")
         else:
             logger.info(f"No manifold basis found at {paths['manifold_basis']}")
     
-    # Broadcast manifold data to all ranks
-    manifold_data = comm.bcast(manifold_data, root=0)
+    # Broadcast metadata first
+    has_manifold = comm.bcast(has_manifold, root=0)
     
-    return manifold_data
+    if not has_manifold:
+        return None
+    
+    r_val = comm.bcast(r_val, root=0)
+    
+    # Use chunked_bcast for large arrays to avoid MPI 32-bit overflow
+    if rank == 0:
+        V = chunked_bcast(comm, V_data, root=0)
+        W = chunked_bcast(comm, W_data, root=0)
+        shift = chunked_bcast(comm, shift_data, root=0)
+    else:
+        V = chunked_bcast(comm, None, root=0)
+        W = chunked_bcast(comm, None, root=0)
+        shift = chunked_bcast(comm, None, root=0)
+    
+    return {
+        'V': V,
+        'W': W,
+        'shift': shift,
+        'r': r_val,
+    }
 
 
 # =============================================================================
