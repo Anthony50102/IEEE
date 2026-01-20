@@ -1,13 +1,13 @@
 run_name: "fno_temporal_split"  # Train on first n snapshots, predict rest
 
 paths:
-  output_base: "./output/"
+  output_base: "/work/10407/anthony50102/vista/"
   
-  data_dir: "/work/10407/anthony50102/frontera/data/hw2d_sim/t600_d256x256_raw/"
+  data_dir: "/work/10407/anthony50102/vista/"
   
   # Single trajectory for temporal split mode
   training_files: 
-    - "hw2d_sim_step0.025_end1_pts512_c11_k015_N3_nu5e-8_20250315142044_11702_0.h5"
+    - "test_nu5e-9.h5"
 
   # test_files not used in temporal_split mode (we use later part of training file)
   test_files: []
@@ -20,10 +20,14 @@ physics:
 
 # Training mode configuration
 training_mode: "temporal_split"
-train_start: 8000      # Train from snapshot 8000
-train_end: 16000       # Train to snapshot 16000  
-test_start: 16000      # Test from snapshot 16000
-test_end: 20000  
+  #train_start: 8000      # Train from snapshot 8000
+  #train_end: 16000       # Train to snapshot 16000  
+  #test_start: 16000      # Test from snapshot 16000
+  #test_end: 20000  
+  train_start: 8100      # Train from snapshot 8000
+  train_end: 8200       # Train to snapshot 16000  
+  test_start: 8300      # Test from snapshot 16000
+  test_end: 8400
 
 # FNO model configuration
 model:
