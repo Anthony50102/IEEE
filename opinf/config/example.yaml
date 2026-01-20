@@ -34,6 +34,8 @@ physics:
   n_fields: 2            # Number of fields (e.g., density, phi)
   n_x: 256               # Grid points in x
   n_y: 256               # Grid points in y
+  k0: 0.15               # Wavenumber for grid spacing (dx = 2*pi/k0)
+  c1: 1.0                # Adiabaticity parameter for Gamma_c
 
 # =============================================================================
 # TRAINING MODE
@@ -80,6 +82,30 @@ truncation:
   method: "time"         # "time" (seconds) or "snapshots" (count)
   time: 200.0            # Truncate to this simulation time
   snapshots: null        # Or truncate to this many snapshots
+
+# =============================================================================
+# OUTPUT MODEL
+# =============================================================================
+# Controls whether the ROM learns output operators (C, G, c) for Gamma prediction.
+# If disabled, Gamma must be computed from physics during evaluation (requires
+# reconstructing full state from POD basis).
+# =============================================================================
+output_model:
+  enabled: true          # Learn quadratic output operators (C, G, c)
+  
+  # Selection metric for hyperparameter sweep model selection:
+  #   "gamma_learned" - Use learned output operators to compute Gamma errors (default)
+  #                     Requires enabled=true, sweeps all 4 hyperparameters
+  #   "gamma_physics" - Reconstruct full state and compute Gamma from physics
+  #                     Slower but more accurate, only sweeps state hyperparameters
+  #   "state_error"   - Use state reconstruction error (fastest, no Gamma computation)
+  #                     Only sweeps state hyperparameters
+  selection_metric: "gamma_learned"
+  
+  # When using gamma_physics or state_error:
+  #   - Only state operators (A, F) are learned
+  #   - Hyperparameter sweep is much faster (fewer parameters)
+  #   - Gamma must be computed from physics during evaluation
 
 # =============================================================================
 # PREPROCESSING

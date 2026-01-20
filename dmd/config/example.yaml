@@ -74,6 +74,17 @@ truncation:
   snapshots: null        # Or truncate to this many snapshots
 
 # =============================================================================
+# OUTPUT MODEL
+# =============================================================================
+# Controls whether the ROM learns output operators (C, G, c) for Gamma prediction.
+# If disabled, Gamma is computed from physics (reconstructing full state from POD).
+# =============================================================================
+output_model:
+  enabled: false         # Learn quadratic output operators for Gamma
+  alpha_lin: 1.0e-4      # Regularization for linear output terms
+  alpha_quad: 1.0e-4     # Regularization for quadratic output terms
+
+# =============================================================================
 # PREPROCESSING
 # =============================================================================
 preprocessing:

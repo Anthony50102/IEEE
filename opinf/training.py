@@ -12,8 +12,12 @@ Author: Anthony Poole
 
 import gc
 import os
+import sys
 import numpy as np
 from itertools import product
+
+# Add parent directory to path for importing shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 # Lazy MPI import - only import when actually needed for parallel functions
 MPI = None
@@ -93,7 +97,211 @@ def _prepare_learning_matrices_impl(Xhat_train, train_boundaries, r, logger) -> 
 
 
 # =============================================================================
-# HYPERPARAMETER EVALUATION
+# HYPERPARAMETER EVALUATION (STATE ONLY - NO OUTPUT OPERATORS)
+# =============================================================================
+
+def evaluate_hyperparameters_state_only(
+    alpha_state_lin: float, alpha_state_quad: float,
+    data: dict, r: int, n_steps: int, training_end: int,
+) -> dict:
+    """
+    Evaluate a single hyperparameter combination (state operators only).
+    
+    Uses state reconstruction error instead of Gamma error for model selection.
+    This is useful when:
+    - You don't want to learn output operators (Gamma will be computed from physics)
+    - You want faster training (fewer hyperparameters to sweep)
+    
+    Error metric: relative Frobenius norm of state prediction error over training region.
+    """
+    s = r * (r + 1) // 2
+    d_state = r + s
+    
+    # Solve state operator learning
+    reg_state = np.zeros(d_state)
+    reg_state[:r] = alpha_state_lin
+    reg_state[r:] = alpha_state_quad
+    
+    DtD_state = data['D_state_2'] + np.diag(reg_state)
+    O = np.linalg.solve(DtD_state, data['D_state'].T @ data['Y_state']).T
+    A, F = O[:, :r], O[:, r:]
+    del DtD_state
+    
+    # Integrate model
+    f = lambda x: A @ x + F @ get_quadratic_terms(x)
+    u0 = data['X_state'][0, :]
+    is_nan, Xhat_pred = solve_difference_model(u0, n_steps, f)
+    
+    if is_nan:
+        return {'is_nan': True, 'alpha_state_lin': alpha_state_lin,
+                'alpha_state_quad': alpha_state_quad, 'alpha_out_lin': 0.0,
+                'alpha_out_quad': 0.0}
+    
+    X_pred = Xhat_pred.T  # (n_steps, r)
+    
+    # Compute state prediction error on training portion
+    # Compare against the reference reduced states
+    # Note: X_state may be smaller than n_steps due to trajectory pair formation
+    n_ref = min(training_end, data['X_state'].shape[0])
+    X_ref = data['X_state'][:n_ref, :]  # (n_ref, r)
+    X_pred_train = X_pred[:n_ref, :]
+    
+    # Relative Frobenius norm error
+    state_error = np.linalg.norm(X_pred_train - X_ref, 'fro') / np.linalg.norm(X_ref, 'fro')
+    
+    # Also check for stability (is the solution bounded?)
+    max_norm = np.max(np.linalg.norm(X_pred, axis=1))
+    ref_max_norm = np.max(np.linalg.norm(X_ref, axis=1))
+    stability_ratio = max_norm / ref_max_norm if ref_max_norm > 0 else np.inf
+    
+    # Penalize unstable solutions heavily
+    if stability_ratio > 10.0:
+        state_error = state_error * stability_ratio
+    
+    del X_pred, Xhat_pred
+    
+    return {
+        'is_nan': False,
+        'total_error': state_error,
+        'state_error': state_error,
+        'stability_ratio': stability_ratio,
+        # Dummy Gamma errors for compatibility with model selection
+        'mean_err_Gamma_n': 0.0, 'std_err_Gamma_n': 0.0,
+        'mean_err_Gamma_c': 0.0, 'std_err_Gamma_c': 0.0,
+        'alpha_state_lin': alpha_state_lin, 'alpha_state_quad': alpha_state_quad,
+        'alpha_out_lin': 0.0, 'alpha_out_quad': 0.0,
+    }
+
+
+# =============================================================================
+# HYPERPARAMETER EVALUATION (PHYSICS-BASED GAMMA - NO OUTPUT OPERATORS)
+# =============================================================================
+
+def evaluate_hyperparameters_physics_gamma(
+    alpha_state_lin: float, alpha_state_quad: float,
+    data: dict, physics_data: dict, r: int, n_steps: int, training_end: int,
+) -> dict:
+    """
+    Evaluate hyperparameters using physics-based Gamma computation.
+    
+    This evaluates state operators only, but computes Gamma from physics
+    for model selection (using the same mean/std error metrics as learned output).
+    
+    This is slower than state-only evaluation because it requires:
+    1. Reconstructing full state from reduced coordinates
+    2. Computing Gamma from the physics (gradients, fluxes)
+    
+    Parameters
+    ----------
+    alpha_state_lin, alpha_state_quad : float
+        State operator regularization.
+    data : dict
+        Training data (D_state, D_state_2, Y_state, X_state, etc.).
+    physics_data : dict
+        Physics reconstruction data:
+        - 'pod_basis': (n_spatial, r) POD basis matrix
+        - 'temporal_mean': (n_spatial,) temporal mean (or None if not centered)
+        - 'n_y', 'n_x': grid dimensions
+        - 'k0', 'c1': physics parameters
+        - 'ref_Gamma_n', 'ref_Gamma_c': reference Gamma time series
+        - 'mean_Gamma_n', 'std_Gamma_n', 'mean_Gamma_c', 'std_Gamma_c': reference statistics
+    r : int
+        Number of modes.
+    n_steps : int
+        Number of integration steps.
+    training_end : int
+        End of training period for metrics.
+    
+    Returns
+    -------
+    dict
+        Evaluation results with Gamma errors computed from physics.
+    """
+    from shared.physics import compute_gamma_from_state_vector
+    
+    s = r * (r + 1) // 2
+    d_state = r + s
+    
+    # Solve state operator learning
+    reg_state = np.zeros(d_state)
+    reg_state[:r] = alpha_state_lin
+    reg_state[r:] = alpha_state_quad
+    
+    DtD_state = data['D_state_2'] + np.diag(reg_state)
+    O = np.linalg.solve(DtD_state, data['D_state'].T @ data['Y_state']).T
+    A, F = O[:, :r], O[:, r:]
+    del DtD_state
+    
+    # Integrate model
+    f = lambda x: A @ x + F @ get_quadratic_terms(x)
+    u0 = data['X_state'][0, :]
+    is_nan, Xhat_pred = solve_difference_model(u0, n_steps, f)
+    
+    if is_nan:
+        return {'is_nan': True, 'alpha_state_lin': alpha_state_lin,
+                'alpha_state_quad': alpha_state_quad, 'alpha_out_lin': 0.0,
+                'alpha_out_quad': 0.0}
+    
+    X_pred = Xhat_pred.T  # (n_steps, r)
+    
+    # Extract physics data
+    pod_basis = physics_data['pod_basis']  # (n_spatial, r)
+    temporal_mean = physics_data.get('temporal_mean')  # (n_spatial,) or None
+    n_y, n_x = physics_data['n_y'], physics_data['n_x']
+    k0, c1 = physics_data['k0'], physics_data['c1']
+    dx = 2 * np.pi / k0
+    
+    # Reconstruct full state and compute Gamma for training region
+    # Process one timestep at a time to minimize memory footprint
+    # (full-space arrays are large: 512×512×2 = 524,288 elements = 4 MB float64)
+    Gamma_n_list = []
+    Gamma_c_list = []
+    
+    # Precompute the reconstruction matrix slice (small: r columns)
+    V_r = pod_basis[:, :r]  # (n_spatial, r)
+    
+    # Clamp training_end to available predictions
+    n_eval = min(training_end, X_pred.shape[0])
+    
+    for t in range(n_eval):
+        z_t = X_pred[t, :]  # (r,)
+        
+        # Reconstruct full state: x = V @ z + mean (creates single 524k vector)
+        x_full = V_r @ z_t  # (n_spatial,)
+        if temporal_mean is not None:
+            x_full += temporal_mean
+        
+        g_n, g_c = compute_gamma_from_state_vector(x_full, n_y, n_x, dx, c1)
+        Gamma_n_list.append(g_n)
+        Gamma_c_list.append(g_c)
+        
+        # x_full is freed automatically each loop iteration
+    
+    del X_pred, Xhat_pred
+    
+    Gamma_n_pred = np.array(Gamma_n_list)
+    Gamma_c_pred = np.array(Gamma_c_list)
+    
+    # Compute error metrics (relative errors in statistics)
+    mean_err_n = abs(physics_data['mean_Gamma_n'] - np.mean(Gamma_n_pred)) / abs(physics_data['mean_Gamma_n'])
+    std_err_n = abs(physics_data['std_Gamma_n'] - np.std(Gamma_n_pred, ddof=1)) / physics_data['std_Gamma_n']
+    mean_err_c = abs(physics_data['mean_Gamma_c'] - np.mean(Gamma_c_pred)) / abs(physics_data['mean_Gamma_c'])
+    std_err_c = abs(physics_data['std_Gamma_c'] - np.std(Gamma_c_pred, ddof=1)) / physics_data['std_Gamma_c']
+    
+    total_error = mean_err_n + std_err_n + mean_err_c + std_err_c
+    
+    return {
+        'is_nan': False,
+        'total_error': total_error,
+        'mean_err_Gamma_n': mean_err_n, 'std_err_Gamma_n': std_err_n,
+        'mean_err_Gamma_c': mean_err_c, 'std_err_Gamma_c': std_err_c,
+        'alpha_state_lin': alpha_state_lin, 'alpha_state_quad': alpha_state_quad,
+        'alpha_out_lin': 0.0, 'alpha_out_quad': 0.0,
+    }
+
+
+# =============================================================================
+# HYPERPARAMETER EVALUATION (WITH OUTPUT OPERATORS)
 # =============================================================================
 
 def evaluate_hyperparameters(
@@ -230,6 +438,88 @@ def _manifold_decode(z: np.ndarray, V: np.ndarray, W: np.ndarray, shift: np.ndar
         return V @ z + W @ h_z + shift[:, None]
 
 
+def _manifold_encode_decode_chunked(
+    z: np.ndarray, V: np.ndarray, W: np.ndarray, shift: np.ndarray,
+    chunk_size: int = 100
+) -> np.ndarray:
+    """
+    Encode-then-decode reduced coordinates using chunked processing.
+    
+    This function decodes z to full space and re-encodes to get z_corrected,
+    but processes in chunks to avoid memory issues with large spatial dimensions.
+    
+    z_corrected = V.T @ (V @ z + W @ h(z))  (shift cancels out)
+    
+    Parameters
+    ----------
+    z : np.ndarray, shape (r, n_time)
+        Reduced coordinates.
+    V : np.ndarray, shape (n_spatial, r)
+        Linear basis.
+    W : np.ndarray, shape (n_spatial, s)
+        Quadratic coefficient matrix.
+    shift : np.ndarray, shape (n_spatial,)
+        Mean shift (unused, kept for API consistency).
+    chunk_size : int
+        Number of time steps to process at once.
+    
+    Returns
+    -------
+    np.ndarray, shape (r, n_time)
+        Re-encoded coordinates.
+    """
+    r, n_time = z.shape
+    z_reencoded = np.zeros_like(z)
+    
+    # Precompute V.T @ V (r x r, small) and V.T @ W (r x s, small)
+    VtV = V.T @ V  # (r, r)
+    VtW = V.T @ W  # (r, s)
+    
+    for start in range(0, n_time, chunk_size):
+        end = min(start + chunk_size, n_time)
+        z_chunk = z[:, start:end]
+        
+        # Compute h(z) for this chunk
+        h_z_chunk = _quadratic_features_batch(z_chunk)  # (s, chunk)
+        
+        # z_reencoded = V.T @ (V @ z + W @ h(z)) = VtV @ z + VtW @ h(z)
+        # This avoids materializing the full (n_spatial, chunk) array
+        z_reencoded[:, start:end] = VtV @ z_chunk + VtW @ h_z_chunk
+    
+    return z_reencoded
+
+
+def _manifold_consistency_error_chunked(
+    z: np.ndarray, V: np.ndarray, W: np.ndarray, shift: np.ndarray,
+    chunk_size: int = 100
+) -> float:
+    """
+    Compute manifold consistency error using chunked processing.
+    
+    Measures ||z - encode(decode(z))|| / ||z|| without materializing full-space arrays.
+    
+    Parameters
+    ----------
+    z : np.ndarray, shape (r, n_time)
+        Reduced coordinates to check.
+    V : np.ndarray, shape (n_spatial, r)
+        Linear basis.
+    W : np.ndarray, shape (n_spatial, s)
+        Quadratic coefficient matrix.
+    shift : np.ndarray, shape (n_spatial,)
+        Mean shift.
+    chunk_size : int
+        Number of time steps to process at once.
+    
+    Returns
+    -------
+    float
+        Relative consistency error.
+    """
+    z_reencoded = _manifold_encode_decode_chunked(z, V, W, shift, chunk_size)
+    return np.linalg.norm(z_reencoded - z, 'fro') / np.linalg.norm(z, 'fro')
+
+
 def _manifold_encode(x: np.ndarray, V: np.ndarray, shift: np.ndarray) -> np.ndarray:
     """
     Encode full state to reduced coordinates (linear projection only).
@@ -338,22 +628,15 @@ def evaluate_hyperparameters_manifold(
     # =========================================================================
     # Decode to full space, then re-encode
     # This measures how well predictions stay on the learned manifold
+    # Use chunked processing to avoid memory issues with large spatial dimensions
     
     # Sample subset for efficiency (full consistency check is expensive)
     n_check = min(500, n_steps)
     check_indices = np.linspace(0, n_steps - 1, n_check, dtype=int)
     z_subset = Xhat_pred[:, check_indices]
     
-    # Decode and re-encode
-    x_decoded = _manifold_decode(z_subset, V, W, shift)  # (n_spatial, n_check)
-    z_reencoded = _manifold_encode(x_decoded, V, shift)   # (r, n_check)
-    
-    # Consistency error: how much does decode→encode change z?
-    # Note: for linear POD, z_reencoded == z_subset exactly
-    # For manifold, difference comes from V.T @ W @ h(z) term
-    consistency_err = np.linalg.norm(z_reencoded - z_subset, 'fro') / np.linalg.norm(z_subset, 'fro')
-    
-    del x_decoded
+    # Compute consistency error using chunked processing (avoids full-space allocation)
+    consistency_err = _manifold_consistency_error_chunked(z_subset, V, W, shift, chunk_size=50)
     
     # =========================================================================
     # OUTPUT PREDICTION (with optional re-encoding)
@@ -363,10 +646,9 @@ def evaluate_hyperparameters_manifold(
     if reencode_output:
         # Use re-encoded coordinates for output prediction
         # This makes the quadratic manifold structure influence the output
-        x_full = _manifold_decode(Xhat_pred, V, W, shift)  # (n_spatial, n_steps)
-        z_corrected = _manifold_encode(x_full, V, shift)    # (r, n_steps)
+        # Use chunked processing to avoid memory issues with large spatial dimensions
+        z_corrected = _manifold_encode_decode_chunked(Xhat_pred, V, W, shift, chunk_size=100)
         X_for_output = z_corrected.T  # (n_steps, r)
-        del x_full
     else:
         X_for_output = X_OpInf
     
@@ -416,7 +698,9 @@ def evaluate_hyperparameters_manifold(
     }
 
 
-def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm, manifold_data: dict = None) -> list:
+def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm, 
+                                   manifold_data: dict = None,
+                                   physics_data: dict = None) -> list:
     """
     Run hyperparameter sweep in parallel using MPI.
     
@@ -424,28 +708,78 @@ def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm, manifold_data: 
     uses manifold-aware evaluation that includes:
     - Consistency loss for staying on manifold
     - Optional decode→re-encode for output prediction
+    
+    Selection metric (cfg.selection_metric):
+    - "gamma_learned": Use learned output operators (default, requires sweeping output params)
+    - "gamma_physics": Compute Gamma from physics (requires physics_data, no output params)
+    - "state_error": Use state reconstruction error (fast, no output params)
+    
+    Parameters
+    ----------
+    cfg : OpInfConfig
+        Configuration object.
+    data : dict
+        Training data matrices.
+    logger : Logger
+        Logger instance.
+    comm : MPI.Comm
+        MPI communicator.
+    manifold_data : dict, optional
+        Manifold basis for manifold-aware training.
+    physics_data : dict, optional
+        Physics reconstruction data for gamma_physics mode:
+        - 'pod_basis': (n_spatial, r) POD basis
+        - 'temporal_mean': (n_spatial,) or None
+        - 'n_y', 'n_x', 'k0', 'c1': grid and physics params
+        - 'mean_Gamma_n', 'std_Gamma_n', 'mean_Gamma_c', 'std_Gamma_c': reference stats
     """
     rank = comm.Get_rank()
     size = comm.Get_size()
+    
+    # Determine evaluation mode from selection_metric
+    selection_metric = getattr(cfg, 'selection_metric', 'gamma_learned')
+    use_learned_output = getattr(cfg, 'use_learned_output', True)
     
     # Determine if we should use manifold-aware training
     use_manifold = (
         manifold_data is not None 
         and cfg.reduction_method == "manifold"
         and getattr(cfg, 'manifold_aware_training', True)
+        and selection_metric == "gamma_learned"  # Only with learned output
     )
     
-    # Build parameter grid
-    param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
+    # Determine evaluation function to use
+    if selection_metric == "state_error":
+        eval_mode = "state_only"
+    elif selection_metric == "gamma_physics":
+        if physics_data is None:
+            raise ValueError("selection_metric='gamma_physics' requires physics_data")
+        eval_mode = "physics_gamma"
+    elif selection_metric == "gamma_learned":
+        eval_mode = "manifold" if use_manifold else "learned_output"
+    else:
+        raise ValueError(f"Unknown selection_metric: {selection_metric}")
+    
+    # Build parameter grid - only need output params for learned_output mode
+    if eval_mode in ("state_only", "physics_gamma"):
+        # Only sweep over state hyperparameters (much smaller grid)
+        param_grid = [(asl, asq, 0.0, 0.0) for asl, asq in product(cfg.state_lin, cfg.state_quad)]
+    else:
+        param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
     n_total = len(param_grid)
     
     if rank == 0:
-        if use_manifold:
+        if eval_mode == "state_only":
+            logger.info(f"Parallel sweep (STATE ERROR selection): {n_total:,} combinations across {size} ranks")
+        elif eval_mode == "physics_gamma":
+            logger.info(f"Parallel sweep (PHYSICS GAMMA selection): {n_total:,} combinations across {size} ranks")
+            logger.info(f"  Note: Gamma computed from physics (slower, but no output operators)")
+        elif eval_mode == "manifold":
             logger.info(f"Parallel sweep (MANIFOLD-AWARE): {n_total:,} combinations across {size} ranks")
             logger.info(f"  Consistency weight: {cfg.manifold_consistency_weight}")
             logger.info(f"  Re-encode for output: {cfg.manifold_reencode_output}")
         else:
-            logger.info(f"Parallel sweep: {n_total:,} combinations across {size} ranks")
+            logger.info(f"Parallel sweep (LEARNED OUTPUT): {n_total:,} combinations across {size} ranks")
     
     # Distribute work
     per_rank = n_total // size
@@ -465,7 +799,15 @@ def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm, manifold_data: 
     n_nan = 0
     
     for i, (asl, asq, aol, aoq) in enumerate(my_params):
-        if use_manifold:
+        if eval_mode == "state_only":
+            result = evaluate_hyperparameters_state_only(
+                asl, asq, data, cfg.r, cfg.n_steps, cfg.training_end
+            )
+        elif eval_mode == "physics_gamma":
+            result = evaluate_hyperparameters_physics_gamma(
+                asl, asq, data, physics_data, cfg.r, cfg.n_steps, cfg.training_end
+            )
+        elif eval_mode == "manifold":
             result = evaluate_hyperparameters_manifold(
                 asl, asq, aol, aoq, data, manifold_data, cfg.r, cfg.n_steps, cfg.training_end,
                 consistency_weight=cfg.manifold_consistency_weight,
@@ -541,19 +883,43 @@ def log_error_statistics(results: list, logger) -> dict:
     return errors
 
 
-def select_models(results: list, thresh_mean: float, thresh_std: float, logger) -> list:
+def select_models(results: list, thresh_mean: float, thresh_std: float, logger, 
+                  selection_metric: str = "gamma_learned") -> list:
     """
     Select models meeting threshold criteria.
     
-    Models must have all four error metrics below their respective thresholds.
+    Parameters
+    ----------
+    results : list
+        List of evaluation results from hyperparameter sweep.
+    thresh_mean : float
+        Threshold for mean Gamma errors.
+    thresh_std : float
+        Threshold for std Gamma errors.
+    logger : Logger
+        Logger instance.
+    selection_metric : str
+        One of "gamma_learned", "gamma_physics", "state_error".
+        - gamma_learned/gamma_physics: Use Gamma thresholds
+        - state_error: Sort by state error (no thresholds)
+    
+    Returns
+    -------
+    list
+        Selected models sorted by total error.
     """
-    selected = [
-        r for r in results
-        if (r['mean_err_Gamma_n'] < thresh_mean and r['std_err_Gamma_n'] < thresh_std
-            and r['mean_err_Gamma_c'] < thresh_mean and r['std_err_Gamma_c'] < thresh_std)
-    ]
-    selected = sorted(selected, key=lambda x: x['total_error'])
-    logger.info(f"Selected {len(selected)} models meeting threshold criteria")
+    if selection_metric == "state_error":
+        # For state-only mode, just select top models by total_error (which is state_error)
+        selected = sorted(results, key=lambda x: x['total_error'])
+        logger.info(f"State-only mode: selected top {len(selected)} models by state error")
+    else:
+        selected = [
+            r for r in results
+            if (r['mean_err_Gamma_n'] < thresh_mean and r['std_err_Gamma_n'] < thresh_std
+                and r['mean_err_Gamma_c'] < thresh_mean and r['std_err_Gamma_c'] < thresh_std)
+        ]
+        selected = sorted(selected, key=lambda x: x['total_error'])
+        logger.info(f"Selected {len(selected)} models meeting threshold criteria")
     
     return selected
 
@@ -562,11 +928,10 @@ def select_models(results: list, thresh_mean: float, thresh_std: float, logger) 
 # OPERATOR COMPUTATION
 # =============================================================================
 
-def compute_operators(params: dict, data: dict, r: int) -> dict:
+def compute_operators(params: dict, data: dict, r: int, state_only: bool = False) -> dict:
     """Compute operator matrices for a single hyperparameter set."""
     s = r * (r + 1) // 2
     d_state = r + s
-    d_out = r + s + 1
     
     # State operators
     reg_state = np.zeros(d_state)
@@ -579,34 +944,54 @@ def compute_operators(params: dict, data: dict, r: int) -> dict:
     ).T
     A, F = O[:, :r].copy(), O[:, r:].copy()
     
-    # Output operators
-    reg_out = np.zeros(d_out)
-    reg_out[:r] = params['alpha_out_lin']
-    reg_out[r:r+s] = params['alpha_out_quad']
-    reg_out[r+s:] = params['alpha_out_lin']
-    
-    O_out = np.linalg.solve(
-        data['D_out_2'] + np.diag(reg_out),
-        data['D_out'].T @ data['Y_Gamma'].T
-    ).T
-    C, G, c = O_out[:, :r].copy(), O_out[:, r:r+s].copy(), O_out[:, r+s].copy()
-    
-    return {
-        'A': A, 'F': F, 'C': C, 'G': G, 'c': c,
+    result = {
+        'A': A, 'F': F,
         'alpha_state_lin': params['alpha_state_lin'],
         'alpha_state_quad': params['alpha_state_quad'],
-        'alpha_out_lin': params['alpha_out_lin'],
-        'alpha_out_quad': params['alpha_out_quad'],
         'total_error': params['total_error'],
-        'mean_err_Gamma_n': params['mean_err_Gamma_n'],
-        'std_err_Gamma_n': params['std_err_Gamma_n'],
-        'mean_err_Gamma_c': params['mean_err_Gamma_c'],
-        'std_err_Gamma_c': params['std_err_Gamma_c'],
+        'use_learned_output': not state_only,
     }
+    
+    if state_only:
+        # No output operators
+        result['alpha_out_lin'] = 0.0
+        result['alpha_out_quad'] = 0.0
+        result['mean_err_Gamma_n'] = 0.0
+        result['std_err_Gamma_n'] = 0.0
+        result['mean_err_Gamma_c'] = 0.0
+        result['std_err_Gamma_c'] = 0.0
+        if 'state_error' in params:
+            result['state_error'] = params['state_error']
+    else:
+        # Output operators
+        d_out = r + s + 1
+        reg_out = np.zeros(d_out)
+        reg_out[:r] = params['alpha_out_lin']
+        reg_out[r:r+s] = params['alpha_out_quad']
+        reg_out[r+s:] = params['alpha_out_lin']
+        
+        O_out = np.linalg.solve(
+            data['D_out_2'] + np.diag(reg_out),
+            data['D_out'].T @ data['Y_Gamma'].T
+        ).T
+        C, G, c = O_out[:, :r].copy(), O_out[:, r:r+s].copy(), O_out[:, r+s].copy()
+        
+        result['C'] = C
+        result['G'] = G
+        result['c'] = c
+        result['alpha_out_lin'] = params['alpha_out_lin']
+        result['alpha_out_quad'] = params['alpha_out_quad']
+        result['mean_err_Gamma_n'] = params['mean_err_Gamma_n']
+        result['std_err_Gamma_n'] = params['std_err_Gamma_n']
+        result['mean_err_Gamma_c'] = params['mean_err_Gamma_c']
+        result['std_err_Gamma_c'] = params['std_err_Gamma_c']
+    
+    return result
 
 
 def recompute_operators_parallel(selected: list, data: dict, r: int, 
-                                  operators_dir: str, comm, logger) -> list:
+                                  operators_dir: str, comm, logger,
+                                  state_only: bool = False) -> list:
     """Recompute operator matrices for selected models in parallel."""
     rank = comm.Get_rank()
     size = comm.Get_size()
@@ -632,7 +1017,7 @@ def recompute_operators_parallel(selected: list, data: dict, r: int,
     # Compute and save models
     local_results = []
     for idx in range(start, end):
-        model = compute_operators(selected[idx], data, r)
+        model = compute_operators(selected[idx], data, r, state_only=state_only)
         filepath = os.path.join(operators_dir, f"model_{idx:04d}.npz")
         np.savez(filepath, **model)
         # Only store metadata (error and index) to avoid MPI size overflow

@@ -42,6 +42,11 @@ def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndar
     
     Loads reference data and calls the shared plotting function.
     """
+    # Check if we have any Gamma predictions to plot
+    if not predictions['Gamma_n'] or len(predictions['Gamma_n'][0]) == 0:
+        logger.warning("No Gamma predictions available - skipping Gamma plots")
+        return
+    
     os.makedirs(output_dir, exist_ok=True)
     n_traj = len(predictions['Gamma_n'])
     
@@ -103,6 +108,9 @@ def main():
             save_step_status(args.run_dir, "step_3", "failed", {"error": "No models"})
             return
         
+        # Check if models have output operators
+        has_output = any(m[1].get('has_output_operators', 'C' in m[1]) for m in models)
+        
         # Load supporting data
         logger.info("Loading supporting data...")
         learning = np.load(paths["learning_matrices"])
@@ -117,14 +125,64 @@ def main():
         train_bounds = bounds['train_boundaries']
         test_bounds = bounds['test_boundaries']
         
+        # Prepare physics_reconstruction if models don't have output operators
+        physics_reconstruction = None
+        if not has_output:
+            logger.info("Models have no output operators - loading physics data for Gamma computation")
+            
+            # Get reduction method and spatial dimensions
+            preproc = np.load(paths["preprocessing_info"])
+            reduction_method = str(preproc.get('reduction_method', cfg.reduction_method))
+            n_y = int(preproc.get('n_y', cfg.n_y))
+            n_x = int(preproc.get('n_x', cfg.n_x))
+            
+            # Load basis for full-state reconstruction
+            pod_basis = None
+            temporal_mean = None
+            manifold_W = None
+            manifold_shift = None
+            
+            if reduction_method == "manifold":
+                if os.path.exists(paths["manifold_basis"]):
+                    from pod import load_basis
+                    basis = load_basis(paths["manifold_basis"])
+                    pod_basis = basis.V
+                    manifold_W = basis.W
+                    manifold_shift = basis.shift
+                    logger.info(f"Loaded manifold basis: V={basis.V.shape}, W={basis.W.shape}")
+            else:
+                if os.path.exists(paths["pod_basis"]):
+                    pod_basis = np.load(paths["pod_basis"])
+                    logger.info(f"Loaded POD basis: {pod_basis.shape}")
+                if 'train_temporal_mean' in ICs:
+                    temporal_mean = ICs['train_temporal_mean']
+            
+            if pod_basis is not None:
+                physics_reconstruction = {
+                    'pod_basis': pod_basis,
+                    'temporal_mean': temporal_mean if temporal_mean is not None else np.zeros(pod_basis.shape[0]),
+                    'manifold_W': manifold_W,
+                    'manifold_shift': manifold_shift,
+                    'reduction_method': reduction_method,
+                    'n_y': n_y,
+                    'n_x': n_x,
+                    'k0': getattr(cfg, 'k0', 0.15),
+                    'c1': getattr(cfg, 'c1', 1.0),
+                }
+                logger.info(f"Physics reconstruction enabled with k0={physics_reconstruction['k0']}, c1={physics_reconstruction['c1']}")
+            else:
+                logger.warning("Could not load basis - Gamma predictions will not be computed")
+        
         # Compute predictions
         t_start = time.time()
         
         train_pred = compute_ensemble_predictions(
-            models, train_ICs, train_bounds, mean_Xhat, scaling_Xhat, logger, "training"
+            models, train_ICs, train_bounds, mean_Xhat, scaling_Xhat, logger, "training",
+            physics_reconstruction=physics_reconstruction
         )
         test_pred = compute_ensemble_predictions(
-            models, test_ICs, test_bounds, mean_Xhat, scaling_Xhat, logger, "test"
+            models, test_ICs, test_bounds, mean_Xhat, scaling_Xhat, logger, "test",
+            physics_reconstruction=physics_reconstruction
         )
         
         logger.info(f"Predictions completed in {time.time() - t_start:.1f}s")
@@ -264,21 +322,29 @@ def main():
         
         # Print summary
         print_header("EVALUATION SUMMARY")
-        print("\n  Training Data:")
-        for traj in train_metrics['trajectories']:
-            print(f"    Traj {traj['trajectory'] + 1}: "
-                  f"Γn err=[{traj['err_mean_Gamma_n']:.4f}, {traj['err_std_Gamma_n']:.4f}], "
-                  f"Γc err=[{traj['err_mean_Gamma_c']:.4f}, {traj['err_std_Gamma_c']:.4f}]")
         
-        print("\n  Test Data:")
-        for traj in test_metrics['trajectories']:
-            print(f"    Traj {traj['trajectory'] + 1}: "
-                  f"Γn err=[{traj['err_mean_Gamma_n']:.4f}, {traj['err_std_Gamma_n']:.4f}], "
-                  f"Γc err=[{traj['err_mean_Gamma_c']:.4f}, {traj['err_std_Gamma_c']:.4f}]")
+        if train_metrics['trajectories']:
+            print("\n  Training Data:")
+            for traj in train_metrics['trajectories']:
+                print(f"    Traj {traj['trajectory'] + 1}: "
+                      f"Γn err=[{traj['err_mean_Gamma_n']:.4f}, {traj['err_std_Gamma_n']:.4f}], "
+                      f"Γc err=[{traj['err_mean_Gamma_c']:.4f}, {traj['err_std_Gamma_c']:.4f}]")
+            
+            print("\n  Test Data:")
+            for traj in test_metrics['trajectories']:
+                print(f"    Traj {traj['trajectory'] + 1}: "
+                      f"Γn err=[{traj['err_mean_Gamma_n']:.4f}, {traj['err_std_Gamma_n']:.4f}], "
+                      f"Γc err=[{traj['err_mean_Gamma_c']:.4f}, {traj['err_std_Gamma_c']:.4f}]")
+        else:
+            print("\n  Gamma metrics not computed (no output operators or physics data)")
+        
+        # Get metrics for status (may be nan if Gamma not computed)
+        train_mean_err = train_metrics['ensemble'].get('mean_err_Gamma_n', float('nan'))
+        test_mean_err = test_metrics['ensemble'].get('mean_err_Gamma_n', float('nan'))
         
         save_step_status(args.run_dir, "step_3", "completed", {
-            "train_mean_err_Gamma_n": train_metrics['ensemble']['mean_err_Gamma_n'],
-            "test_mean_err_Gamma_n": test_metrics['ensemble']['mean_err_Gamma_n'],
+            "train_mean_err_Gamma_n": train_mean_err,
+            "test_mean_err_Gamma_n": test_mean_err,
         })
         
         print_header("STEP 3 COMPLETE")

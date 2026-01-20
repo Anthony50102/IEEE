@@ -62,6 +62,8 @@ class OpInfConfig:
     n_fields: int = 2
     n_x: int = 512
     n_y: int = 512
+    k0: float = 0.15  # Wavenumber for grid spacing (dx = 2*pi/k0)
+    c1: float = 1.0   # Adiabaticity parameter for Gamma_c
     
     # Dimensionality reduction
     reduction_method: str = "linear"  # "linear" (POD) or "manifold" (quadratic)
@@ -76,6 +78,13 @@ class OpInfConfig:
     manifold_aware_training: bool = True  # Use manifold consistency loss in training
     manifold_consistency_weight: float = 1.0  # Weight for full-space consistency loss
     manifold_reencode_output: bool = True  # Decode→re-encode before computing output
+    
+    # Output operator settings
+    use_learned_output: bool = True  # Learn C, G, c for Gamma prediction (if False, use physics-based)
+    selection_metric: str = "gamma_learned"  # Model selection metric:
+    # - "gamma_learned": Use learned output operators to compute Gamma errors (requires use_learned_output=True)
+    # - "gamma_physics": Reconstruct full state and compute Gamma from physics (slow but accurate)
+    # - "state_error": Use state reconstruction error (fast, no Gamma computation)
     
     # Truncation
     truncation_enabled: bool = False
@@ -154,6 +163,8 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.n_fields = physics.get("n_fields", 2)
     cfg.n_x = physics.get("n_x", 512)
     cfg.n_y = physics.get("n_y", 512)
+    cfg.k0 = physics.get("k0", 0.15)
+    cfg.c1 = physics.get("c1", 1.0)
     
     # Dimensionality reduction
     reduction = raw.get("reduction", raw.get("pod", {}))  # fallback to 'pod' for compatibility
@@ -165,6 +176,11 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.manifold_aware_training = reduction.get("manifold_aware_training", True)
     cfg.manifold_consistency_weight = float(reduction.get("manifold_consistency_weight", 1.0))
     cfg.manifold_reencode_output = reduction.get("manifold_reencode_output", True)
+    
+    # Output model settings
+    output_model = raw.get("output_model", {})
+    cfg.use_learned_output = output_model.get("enabled", True)
+    cfg.selection_metric = output_model.get("selection_metric", "gamma_learned")
     
     # Training mode
     training_mode = raw.get("training_mode", {})
@@ -234,7 +250,7 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
             "training_files": cfg.training_files,
             "test_files": cfg.test_files,
         },
-        "physics": {"dt": cfg.dt, "n_fields": cfg.n_fields, "n_x": cfg.n_x, "n_y": cfg.n_y},
+        "physics": {"dt": cfg.dt, "n_fields": cfg.n_fields, "n_x": cfg.n_x, "n_y": cfg.n_y, "k0": cfg.k0, "c1": cfg.c1},
         "training_mode": {
             "mode": cfg.training_mode,
             "train_start": cfg.train_start,
@@ -257,6 +273,10 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
         },
         "preprocessing": {"centering": cfg.centering_enabled, "scaling": cfg.scaling_enabled},
         "training": {"training_end": cfg.training_end, "n_steps": cfg.n_steps},
+        "output_model": {
+            "enabled": cfg.use_learned_output,
+            "selection_metric": cfg.selection_metric,
+        },
         "regularization": {
             "state_lin": cfg.state_lin.tolist(),
             "state_quad": cfg.state_quad.tolist(),

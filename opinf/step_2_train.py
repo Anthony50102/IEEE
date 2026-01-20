@@ -25,7 +25,7 @@ from utils import (
     save_step_status, check_step_completed, get_output_paths,
     print_header, print_config_summary,
 )
-from data import load_data_shared_memory, load_manifold_basis, save_ensemble
+from data import load_data_shared_memory, load_manifold_basis, load_physics_data, save_ensemble
 from training import (
     parallel_hyperparameter_sweep, log_error_statistics, 
     select_models, recompute_operators_parallel,
@@ -85,9 +85,23 @@ def main():
                 logger.warning("Manifold-aware training requested but no manifold basis found. "
                              "Falling back to standard training.")
         
+        # Load physics data if needed for physics-based Gamma selection
+        physics_data = None
+        selection_metric = getattr(cfg, 'selection_metric', 'gamma_learned')
+        if selection_metric == "gamma_physics":
+            physics_data = load_physics_data(paths, cfg, comm, logger)
+            if physics_data is None and rank == 0:
+                logger.warning("Physics-based Gamma selection requested but could not load physics data. "
+                             "Falling back to state_error selection.")
+                selection_metric = "state_error"
+        
         # Run sweep
         t_start = MPI.Wtime()
-        results = parallel_hyperparameter_sweep(cfg, data, logger, comm, manifold_data=manifold_data)
+        results = parallel_hyperparameter_sweep(
+            cfg, data, logger, comm, 
+            manifold_data=manifold_data,
+            physics_data=physics_data
+        )
         t_elapsed = MPI.Wtime() - t_start
         
         if rank == 0:
@@ -106,9 +120,10 @@ def main():
                 print_header("STATS-ONLY COMPLETE")
                 return
             
-            # Select models
+            # Select models based on selection_metric
             selected = select_models(
-                results, cfg.threshold_mean, cfg.threshold_std, logger
+                results, cfg.threshold_mean, cfg.threshold_std, logger,
+                selection_metric=selection_metric
             )
             
             if not selected:
@@ -117,14 +132,22 @@ def main():
                 return
         else:
             selected = None
+            selection_metric = None
         
         selected = comm.bcast(selected, root=0)
+        selection_metric = comm.bcast(selection_metric if rank == 0 else None, root=0)
         
         if selected is None:
             return
         
+        # Determine if we're in state-only mode (no output operators)
+        state_only = selection_metric in ("state_error", "gamma_physics")
+        
         # Recompute operators in parallel
-        models = recompute_operators_parallel(selected, data, cfg.r, paths["operators_dir"], comm, logger)
+        models = recompute_operators_parallel(
+            selected, data, cfg.r, paths["operators_dir"], comm, logger,
+            state_only=state_only
+        )
         
         if rank == 0:
             save_ensemble(models, paths["ensemble_models"], cfg, logger)

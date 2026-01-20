@@ -526,6 +526,110 @@ def load_manifold_basis(paths: dict, comm, logger) -> dict:
     }
 
 
+def load_physics_data(paths: dict, cfg, comm, logger) -> dict:
+    """
+    Load physics data needed for physics-based Gamma computation during training.
+    
+    This includes:
+    - POD basis for reconstructing full state
+    - Temporal mean (if centering was applied)
+    - Reference Gamma statistics for computing errors
+    - Grid and physics parameters
+    
+    Parameters
+    ----------
+    paths : dict
+        Output paths from get_output_paths.
+    cfg : OpInfConfig
+        Configuration object.
+    comm : MPI.Comm
+        MPI communicator.
+    logger : Logger
+        Logger instance.
+    
+    Returns
+    -------
+    dict or None
+        Physics data dict, or None if loading failed.
+    """
+    rank = comm.Get_rank()
+    
+    # First, load scalar metadata on rank 0
+    metadata = None
+    if rank == 0:
+        try:
+            # Load POD basis
+            if not os.path.exists(paths["pod_basis"]):
+                logger.warning(f"POD basis not found at {paths['pod_basis']}")
+                metadata = {'error': 'pod_basis_not_found'}
+            elif not os.path.exists(paths["gamma_ref"]):
+                logger.warning(f"Gamma reference not found at {paths['gamma_ref']}")
+                metadata = {'error': 'gamma_ref_not_found'}
+            else:
+                pod_basis = np.load(paths["pod_basis"])
+                gamma_ref = np.load(paths["gamma_ref"])
+                
+                # Load temporal mean from initial conditions if centering was applied
+                temporal_mean = None
+                if os.path.exists(paths["initial_conditions"]):
+                    ics = np.load(paths["initial_conditions"])
+                    if 'train_temporal_mean' in ics:
+                        temporal_mean = ics['train_temporal_mean']
+                        logger.info(f"Loaded temporal mean: {temporal_mean.shape}")
+                
+                # Estimate memory usage for warning
+                mem_mb = pod_basis.nbytes / 1e6
+                logger.info(f"Physics data: POD basis {pod_basis.shape} ({mem_mb:.1f} MB)")
+                if mem_mb > 100:
+                    logger.warning(f"Large POD basis will be broadcast to all ranks "
+                                  f"(total ~{mem_mb * comm.Get_size() / 1e3:.1f} GB across cluster)")
+                
+                metadata = {
+                    'pod_basis_shape': pod_basis.shape,
+                    'temporal_mean_shape': temporal_mean.shape if temporal_mean is not None else None,
+                    'n_y': cfg.n_y,
+                    'n_x': cfg.n_x,
+                    'k0': cfg.k0,
+                    'c1': cfg.c1,
+                    'mean_Gamma_n': float(gamma_ref['mean_Gamma_n']),
+                    'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
+                    'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
+                    'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
+                }
+        except Exception as e:
+            logger.warning(f"Failed to load physics data: {e}")
+            metadata = {'error': str(e)}
+    
+    # Broadcast metadata first (small)
+    metadata = comm.bcast(metadata, root=0)
+    
+    if metadata is None or 'error' in metadata:
+        return None
+    
+    # Broadcast large arrays using chunked_bcast to avoid MPI 32-bit overflow
+    if rank == 0:
+        pod_basis_bcast = chunked_bcast(comm, pod_basis, root=0)
+        temporal_mean_bcast = chunked_bcast(comm, temporal_mean, root=0) if temporal_mean is not None else None
+    else:
+        pod_basis_bcast = chunked_bcast(comm, None, root=0)
+        temporal_mean_bcast = chunked_bcast(comm, None, root=0) if metadata['temporal_mean_shape'] is not None else None
+    
+    physics_data = {
+        'pod_basis': pod_basis_bcast,
+        'temporal_mean': temporal_mean_bcast,
+        'n_y': metadata['n_y'],
+        'n_x': metadata['n_x'],
+        'k0': metadata['k0'],
+        'c1': metadata['c1'],
+        'mean_Gamma_n': metadata['mean_Gamma_n'],
+        'std_Gamma_n': metadata['std_Gamma_n'],
+        'mean_Gamma_c': metadata['mean_Gamma_c'],
+        'std_Gamma_c': metadata['std_Gamma_c'],
+    }
+    
+    return physics_data
+
+
 # =============================================================================
 # MODEL I/O
 # =============================================================================
@@ -533,8 +637,11 @@ def load_manifold_basis(paths: dict, comm, logger) -> dict:
 def load_model_from_file(filepath: str) -> dict:
     """Load a single model from NPZ file."""
     data = np.load(filepath)
-    return {
-        'A': data['A'], 'F': data['F'], 'C': data['C'], 'G': data['G'], 'c': data['c'],
+    
+    # Base model (always present)
+    model = {
+        'A': data['A'],
+        'F': data['F'],
         'total_error': float(data['total_error']),
         'mean_err_Gamma_n': float(data['mean_err_Gamma_n']),
         'std_err_Gamma_n': float(data['std_err_Gamma_n']),
@@ -545,6 +652,16 @@ def load_model_from_file(filepath: str) -> dict:
         'alpha_out_lin': float(data['alpha_out_lin']),
         'alpha_out_quad': float(data['alpha_out_quad']),
     }
+    
+    # Output operators (optional - may not exist for state_only or physics_gamma modes)
+    has_output = bool(data.get('use_learned_output', 'C' in data.files))
+    if has_output and 'C' in data.files:
+        model['C'] = data['C']
+        model['G'] = data['G']
+        model['c'] = data['c']
+    
+    model['has_output_operators'] = has_output
+    return model
 
 
 def load_ensemble(filepath: str, operators_dir: str, logger) -> list:
@@ -570,21 +687,39 @@ def load_ensemble(filepath: str, operators_dir: str, logger) -> list:
     data = np.load(filepath, allow_pickle=True)
     num_models = int(data['num_models'])
     
+    # Check if models have output operators
+    use_learned_output = bool(data.get('use_learned_output', True))
+    
     models = []
     for i in range(num_models):
         prefix = f'model_{i}_'
+        
+        # State operators (always present)
         model = {
-            key: data[prefix + key] if key in ['A', 'F', 'C', 'G', 'c'] 
-                 else float(data[prefix + key])
-            for key in ['A', 'F', 'C', 'G', 'c', 'total_error', 
-                       'mean_err_Gamma_n', 'std_err_Gamma_n',
-                       'mean_err_Gamma_c', 'std_err_Gamma_c',
-                       'alpha_state_lin', 'alpha_state_quad',
-                       'alpha_out_lin', 'alpha_out_quad']
+            'A': data[prefix + 'A'],
+            'F': data[prefix + 'F'],
+            'total_error': float(data[prefix + 'total_error']),
+            'alpha_state_lin': float(data[prefix + 'alpha_state_lin']),
+            'alpha_state_quad': float(data[prefix + 'alpha_state_quad']),
+            'alpha_out_lin': float(data[prefix + 'alpha_out_lin']),
+            'alpha_out_quad': float(data[prefix + 'alpha_out_quad']),
+            'mean_err_Gamma_n': float(data[prefix + 'mean_err_Gamma_n']),
+            'std_err_Gamma_n': float(data[prefix + 'std_err_Gamma_n']),
+            'mean_err_Gamma_c': float(data[prefix + 'mean_err_Gamma_c']),
+            'std_err_Gamma_c': float(data[prefix + 'std_err_Gamma_c']),
         }
+        
+        # Output operators (only if learned output was used)
+        has_output = bool(data.get(prefix + 'has_output_operators', use_learned_output))
+        if has_output and (prefix + 'C') in data:
+            model['C'] = data[prefix + 'C']
+            model['G'] = data[prefix + 'G']
+            model['c'] = data[prefix + 'c']
+        
+        model['has_output_operators'] = has_output
         models.append((model['total_error'], model))
     
-    logger.info(f"  Loaded {len(models)} models")
+    logger.info(f"  Loaded {len(models)} models (has_output_operators={use_learned_output})")
     return models
 
 
@@ -614,14 +749,31 @@ def save_ensemble(models: list, output_path: str, cfg, logger) -> str:
         'r': cfg.r,
         'threshold_mean': cfg.threshold_mean,
         'threshold_std': cfg.threshold_std,
+        'selection_metric': getattr(cfg, 'selection_metric', 'gamma_learned'),
+        'use_learned_output': getattr(cfg, 'use_learned_output', True),
     }
+    
+    # Determine which keys to save based on whether output operators exist
+    state_keys = ['A', 'F', 'alpha_state_lin', 'alpha_state_quad', 'total_error',
+                  'mean_err_Gamma_n', 'std_err_Gamma_n', 'mean_err_Gamma_c', 'std_err_Gamma_c',
+                  'alpha_out_lin', 'alpha_out_quad']
+    output_keys = ['C', 'G', 'c']
     
     for i, (score, model) in enumerate(models):
         prefix = f'model_{i}_'
-        for key in ['A', 'F', 'C', 'G', 'c', 'alpha_state_lin', 'alpha_state_quad',
-                    'alpha_out_lin', 'alpha_out_quad', 'total_error',
-                    'mean_err_Gamma_n', 'std_err_Gamma_n', 'mean_err_Gamma_c', 'std_err_Gamma_c']:
-            ensemble_data[prefix + key] = model[key]
+        
+        # Always save state-related keys
+        for key in state_keys:
+            if key in model:
+                ensemble_data[prefix + key] = model[key]
+        
+        # Save output keys only if they exist (use_learned_output was True)
+        for key in output_keys:
+            if key in model:
+                ensemble_data[prefix + key] = model[key]
+        
+        # Mark if this model has output operators
+        ensemble_data[prefix + 'has_output_operators'] = 'C' in model
     
     np.savez(output_path, **ensemble_data)
     logger.info(f"Saved {len(models)} models to {output_path}")
