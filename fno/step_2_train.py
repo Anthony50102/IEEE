@@ -1,12 +1,13 @@
 """
 Step 2: FNO Autoregressive Rollout Training.
 
-This script fine-tunes a pre-trained FNO model (from Step 1) to perform
-autoregressive rollouts. Uses curriculum learning with increasing rollout
-lengths and scheduled sampling.
+Trains the single-step FNO model (from Step 1) for multi-step autoregressive 
+predictions using curriculum learning. Gradually increases rollout length
+while using scheduled sampling to improve long-term stability.
 
 Usage:
-    python step_2_train.py --config config/fno_temporal_split.yaml --run-dir <step1_run_dir>
+    python step_2_train.py --config config/fno_temporal_split.yaml --run-dir <run_dir>
+    python step_2_train.py --config config/fno_temporal_split.yaml --run-dir <run_dir> --test
 
 Author: Anthony Poole
 """
@@ -16,195 +17,307 @@ import os
 import sys
 import time
 import logging
-import datetime
-import random
-from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 
 import numpy as np
+import h5py
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
 import yaml
 
-# Add parent directory for shared imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-# Import from step_1
+# Reuse functions from step_1
 from step_1_train import (
-    FNOConfig, load_config, create_model, load_trajectory,
-    setup_logging, print_header, save_checkpoint,
+    load_config, get_config_value, create_model, setup_logging,
+    save_checkpoint, load_checkpoint, load_trajectory_slice,
 )
 
-
-# =============================================================================
-# Dataset for Rollout Training
-# =============================================================================
-
-class TrajectoryDataset(Dataset):
-    """Dataset that returns full trajectories for rollout training."""
-    
-    def __init__(self, states: np.ndarray):
-        """
-        Args:
-            states: (T, C, H, W) array of state snapshots
-        """
-        self.states = torch.from_numpy(states).float()
-    
-    def __len__(self):
-        return 1  # Single trajectory
-    
-    def __getitem__(self, idx):
-        return self.states
+# Parent directory for shared imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # =============================================================================
-# Training Functions
+# Curriculum Schedule
 # =============================================================================
 
-def train_epoch_rollout(model, states, optimizer, device, rollout_len, 
-                        ss_prob=0.0, grad_clip=1.0, batch_size=4):
+# Each stage: (rollout_length, teacher_forcing_ratio, n_epochs)
+# - rollout_length: number of autoregressive steps
+# - teacher_forcing_ratio: probability of using ground truth (vs model prediction)
+# - n_epochs: training epochs at this stage
+
+DEFAULT_CURRICULUM = [
+    (5,  0.0, 20),   # Stage 1: Short rollouts, no teacher forcing
+    (10, 0.2, 20),   # Stage 2: Medium rollouts, 20% teacher forcing
+    (20, 0.4, 20),   # Stage 3: Longer rollouts, 40% teacher forcing
+    (40, 0.6, 20),   # Stage 4: Long rollouts, 60% teacher forcing
+    (80, 0.8, 30),   # Stage 5: Very long rollouts, 80% teacher forcing
+]
+
+
+def parse_curriculum(cfg: dict) -> List[Tuple[int, float, int]]:
+    """Parse curriculum from config or use default."""
+    if 'curriculum' in cfg:
+        return [tuple(stage) for stage in cfg['curriculum']]
+    return DEFAULT_CURRICULUM
+
+
+# =============================================================================
+# Memory-Efficient Rollout Training
+# =============================================================================
+
+def train_rollout_epoch(
+    model: nn.Module,
+    states: np.ndarray,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+    rollout_length: int,
+    teacher_forcing_ratio: float,
+    batch_size: int = 8,
+    grad_clip: float = 1.0,
+) -> float:
     """
-    Train one epoch with autoregressive rollout.
+    Train one epoch of rollout training.
+    
+    Memory optimization: Instead of storing full trajectories on GPU,
+    we sample starting indices and process one rollout at a time.
     
     Args:
         model: FNO model
-        states: (T, C, H, W) tensor on device
-        optimizer: Optimizer
-        device: torch device
-        rollout_len: Number of autoregressive steps
-        ss_prob: Scheduled sampling probability (use prediction vs ground truth)
-        grad_clip: Gradient clipping norm
-        batch_size: Number of rollouts per batch
+        states: (T, C, H, W) numpy array of training states
+        optimizer: PyTorch optimizer
+        device: 'cuda' or 'cpu'
+        rollout_length: Number of autoregressive steps
+        teacher_forcing_ratio: Probability of using GT instead of prediction
+        batch_size: Number of parallel rollouts
+        grad_clip: Gradient clipping value
     
     Returns:
-        avg_loss: Average loss over all rollouts
+        Average loss for the epoch
     """
     model.train()
-    T, C, H, W = states.shape
+    T = len(states)
+    max_start = T - rollout_length - 1
     
-    max_start = T - rollout_len - 1
-    if max_start < 1:
-        return 0.0
+    if max_start <= 0:
+        raise ValueError(f"Trajectory too short ({T}) for rollout length {rollout_length}")
     
-    # Sample random starting points
-    n_rollouts = max(1, max_start // 2)  # Don't do too many rollouts per epoch
-    start_indices = random.sample(range(max_start), min(n_rollouts, max_start))
+    # Sample starting indices for this epoch
+    n_samples = max(16, max_start // 2)  # Reasonable number of rollouts
+    start_indices = np.random.choice(max_start, size=n_samples, replace=False)
     
     total_loss = 0.0
     n_batches = 0
     
-    for i in range(0, len(start_indices), batch_size):
-        batch_starts = start_indices[i:i+batch_size]
-        batch_size_actual = len(batch_starts)
-        
-        optimizer.zero_grad()
+    # Process in mini-batches
+    for batch_start in range(0, len(start_indices), batch_size):
+        batch_indices = start_indices[batch_start:batch_start + batch_size]
         batch_loss = 0.0
         
-        for start in batch_starts:
-            # Initialize with ground truth
-            state = states[start:start+1].clone()  # (1, C, H, W)
+        optimizer.zero_grad()
+        
+        for start_idx in batch_indices:
+            # Load initial state (memory efficient: load one at a time)
+            x = torch.from_numpy(states[start_idx:start_idx+1]).float().to(device)
             
             rollout_loss = 0.0
-            for step in range(rollout_len):
-                # Predict next state
-                pred = model(state)
-                target = states[start + step + 1:start + step + 2]
-                
-                rollout_loss += nn.functional.mse_loss(pred, target)
-                
-                # Scheduled sampling: use prediction or ground truth for next step
-                if random.random() < ss_prob:
-                    state = pred  # Use prediction (with gradient)
-                else:
-                    state = target.clone()  # Use ground truth
             
-            batch_loss += rollout_loss / rollout_len
+            for step in range(rollout_length):
+                # Ground truth for this step
+                target_idx = start_idx + step + 1
+                y_true = torch.from_numpy(states[target_idx:target_idx+1]).float().to(device)
+                
+                # Forward pass
+                y_pred = model(x)
+                
+                # Accumulate loss
+                step_loss = nn.functional.mse_loss(y_pred, y_true)
+                rollout_loss = rollout_loss + step_loss
+                
+                # Scheduled sampling: use GT or prediction for next step
+                if np.random.random() < teacher_forcing_ratio:
+                    x = y_true
+                else:
+                    x = y_pred.detach()
+                
+                # Clean up
+                del y_true, y_pred
+            
+            # Average loss over rollout steps
+            batch_loss = batch_loss + rollout_loss / rollout_length
+            del x
         
-        batch_loss = batch_loss / batch_size_actual
+        # Average over batch
+        batch_loss = batch_loss / len(batch_indices)
         batch_loss.backward()
         
         if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         
         optimizer.step()
         
         total_loss += batch_loss.item()
         n_batches += 1
+        
+        del batch_loss
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
     
-    return total_loss / max(n_batches, 1)
+    return total_loss / n_batches
 
 
 @torch.no_grad()
-def evaluate_rollout(model, states, device, rollout_len=None):
+def evaluate_rollout(
+    model: nn.Module,
+    states: np.ndarray,
+    device: str,
+    rollout_length: int,
+    n_eval: int = 10,
+) -> Tuple[float, np.ndarray]:
     """
-    Evaluate model via full autoregressive rollout.
+    Evaluate autoregressive rollout MSE on test set.
     
     Args:
-        model: Trained FNO model
-        states: (T, C, H, W) numpy array - ground truth
-        device: torch device
-        rollout_len: Number of steps to predict (None = full trajectory)
+        model: FNO model
+        states: (T, C, H, W) numpy array of test states
+        device: 'cuda' or 'cpu'
+        rollout_length: Number of autoregressive steps
+        n_eval: Number of rollouts to evaluate
     
     Returns:
-        mse_per_step: MSE at each timestep
-        avg_mse: Average MSE over all steps
-        predictions: (T, C, H, W) numpy array
+        average_mse: Mean MSE over all rollouts and steps
+        step_mses: MSE at each step (for analysis)
     """
     model.eval()
-    T, C, H, W = states.shape
+    T = len(states)
+    max_start = T - rollout_length - 1
     
-    if rollout_len is None:
-        rollout_len = T - 1
-    else:
-        rollout_len = min(rollout_len, T - 1)
+    if max_start <= 0:
+        return float('inf'), np.array([])
     
-    # Start from first state
-    state = torch.from_numpy(states[0:1]).float().to(device)
+    # Sample evaluation starting points (evenly spaced for consistency)
+    start_indices = np.linspace(0, max_start, min(n_eval, max_start), dtype=int)
     
-    predictions = [states[0]]  # Start with IC
+    step_mses = np.zeros(rollout_length)
+    n_samples = 0
     
-    for t in range(rollout_len):
-        state = model(state)
-        predictions.append(state[0].cpu().numpy())
+    for start_idx in start_indices:
+        x = torch.from_numpy(states[start_idx:start_idx+1]).float().to(device)
+        
+        for step in range(rollout_length):
+            y_pred = model(x)
+            target_idx = start_idx + step + 1
+            y_true = torch.from_numpy(states[target_idx:target_idx+1]).float().to(device)
+            
+            mse = nn.functional.mse_loss(y_pred, y_true).item()
+            step_mses[step] += mse
+            
+            x = y_pred
+            del y_true, y_pred
+        
+        n_samples += 1
+        del x
     
-    predictions = np.array(predictions)  # (rollout_len+1, C, H, W)
-    ground_truth = states[:rollout_len + 1]
+    step_mses /= n_samples
+    avg_mse = step_mses.mean()
     
-    # Compute MSE per timestep
-    mse_per_step = np.mean((predictions - ground_truth) ** 2, axis=(1, 2, 3))
-    avg_mse = np.mean(mse_per_step)
-    
-    return mse_per_step, avg_mse, predictions
+    return avg_mse, step_mses
 
 
 # =============================================================================
-# Utilities
+# Visualization (for --test flag)
 # =============================================================================
 
-def load_step1_checkpoint(run_dir: str, model: nn.Module, device: str):
-    """Load the best checkpoint from Step 1."""
-    checkpoint_path = os.path.join(run_dir, "checkpoint_latest.pt")
+def generate_rollout_figures(
+    model: nn.Module,
+    test_states: np.ndarray,
+    device: str,
+    run_dir: str,
+    rollout_length: int = 20,
+    n_snapshots: int = 5,
+):
+    """
+    Generate rollout comparison figures.
     
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
+    Shows prediction vs ground truth at several points along a rollout.
+    """
+    import matplotlib.pyplot as plt
     
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    T = len(test_states)
     
-    return checkpoint.get('epoch', 0), checkpoint.get('metrics', {})
-
-
-def print_rollout_config(schedule):
-    """Print rollout training schedule."""
-    print("\n  Rollout Training Schedule:")
-    print("    " + "-" * 50)
-    print(f"    {'Rollout Len':>12} | {'SS Prob':>8} | {'Epochs':>8}")
-    print("    " + "-" * 50)
-    for rollout_len, ss_prob, n_epochs in schedule:
-        print(f"    {rollout_len:>12} | {ss_prob:>8.2f} | {n_epochs:>8}")
-    print("    " + "-" * 50)
-    print()
+    # Start near beginning of test set
+    start_idx = 0
+    rollout_length = min(rollout_length, T - 1)
+    
+    fig_dir = os.path.join(run_dir, 'figures_rollout')
+    os.makedirs(fig_dir, exist_ok=True)
+    
+    # Run full rollout
+    predictions = []
+    x = torch.from_numpy(test_states[start_idx:start_idx+1]).float().to(device)
+    
+    with torch.no_grad():
+        for step in range(rollout_length):
+            y_pred = model(x)
+            predictions.append(y_pred[0].cpu().numpy())
+            x = y_pred
+    
+    predictions = np.array(predictions)  # (steps, C, H, W)
+    
+    # Select snapshots to visualize (equally spaced)
+    snapshot_indices = np.linspace(0, rollout_length - 1, n_snapshots, dtype=int)
+    
+    for i, step in enumerate(snapshot_indices):
+        pred = predictions[step]                    # (C, H, W)
+        truth = test_states[start_idx + step + 1]  # (C, H, W)
+        
+        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+        field_names = ['Density', 'Potential']
+        
+        for row, (name, p, t) in enumerate(zip(field_names, pred, truth)):
+            error = p - t
+            
+            vmin, vmax = t.min(), t.max()
+            im0 = axes[row, 0].imshow(p, cmap='viridis', vmin=vmin, vmax=vmax)
+            axes[row, 0].set_title(f'{name} - Prediction')
+            axes[row, 0].axis('off')
+            plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+            
+            im1 = axes[row, 1].imshow(t, cmap='viridis', vmin=vmin, vmax=vmax)
+            axes[row, 1].set_title(f'{name} - Ground Truth')
+            axes[row, 1].axis('off')
+            plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+            
+            err_max = max(abs(error.min()), abs(error.max()))
+            im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
+            axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
+            axes[row, 2].axis('off')
+            plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
+        
+        plt.suptitle(f'Rollout Step {step + 1}/{rollout_length}', fontsize=14)
+        plt.tight_layout()
+        
+        fig_path = os.path.join(fig_dir, f'rollout_step{step+1:03d}.png')
+        plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"  Saved: {fig_path}")
+    
+    # Also save error-over-time plot
+    step_mses = np.mean((predictions - test_states[start_idx+1:start_idx+rollout_length+1])**2, axis=(1,2,3))
+    
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.semilogy(range(1, rollout_length + 1), step_mses, 'o-', markersize=4)
+    ax.set_xlabel('Rollout Step')
+    ax.set_ylabel('MSE (log scale)')
+    ax.set_title('Rollout Error Accumulation')
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    
+    fig_path = os.path.join(fig_dir, 'rollout_error_curve.png')
+    plt.savefig(fig_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"  Saved: {fig_path}")
+    
+    print(f"\n  Generated rollout figures in {fig_dir}")
 
 
 # =============================================================================
@@ -212,155 +325,176 @@ def print_rollout_config(schedule):
 # =============================================================================
 
 def main():
-    """Main entry point for FNO rollout training."""
+    # Parse arguments
     parser = argparse.ArgumentParser(description="Step 2: FNO Rollout Training")
     parser.add_argument("--config", type=str, required=True, help="Path to config YAML")
-    parser.add_argument("--run-dir", type=str, required=True, help="Step 1 run directory")
+    parser.add_argument("--run-dir", type=str, required=True, help="Run directory from step 1")
+    parser.add_argument("--test", action="store_true", help="Generate rollout figures after training")
     args = parser.parse_args()
     
-    # Load configuration
+    # Load config
     cfg = load_config(args.config)
     run_dir = args.run_dir
-    cfg.run_dir = run_dir
     
-    # Set up logging
-    logger = setup_logging("step_2", run_dir, cfg.log_level)
+    # Check that step 1 completed
+    status_path = os.path.join(run_dir, "status.txt")
+    if os.path.exists(status_path):
+        with open(status_path) as f:
+            if "step1_completed" not in f.read():
+                print("Warning: Step 1 may not have completed successfully")
     
-    # Device
+    # Setup
+    logger = setup_logging("step_2", run_dir, cfg.get('log_level', 'INFO'))
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
-    print_header("STEP 2: FNO TRAINING (Autoregressive Rollout)")
+    # Print header
+    print("=" * 60)
+    print("  STEP 2: FNO AUTOREGRESSIVE ROLLOUT TRAINING")
+    print("=" * 60)
     print(f"  Run directory: {run_dir}")
     print(f"  Device: {device}")
-    
-    # Define rollout curriculum schedule
-    # (rollout_length, scheduled_sampling_prob, n_epochs)
-    rollout_schedule = [
-        (5, 0.0, 20),      # Short rollouts, teacher forcing
-        (10, 0.2, 20),     # Medium rollouts, some scheduled sampling
-        (20, 0.4, 20),     # Longer rollouts
-        (40, 0.6, 20),     # Even longer
-        (80, 0.8, 30),     # Long rollouts, mostly use predictions
-    ]
-    
-    print_rollout_config(rollout_schedule)
+    print(f"  Test mode: {args.test}")
     
     t_start = time.time()
     
     try:
         # Load data
-        logger.info("Loading data...")
-        file_path = os.path.join(cfg.data_dir, cfg.training_files[0])
-        states = load_trajectory(file_path, cfg)
+        data_dir = get_config_value(cfg, 'paths', 'data_dir')
+        train_file = get_config_value(cfg, 'paths', 'training_files')[0]
+        file_path = os.path.join(data_dir, train_file)
         
-        # Use training portion for rollout training
-        train_states = states[cfg.train_start:cfg.train_end]
-        test_states = states[cfg.test_start:cfg.test_end]
+        train_start = cfg.get('train_start', 0)
+        train_end = cfg.get('train_end', 400)
+        test_start = cfg.get('test_start', 400)
+        test_end = cfg.get('test_end', 500)
         
-        train_states_tensor = torch.from_numpy(train_states).float().to(device)
+        logger.info(f"Loading data from {file_path}")
+        train_states = load_trajectory_slice(file_path, train_start, train_end)
+        test_states = load_trajectory_slice(file_path, test_start, test_end)
         
-        logger.info(f"  Train states: {train_states.shape}")
-        logger.info(f"  Test states: {test_states.shape}")
+        logger.info(f"  Train: {train_states.shape}")
+        logger.info(f"  Test: {test_states.shape}")
         
-        # Create and load model
-        logger.info("Loading Step 1 model...")
+        # Create model and load step 1 checkpoint
         model = create_model(cfg, device)
-        step1_epoch, step1_metrics = load_step1_checkpoint(run_dir, model, device)
-        logger.info(f"  Loaded checkpoint from epoch {step1_epoch}")
-        if step1_metrics:
-            logger.info(f"  Step 1 metrics: {step1_metrics}")
+        checkpoint_path = os.path.join(run_dir, "checkpoint_best.pt")
+        epoch_loaded, metrics = load_checkpoint(checkpoint_path, model, device=device)
+        logger.info(f"Loaded checkpoint from epoch {epoch_loaded}")
+        logger.info(f"  Step 1 metrics: {metrics}")
         
-        n_params = sum(p.numel() for p in model.parameters())
-        logger.info(f"  Model parameters: {n_params:,}")
+        # Training setup
+        train_cfg = cfg.get('training', {})
+        lr = train_cfg.get('learning_rate', 1e-3) * 0.1  # Lower LR for fine-tuning
+        weight_decay = train_cfg.get('weight_decay', 1e-4)
+        grad_clip = train_cfg.get('grad_clip', 1.0)
+        batch_size = train_cfg.get('batch_size', 8)
         
-        # Optimizer with lower learning rate for fine-tuning
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=cfg.learning_rate * 0.1,  # Lower LR for fine-tuning
-            weight_decay=cfg.weight_decay,
-        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         
-        # Evaluate before training
-        logger.info("Evaluating before rollout training...")
-        _, initial_mse, _ = evaluate_rollout(model, test_states, device)
-        print(f"\n  Initial rollout MSE (before Step 2): {initial_mse:.6f}")
+        # Parse curriculum
+        curriculum = parse_curriculum(cfg)
+        total_epochs = sum(stage[2] for stage in curriculum)
         
-        # Training loop with curriculum
-        print("\n  Rollout Training Progress:")
+        print(f"\n  Curriculum ({len(curriculum)} stages, {total_epochs} total epochs):")
+        for i, (length, tf_ratio, epochs) in enumerate(curriculum):
+            print(f"    Stage {i+1}: rollout={length:3d}, teacher_forcing={tf_ratio:.1f}, epochs={epochs}")
+        print()
         
-        train_losses = []
-        eval_mses = []
-        total_epochs = 0
+        # Training loop through curriculum stages
+        all_losses = []
+        all_eval_results = []
+        epoch_counter = 0
         
-        for rollout_len, ss_prob, n_epochs in rollout_schedule:
-            print(f"\n  --- Rollout: {rollout_len}, Scheduled Sampling: {ss_prob:.2f} ---")
+        for stage_idx, (rollout_length, tf_ratio, n_epochs) in enumerate(curriculum):
+            print(f"\n  --- Stage {stage_idx + 1}/{len(curriculum)} ---")
+            print(f"      Rollout: {rollout_length}, Teacher Forcing: {tf_ratio:.1f}")
+            
+            # Scheduler for this stage
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, T_max=n_epochs, eta_min=lr * 0.01
+            )
             
             for epoch in range(1, n_epochs + 1):
-                total_epochs += 1
-                epoch_start = time.time()
+                t_epoch = time.time()
+                epoch_counter += 1
                 
                 # Train
-                train_loss = train_epoch_rollout(
-                    model, train_states_tensor, optimizer, device,
-                    rollout_len=rollout_len, ss_prob=ss_prob, 
-                    grad_clip=cfg.grad_clip, batch_size=4
+                train_loss = train_rollout_epoch(
+                    model, train_states, optimizer, device,
+                    rollout_length, tf_ratio, batch_size, grad_clip
                 )
-                train_losses.append(train_loss)
+                all_losses.append(train_loss)
+                scheduler.step()
                 
-                epoch_time = time.time() - epoch_start
-                
-                # Evaluate every 10 epochs
-                if epoch % 10 == 0 or epoch == n_epochs:
-                    mse_per_step, test_mse, _ = evaluate_rollout(model, test_states, device)
-                    eval_mses.append((total_epochs, rollout_len, test_mse))
+                # Evaluate periodically
+                if epoch % 5 == 0 or epoch == n_epochs:
+                    eval_mse, step_mses = evaluate_rollout(
+                        model, test_states, device, rollout_length
+                    )
+                    all_eval_results.append({
+                        'epoch': epoch_counter,
+                        'stage': stage_idx + 1,
+                        'rollout_length': rollout_length,
+                        'mse': eval_mse,
+                    })
                     
-                    print(f"    Epoch {epoch:3d}/{n_epochs} | "
-                          f"Train Loss: {train_loss:.6f} | "
-                          f"Test Rollout MSE: {test_mse:.6f} | "
-                          f"Time: {epoch_time:.1f}s")
+                    print(f"      Epoch {epoch:3d}/{n_epochs} | "
+                          f"Train: {train_loss:.6f} | Eval: {eval_mse:.6f} | "
+                          f"Time: {time.time()-t_epoch:.1f}s")
                 else:
-                    print(f"    Epoch {epoch:3d}/{n_epochs} | "
-                          f"Train Loss: {train_loss:.6f} | "
-                          f"Time: {epoch_time:.1f}s")
+                    print(f"      Epoch {epoch:3d}/{n_epochs} | "
+                          f"Train: {train_loss:.6f} | Time: {time.time()-t_epoch:.1f}s")
             
-            # Save checkpoint at end of each curriculum stage
-            save_checkpoint(model, optimizer, total_epochs, run_dir, cfg,
-                            {'rollout_len': rollout_len, 'ss_prob': ss_prob})
+            # Save checkpoint after each stage
+            save_checkpoint(
+                model, optimizer, epoch_counter,
+                os.path.join(run_dir, f"checkpoint_stage{stage_idx+1}.pt"),
+                cfg, {'train_loss': train_loss, 'rollout_length': rollout_length}
+            )
         
-        # Final evaluation
-        logger.info("Final evaluation...")
-        mse_per_step, final_mse, predictions = evaluate_rollout(model, test_states, device)
+        # Save final checkpoint
+        save_checkpoint(
+            model, optimizer, epoch_counter,
+            os.path.join(run_dir, "checkpoint_rollout_final.pt"),
+            cfg, {'train_loss': all_losses[-1]}
+        )
+        
+        # Final long-horizon evaluation
+        final_rollout = curriculum[-1][0]  # Use longest rollout from curriculum
+        final_mse, final_step_mses = evaluate_rollout(
+            model, test_states, device, final_rollout, n_eval=20
+        )
         
         # Save results
-        results_path = os.path.join(run_dir, "step2_results.npz")
         np.savez(
-            results_path,
-            train_losses=np.array(train_losses),
-            eval_mses=np.array(eval_mses, dtype=object),
-            mse_per_step=mse_per_step,
-            predictions=predictions,
-            ground_truth=test_states,
-            initial_mse=initial_mse,
+            os.path.join(run_dir, "step2_results.npz"),
+            train_losses=np.array(all_losses),
+            eval_results=all_eval_results,
             final_mse=final_mse,
+            final_step_mses=final_step_mses,
+            curriculum=np.array(curriculum),
         )
         
         t_elapsed = time.time() - t_start
         
         print("\n" + "=" * 60)
-        print("  STEP 2 TRAINING COMPLETE")
+        print("  STEP 2 COMPLETE")
         print("=" * 60)
-        print(f"  Total time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
-        print(f"  Total epochs: {total_epochs}")
-        print(f"  Initial rollout MSE: {initial_mse:.6f}")
-        print(f"  Final rollout MSE: {final_mse:.6f}")
-        print(f"  Improvement: {(initial_mse - final_mse) / initial_mse * 100:.1f}%")
-        print(f"  Results saved to: {results_path}")
-        print()
+        print(f"  Time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
+        print(f"  Final rollout MSE (length={final_rollout}): {final_mse:.6f}")
         
-        logger.info(f"Step 2 completed in {t_elapsed:.1f}s")
-        logger.info(f"Final rollout MSE: {final_mse:.6f}")
+        # Generate test figures if requested
+        if args.test:
+            print("\n  Generating rollout figures...")
+            generate_rollout_figures(
+                model, test_states, device, run_dir,
+                rollout_length=min(final_rollout, len(test_states) - 1),
+                n_snapshots=5
+            )
         
-        # Save status
+        print(f"\n  Results saved to: {run_dir}")
+        
+        # Update status
         with open(os.path.join(run_dir, "status.txt"), 'w') as f:
             f.write("step2_completed\n")
         
