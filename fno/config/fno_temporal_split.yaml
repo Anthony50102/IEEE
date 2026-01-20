@@ -15,15 +15,15 @@ paths:
 physics:
   dt: 0.025
   n_fields: 2
-  n_x: 256
-  n_y: 256
+  n_x: 512
+  n_y: 512
 
 # Training mode configuration
 training_mode: "temporal_split"
-train_start: 0          # Train from snapshot 0
-train_end: 400          # Train to snapshot 400  
-test_start: 400         # Test from snapshot 400
-test_end: 500           # Test to snapshot 500
+train_start: 8000      # Train from snapshot 8000
+train_end: 16000       # Train to snapshot 16000  
+test_start: 16000      # Test from snapshot 16000
+test_end: 20000  
 
 # FNO model configuration
 model:
