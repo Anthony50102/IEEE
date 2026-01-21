@@ -251,7 +251,7 @@ def load_checkpoint(path, model, optimizer=None, device='cpu'):
 # Visualization (for --test flag)
 # =============================================================================
 
-def generate_test_figures(model, test_states, device, run_dir, n_figs=5):
+def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5):
     """
     Generate comparison figures: prediction vs ground truth + error.
     
@@ -310,32 +310,49 @@ def generate_test_figures(model, test_states, device, run_dir, n_figs=5):
         plt.savefig(fig_path, dpi=150, bbox_inches='tight')
         plt.close()
         
-        print(f"  Saved: {fig_path}")
+        logger.debug(f"Saved: {fig_path}")
     
-    print(f"\n  Generated {n_figs} test figures in {fig_dir}")
+    logger.info(f"Generated {n_figs} test figures in {fig_dir}")
 
 
 # =============================================================================
 # Logging Setup
 # =============================================================================
 
-def setup_logging(name: str, run_dir: str, level: str = "INFO") -> logging.Logger:
-    """Set up logging to file and console."""
+def setup_logging(name: str, run_dir: str, log_level: str = "INFO") -> logging.Logger:
+    """Set up logging for a pipeline step."""
     logger = logging.getLogger(name)
-    logger.setLevel(getattr(logging, level.upper()))
-    logger.handlers.clear()  # Avoid duplicate handlers
+    logger.setLevel(getattr(logging, log_level.upper()))
+    logger.handlers = []  # Avoid duplicate handlers
     
-    fh = logging.FileHandler(os.path.join(run_dir, f"{name}.log"))
-    ch = logging.StreamHandler()
+    formatter = logging.Formatter(
+        '%(asctime)s [%(name)s] %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
     
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    fh.setFormatter(formatter)
-    ch.setFormatter(formatter)
+    # Console handler
+    console = logging.StreamHandler()
+    console.setLevel(getattr(logging, log_level.upper()))
+    console.setFormatter(formatter)
+    logger.addHandler(console)
     
-    logger.addHandler(fh)
-    logger.addHandler(ch)
+    # File handler
+    if run_dir:
+        log_file = os.path.join(run_dir, f"{name}.log")
+        file_handler = logging.FileHandler(log_file, mode='a')
+        file_handler.setLevel(logging.DEBUG)
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
     
     return logger
+
+
+class DummyLogger:
+    """Silent logger for non-root MPI ranks."""
+    def info(self, *a, **kw): pass
+    def error(self, *a, **kw): pass
+    def warning(self, *a, **kw): pass
+    def debug(self, *a, **kw): pass
 
 
 # =============================================================================
@@ -368,12 +385,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Print header
-    print("=" * 60)
-    print("  STEP 1: FNO SINGLE-STEP TRAINING")
-    print("=" * 60)
-    print(f"  Run directory: {run_dir}")
-    print(f"  Device: {device}")
-    print(f"  Test mode: {args.test}")
+    logger.info("=" * 60)
+    logger.info("  STEP 1: FNO SINGLE-STEP TRAINING")
+    logger.info("=" * 60)
+    logger.info(f"  Run directory: {run_dir}")
+    logger.info(f"  Device: {device}")
+    logger.info(f"  Test mode: {args.test}")
     
     # Save config copy
     with open(os.path.join(run_dir, "config.yaml"), 'w') as f:
@@ -406,7 +423,7 @@ def main():
         
         # Training loop
         logger.info("Starting training...")
-        print(f"\n  Training for {n_epochs} epochs:\n")
+        logger.info(f"Training for {n_epochs} epochs...")
         
         best_mse = float('inf')
         train_losses = []
@@ -432,12 +449,12 @@ def main():
                                     os.path.join(run_dir, "checkpoint_best.pt"),
                                     cfg, {'train_loss': train_loss, 'test_mse': test_mse})
                 
-                print(f"  Epoch {epoch:4d}/{n_epochs} | "
-                      f"Train: {train_loss:.6f} | Test: {test_mse:.6f} | "
-                      f"Time: {time.time()-t_epoch:.1f}s")
+                logger.info(f"Epoch {epoch:4d}/{n_epochs} | "
+                            f"Train: {train_loss:.6f} | Test: {test_mse:.6f} | "
+                            f"Time: {time.time()-t_epoch:.1f}s")
             else:
-                print(f"  Epoch {epoch:4d}/{n_epochs} | "
-                      f"Train: {train_loss:.6f} | Time: {time.time()-t_epoch:.1f}s")
+                logger.debug(f"Epoch {epoch:4d}/{n_epochs} | "
+                             f"Train: {train_loss:.6f} | Time: {time.time()-t_epoch:.1f}s")
             
             # Periodic checkpoint
             if epoch % save_every == 0:
@@ -461,21 +478,21 @@ def main():
         
         t_elapsed = time.time() - t_start
         
-        print("\n" + "=" * 60)
-        print("  STEP 1 COMPLETE")
-        print("=" * 60)
-        print(f"  Time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
-        print(f"  Final train loss: {train_losses[-1]:.6f}")
-        print(f"  Final test MSE: {final_mse:.6f}")
-        print(f"  Best test MSE: {best_mse:.6f}")
+        logger.info("=" * 60)
+        logger.info("  STEP 1 COMPLETE")
+        logger.info("=" * 60)
+        logger.info(f"  Time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
+        logger.info(f"  Final train loss: {train_losses[-1]:.6f}")
+        logger.info(f"  Final test MSE: {final_mse:.6f}")
+        logger.info(f"  Best test MSE: {best_mse:.6f}")
         
         # Generate test figures if requested
         if args.test:
-            print("\n  Generating test figures...")
-            generate_test_figures(model, test_states, device, run_dir, n_figs=5)
+            logger.info("Generating test figures...")
+            generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5)
         
-        print(f"\n  Results saved to: {run_dir}")
-        print(f"\n  Next: python step_2_train.py --config {args.config} --run-dir {run_dir}")
+        logger.info(f"Results saved to: {run_dir}")
+        logger.info(f"Next: python step_2_train.py --config {args.config} --run-dir {run_dir}")
         
         # Save status
         with open(os.path.join(run_dir, "status.txt"), 'w') as f:
