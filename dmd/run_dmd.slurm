@@ -22,7 +22,7 @@
 #SBATCH -J dmd_pipeline
 #SBATCH -o dmd_%j.out
 #SBATCH -e dmd_%j.err
-#SBATCH -p nvdimm
+#SBATCH -p normal
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH --cpus-per-task=56

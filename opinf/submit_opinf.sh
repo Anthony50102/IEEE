@@ -49,6 +49,15 @@ case $STEP in
         TIME="2:00:00"
         OMP_THREADS=1
         ;;
+    2.1)
+        # Step 2: Manifold aware hyperparameter sweep
+        NODES=20
+        NTASKS=280
+        CPUS=4
+        TIME="8:00:00"
+        OMP_THREADS=4
+        STEP=2
+        ;;
     3)
         # Step 3: Evaluation - single node, serial
         NODES=1
@@ -59,7 +68,7 @@ case $STEP in
         ;;
     *)
         echo "Invalid step: $STEP"
-        echo "Valid steps: 1, 1.1, 2, 3"
+        echo "Valid steps: 1, 1.1, 2, 2.1, 3"
         exit 1
         ;;
 esac

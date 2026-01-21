@@ -1,7 +1,7 @@
-run_name: "opinf_monday_results"  # Train on first n snapshots, predict rest
+run_name: "opinf_tuesday_results"  # Train on first n snapshots, predict rest
 
 paths:
-  output_base: "/scratch2/10407/anthony50102/IEEE/output/monday_results"
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/tuesday_results"
   
   data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
   
@@ -44,30 +44,30 @@ training:
 
 regularization:
   state_lin:
-    min: 1.0e1
-    max: 1.0e6
+    min: 1.0e0
+    max: 1.0e8
     num: 20
     scale: "linear"
   state_quad:
-    min: 1.0e8
-    max: 1.0e14
-    num: 10
+    min: 1.0e6
+    max: 1.0e15
+    num: 20
     scale: "linear"
   output_lin:
-    min: 1.0e-4
-    max: 1.0e1
+    min: 1.0e-6
+    max: 1.0e2
     num: 20
     scale: "linear"
   output_quad:
-    min: 1.0e-3
-    max: 1.0e2
+    min: 1.0e-6
+    max: 1.0e4
     num: 20
     scale: "linear"
 
 model_selection:
   method: "threshold"
-  threshold_mean: 0.03
-  threshold_std: 0.2
+  threshold_mean: 0.05
+  threshold_std: 0.3
 
 evaluation:
   save_predictions: true   # Save ensemble predictions to disk
