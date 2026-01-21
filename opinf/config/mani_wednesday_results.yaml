@@ -1,7 +1,7 @@
-run_name: "mani_monday_results"  # Train on first n snapshots, predict rest
+run_name: "mani_wednesday_results"  # Train on first n snapshots, predict rest
 
 paths:
-  output_base: "/scratch2/10407/anthony50102/IEEE/output/monday_results"
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/wednesday_results"
   
   data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
   
@@ -36,6 +36,10 @@ reduction:
 
 truncation:
   enabled: false                   # Not needed - using explicit snapshot ranges
+
+output_model:
+  enabled: false          # Learn quadratic output operators (C, G, c)
+  selection_metric: "gamma_physics"
 
 preprocessing:
   centering: false
