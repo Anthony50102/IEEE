@@ -32,7 +32,7 @@ set -e
 # =============================================================================
 
 STEP=${1:-1}
-CONFIG=${2:-config/fno_temporal_split.yaml}
+CONFIG=${2:-fno/config/fno_temporal_split.yaml}
 RUN_DIR=${3:-}
 
 # =============================================================================
@@ -91,7 +91,7 @@ echo "=============================================="
 case $STEP in
     1)
         echo "Running Step 1: Single-step FNO training..."
-        python fno/step_1_train.py --config fno/$CONFIG --test
+        python fno/step_1_train.py --config $CONFIG --test
         ;;
     
     2)
@@ -101,7 +101,7 @@ case $STEP in
             exit 1
         fi
         echo "Running Step 2: Autoregressive rollout training..."
-        python fno/step_2_train.py --config fno/$CONFIG --run-dir $RUN_DIR --test
+        python fno/step_2_train.py --config $CONFIG --run-dir $RUN_DIR --test
         ;;
     
     all)
@@ -110,11 +110,11 @@ case $STEP in
         
         # Step 1
         echo "=== Step 1: Single-step training ==="
-        python fno/step_1_train.py --config fno/$CONFIG --test
+        python fno/step_1_train.py --config $CONFIG --test
         
         # Find the most recent run directory
-        OUTPUT_BASE=$(python -c "import yaml; cfg=yaml.safe_load(open('fno/$CONFIG')); print(cfg.get('paths',{}).get('output_base','./output/'))")
-        RUN_NAME=$(python -c "import yaml; cfg=yaml.safe_load(open('fno/$CONFIG')); print(cfg.get('run_name','fno_experiment'))")
+        OUTPUT_BASE=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print(cfg.get('paths',{}).get('output_base','./output/'))")
+        RUN_NAME=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print(cfg.get('run_name','fno_experiment'))")
         LATEST_RUN=$(ls -td ${OUTPUT_BASE}/${RUN_NAME}_* 2>/dev/null | head -1)
         
         if [ -z "$LATEST_RUN" ]; then
@@ -127,7 +127,7 @@ case $STEP in
         
         # Step 2
         echo "=== Step 2: Autoregressive rollout training ==="
-        python fno/step_2_train.py --config fno/$CONFIG --run-dir $LATEST_RUN --test
+        python fno/step_2_train.py --config $CONFIG --run-dir $LATEST_RUN --test
         ;;
     
     *)
