@@ -23,6 +23,7 @@ import numpy as np
 import h5py
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 import yaml
 
 # Reuse functions from step_1
@@ -73,12 +74,14 @@ def train_rollout_epoch(
     teacher_forcing_ratio: float,
     batch_size: int = 8,
     grad_clip: float = 1.0,
+    use_checkpointing: bool = True,
 ) -> float:
     """
     Train one epoch of rollout training.
     
     Memory optimization: Instead of storing full trajectories on GPU,
     we sample starting indices and process one rollout at a time.
+    Uses gradient checkpointing to reduce memory at the cost of compute.
     
     Args:
         model: FNO model
@@ -89,6 +92,7 @@ def train_rollout_epoch(
         teacher_forcing_ratio: Probability of using GT instead of prediction
         batch_size: Number of parallel rollouts
         grad_clip: Gradient clipping value
+        use_checkpointing: If True, use gradient checkpointing to save memory
     
     Returns:
         Average loss for the epoch
@@ -125,8 +129,17 @@ def train_rollout_epoch(
                 target_idx = start_idx + step + 1
                 y_true = torch.from_numpy(states[target_idx:target_idx+1]).float().to(device)
                 
-                # Forward pass
-                y_pred = model(x)
+                # Forward pass with optional gradient checkpointing
+                if use_checkpointing and x.requires_grad:
+                    # Checkpoint requires input to have requires_grad=True
+                    y_pred = checkpoint(model, x, use_reentrant=False)
+                else:
+                    # First step or when checkpointing disabled
+                    x.requires_grad_(True)
+                    if use_checkpointing:
+                        y_pred = checkpoint(model, x, use_reentrant=False)
+                    else:
+                        y_pred = model(x)
                 
                 # Accumulate loss
                 step_loss = nn.functional.mse_loss(y_pred, y_true)
@@ -388,6 +401,10 @@ def main():
         weight_decay = train_cfg.get('weight_decay', 1e-4)
         grad_clip = train_cfg.get('grad_clip', 1.0)
         batch_size = train_cfg.get('batch_size', 8)
+        use_checkpointing = train_cfg.get('gradient_checkpointing', True)  # Default ON for memory
+        
+        if use_checkpointing:
+            logger.info("Gradient checkpointing ENABLED (saves memory, slower training)")
         
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         
@@ -421,7 +438,8 @@ def main():
                 # Train
                 train_loss = train_rollout_epoch(
                     model, train_states, optimizer, device,
-                    rollout_length, tf_ratio, batch_size, grad_clip
+                    rollout_length, tf_ratio, batch_size, grad_clip,
+                    use_checkpointing=use_checkpointing
                 )
                 all_losses.append(train_loss)
                 scheduler.step()
