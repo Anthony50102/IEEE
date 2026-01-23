@@ -41,23 +41,16 @@ RUN_DIR=${3:-}
 
 # Source startup script to configure virtual environment
 # Modify this path to your actual startup script location
-if [ -f "$WORK/singe_node_startup.sh" ]; then
-    source $WORK/singe_node_startup.sh
-elif [ -f "$HOME/startup.sh" ]; then
-    source $HOME/startup.sh
+if [ -f "$WORK/single_node_startup.sh" ]; then
+    source $WORK/single_node_startup.sh
+elif [ -f "$HOME/single_node_startup.sh" ]; then
+    source $HOME/single_node_startup.sh
+elif [ -f "/home1/10407/anthony50102/single_node_startup.sh" ]; then
+    source /home1/10407/anthony50102/single_node_startup.sh
 else
     # Fallback: load modules directly
-    echo "No startup script found, loading modules manually..."
-    module load gcc/13.2.0
-    module load cuda/12.4
-    module load python3/3.11.5
-    
-    # Activate virtual environment if it exists
-    if [ -d "$WORK/envs/fno" ]; then
-        source $WORK/envs/fno/bin/activate
-    elif [ -d "$HOME/envs/fno" ]; then
-        source $HOME/envs/fno/bin/activate
-    fi
+    echo "No startup script found"
+    exit 1
 fi
 
 # Navigate to project directory
