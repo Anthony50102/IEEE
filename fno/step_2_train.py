@@ -110,7 +110,7 @@ def train_rollout_epoch(
         raise ValueError(f"Trajectory too short ({T}) for rollout length {rollout_length}")
     
     # Sample starting indices for this epoch
-    n_samples = max(16, max_start // 2)  # Reasonable number of rollouts
+    n_samples = min(max(16, max_start // 2), max_start)  # Cap at max_start to avoid error
     start_indices = np.random.choice(max_start, size=n_samples, replace=False)
     
     total_loss = 0.0
@@ -218,7 +218,10 @@ def evaluate_rollout(
         return float('inf'), np.array([])
     
     # Sample evaluation starting points (evenly spaced for consistency)
-    start_indices = np.linspace(0, max_start, min(n_eval, max_start), dtype=int)
+    n_samples = min(n_eval, max_start + 1)
+    start_indices = np.linspace(0, max_start, n_samples, dtype=int)
+    # Remove duplicates that can occur with linspace + int conversion
+    start_indices = np.unique(start_indices)
     
     step_mses = np.zeros(rollout_length)
     n_samples = 0
@@ -257,12 +260,15 @@ def generate_rollout_figures(
     run_dir: str,
     rollout_length: int = 20,
     n_snapshots: int = 5,
+    logger = None,
 ):
     """
     Generate rollout comparison figures.
     
     Shows prediction vs ground truth at several points along a rollout.
     """
+    import matplotlib
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     
     model.eval()
@@ -324,7 +330,8 @@ def generate_rollout_figures(
         plt.savefig(fig_path, dpi=150, bbox_inches='tight')
         plt.close()
         
-        print(f"  Saved: {fig_path}")
+        if logger:
+            logger.debug(f"  Saved: {fig_path}")
     
     # Also save error-over-time plot
     step_mses = np.mean((predictions - test_states[start_idx+1:start_idx+rollout_length+1])**2, axis=(1,2,3))
@@ -340,9 +347,64 @@ def generate_rollout_figures(
     fig_path = os.path.join(fig_dir, 'rollout_error_curve.png')
     plt.savefig(fig_path, dpi=150, bbox_inches='tight')
     plt.close()
-    print(f"  Saved: {fig_path}")
     
-    print(f"\n  Generated rollout figures in {fig_dir}")
+    if logger:
+        logger.info(f"Generated rollout figures in {fig_dir}")
+
+
+def generate_step2_loss_plot(all_losses: list, all_eval_results: list, 
+                              curriculum: list, run_dir: str, logger):
+    """
+    Generate and save Step 2 training loss plot with curriculum stages.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    fig_dir = os.path.join(run_dir, 'figures')
+    os.makedirs(fig_dir, exist_ok=True)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    
+    # Training loss with stage markers
+    ax = axes[0]
+    ax.semilogy(range(1, len(all_losses) + 1), all_losses, 'b-', linewidth=1)
+    
+    # Mark stage boundaries
+    epoch_count = 0
+    colors = ['r', 'g', 'm', 'c', 'orange']
+    for i, (length, tf, epochs) in enumerate(curriculum):
+        epoch_count += epochs
+        ax.axvline(epoch_count, color=colors[i % len(colors)], linestyle='--', 
+                   alpha=0.5, label=f'Stage {i+1}: R={length}')
+    
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Training Loss (MSE)')
+    ax.set_title('Step 2: Rollout Training Loss')
+    ax.legend(fontsize=8, loc='upper right')
+    ax.grid(True, alpha=0.3)
+    
+    # Evaluation MSE by rollout length
+    ax = axes[1]
+    if all_eval_results:
+        epochs = [r['epoch'] for r in all_eval_results]
+        mses = [r['mse'] for r in all_eval_results]
+        ax.semilogy(epochs, mses, 'ro-', markersize=4, linewidth=1)
+        ax.axhline(min(mses), color='g', linestyle='--', alpha=0.7,
+                   label=f'Best: {min(mses):.2e}')
+        ax.legend()
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Rollout MSE')
+    ax.set_title('Rollout Evaluation MSE')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    plot_path = os.path.join(fig_dir, 'step2_training_loss.png')
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved Step 2 training plot to {plot_path}")
 
 
 # =============================================================================
@@ -373,12 +435,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
     # Print header
-    print("=" * 60)
-    print("  STEP 2: FNO AUTOREGRESSIVE ROLLOUT TRAINING")
-    print("=" * 60)
-    print(f"  Run directory: {run_dir}")
-    print(f"  Device: {device}")
-    print(f"  Test mode: {args.test}")
+    logger.info("=" * 60)
+    logger.info("  STEP 2: FNO AUTOREGRESSIVE ROLLOUT TRAINING")
+    logger.info("=" * 60)
+    logger.info(f"  Run directory: {run_dir}")
+    logger.info(f"  Device: {device}")
+    logger.info(f"  Test mode: {args.test}")
     
     t_start = time.time()
     
@@ -425,19 +487,27 @@ def main():
         curriculum = parse_curriculum(cfg)
         total_epochs = sum(stage[2] for stage in curriculum)
         
-        print(f"\n  Curriculum ({len(curriculum)} stages, {total_epochs} total epochs):")
+        logger.info(f"Curriculum: {len(curriculum)} stages, {total_epochs} total epochs")
         for i, (length, tf_ratio, epochs) in enumerate(curriculum):
-            print(f"    Stage {i+1}: rollout={length:3d}, teacher_forcing={tf_ratio:.1f}, epochs={epochs}")
-        print()
+            logger.info(f"  Stage {i+1}: rollout={length:3d}, teacher_forcing={tf_ratio:.1f}, epochs={epochs}")
         
         # Training loop through curriculum stages
         all_losses = []
         all_eval_results = []
         epoch_counter = 0
+        train_loss = 0.0  # Initialize to avoid unbound variable if all stages are empty
         
         for stage_idx, (rollout_length, tf_ratio, n_epochs) in enumerate(curriculum):
-            print(f"\n  --- Stage {stage_idx + 1}/{len(curriculum)} ---")
-            print(f"      Rollout: {rollout_length}, Teacher Forcing: {tf_ratio:.1f}")
+            logger.info(f"--- Stage {stage_idx + 1}/{len(curriculum)}: "
+                        f"rollout={rollout_length}, TF={tf_ratio:.1f}, epochs={n_epochs} ---")
+            
+            # Skip stages with 0 epochs
+            if n_epochs == 0:
+                logger.warning(f"Stage {stage_idx + 1} has 0 epochs, skipping")
+                continue
+            
+            # Decide logging frequency for this stage
+            log_every = max(1, n_epochs // 5)  # Log ~5 times per stage
             
             # Scheduler for this stage
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -470,12 +540,13 @@ def main():
                         'mse': eval_mse,
                     })
                     
-                    print(f"      Epoch {epoch:3d}/{n_epochs} | "
-                          f"Train: {train_loss:.6f} | Eval: {eval_mse:.6f} | "
-                          f"Time: {time.time()-t_epoch:.1f}s")
-                else:
-                    print(f"      Epoch {epoch:3d}/{n_epochs} | "
-                          f"Train: {train_loss:.6f} | Time: {time.time()-t_epoch:.1f}s")
+                    logger.info(f"  Epoch {epoch:3d}/{n_epochs} | "
+                                f"Train: {train_loss:.6f} | Eval: {eval_mse:.6f} | "
+                                f"Time: {time.time()-t_epoch:.1f}s")
+                elif epoch % log_every == 0:
+                    # Log progress periodically without evaluation
+                    logger.info(f"  Epoch {epoch:3d}/{n_epochs} | "
+                                f"Train: {train_loss:.6f} | Time: {time.time()-t_epoch:.1f}s")
             
             # Save checkpoint after each stage
             save_checkpoint(
@@ -485,10 +556,11 @@ def main():
             )
         
         # Save final checkpoint
+        final_loss = all_losses[-1] if all_losses else 0.0
         save_checkpoint(
             model, optimizer, epoch_counter,
             os.path.join(run_dir, "checkpoint_rollout_final.pt"),
-            cfg, {'train_loss': all_losses[-1]}
+            cfg, {'train_loss': final_loss}
         )
         
         # Final long-horizon evaluation
@@ -509,30 +581,35 @@ def main():
         
         t_elapsed = time.time() - t_start
         
-        print("\n" + "=" * 60)
-        print("  STEP 2 COMPLETE")
-        print("=" * 60)
-        print(f"  Time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
-        print(f"  Final rollout MSE (length={final_rollout}): {final_mse:.6f}")
+        logger.info("=" * 60)
+        logger.info("  STEP 2 COMPLETE")
+        logger.info("=" * 60)
+        logger.info(f"  Time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
+        logger.info(f"  Final rollout MSE (length={final_rollout}): {final_mse:.6f}")
+        
+        # Generate training loss plot
+        logger.info("Generating training loss plot...")
+        generate_step2_loss_plot(all_losses, all_eval_results, curriculum, run_dir, logger)
         
         # Generate test figures if requested
         if args.test:
-            print("\n  Generating rollout figures...")
+            logger.info("Generating rollout figures...")
             generate_rollout_figures(
                 model, test_states, device, run_dir,
                 rollout_length=min(final_rollout, len(test_states) - 1),
-                n_snapshots=5
+                n_snapshots=5,
+                logger=logger,
             )
         
-        print(f"\n  Results saved to: {run_dir}")
+        logger.info(f"Results saved to: {run_dir}")
         
-        # Update status
-        with open(os.path.join(run_dir, "status.txt"), 'w') as f:
+        # Update status (append to preserve history)
+        with open(os.path.join(run_dir, "status.txt"), 'a') as f:
             f.write("step2_completed\n")
         
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
-        with open(os.path.join(run_dir, "status.txt"), 'w') as f:
+        with open(os.path.join(run_dir, "status.txt"), 'a') as f:
             f.write(f"step2_failed: {e}\n")
         raise
 

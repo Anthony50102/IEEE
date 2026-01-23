@@ -251,12 +251,62 @@ def load_checkpoint(path, model, optimizer=None, device='cpu'):
 # Visualization (for --test flag)
 # =============================================================================
 
+def generate_loss_plot(train_losses: list, test_mses: list, run_dir: str, logger):
+    """
+    Generate and save training loss plot.
+    
+    Creates a 2-panel figure showing:
+    1. Training loss over epochs
+    2. Test MSE at evaluation points
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    
+    fig_dir = os.path.join(run_dir, 'figures')
+    os.makedirs(fig_dir, exist_ok=True)
+    
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    
+    # Training loss
+    ax = axes[0]
+    epochs = range(1, len(train_losses) + 1)
+    ax.semilogy(epochs, train_losses, 'b-', linewidth=1)
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Training Loss (MSE)')
+    ax.set_title('Training Loss')
+    ax.grid(True, alpha=0.3)
+    
+    # Test MSE
+    ax = axes[1]
+    if test_mses:
+        test_epochs, test_vals = zip(*test_mses)
+        ax.semilogy(test_epochs, test_vals, 'ro-', markersize=4, linewidth=1)
+        ax.axhline(min(test_vals), color='g', linestyle='--', alpha=0.7, 
+                   label=f'Best: {min(test_vals):.2e}')
+        ax.legend()
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Test MSE')
+    ax.set_title('Test MSE')
+    ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    plot_path = os.path.join(fig_dir, 'training_loss.png')
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()
+    
+    logger.info(f"Saved training loss plot to {plot_path}")
+
+
 def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5):
     """
     Generate comparison figures: prediction vs ground truth + error.
     
     Saves n_figs equally-spaced snapshots from the test set.
     """
+    import matplotlib
+    matplotlib.use('Agg')
     import matplotlib.pyplot as plt
     
     model.eval()
@@ -423,11 +473,15 @@ def main():
         
         # Training loop
         logger.info("Starting training...")
-        logger.info(f"Training for {n_epochs} epochs...")
+        logger.info(f"  Epochs: {n_epochs}, LR: {lr}, Batch size: {train_loader.batch_size}")
+        logger.info(f"  Eval every {eval_every} epochs, save every {save_every} epochs")
         
         best_mse = float('inf')
         train_losses = []
         test_mses = []
+        
+        # Progress tracking
+        log_every = max(1, n_epochs // 10)  # Log ~10 times during training
         
         for epoch in range(1, n_epochs + 1):
             t_epoch = time.time()
@@ -453,8 +507,10 @@ def main():
                             f"Train: {train_loss:.6f} | Test: {test_mse:.6f} | "
                             f"Time: {time.time()-t_epoch:.1f}s")
             else:
-                logger.debug(f"Epoch {epoch:4d}/{n_epochs} | "
-                             f"Train: {train_loss:.6f} | Time: {time.time()-t_epoch:.1f}s")
+                # Log progress periodically (not every epoch to avoid spam)
+                if epoch % log_every == 0:
+                    logger.info(f"Epoch {epoch:4d}/{n_epochs} | "
+                                f"Train: {train_loss:.6f} | LR: {scheduler.get_last_lr()[0]:.2e}")
             
             # Periodic checkpoint
             if epoch % save_every == 0:
@@ -486,6 +542,10 @@ def main():
         logger.info(f"  Final test MSE: {final_mse:.6f}")
         logger.info(f"  Best test MSE: {best_mse:.6f}")
         
+        # Generate loss plot
+        logger.info("Generating training loss plot...")
+        generate_loss_plot(train_losses, test_mses, run_dir, logger)
+        
         # Generate test figures if requested
         if args.test:
             logger.info("Generating test figures...")
@@ -494,14 +554,14 @@ def main():
         logger.info(f"Results saved to: {run_dir}")
         logger.info(f"Next: python step_2_train.py --config {args.config} --run-dir {run_dir}")
         
-        # Save status
-        with open(os.path.join(run_dir, "status.txt"), 'w') as f:
+        # Save status (append to preserve history)
+        with open(os.path.join(run_dir, "status.txt"), 'a') as f:
             f.write("step1_completed\n")
         
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
-        with open(os.path.join(run_dir, "status.txt"), 'w') as f:
-            f.write(f"failed: {e}\n")
+        with open(os.path.join(run_dir, "status.txt"), 'a') as f:
+            f.write(f"step1_failed: {e}\n")
         raise
 
 

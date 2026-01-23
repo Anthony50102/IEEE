@@ -8,12 +8,14 @@
 # Examples:
 #   sbatch run_fno.slurm 1 config/fno_temporal_split.yaml
 #   sbatch run_fno.slurm 2 config/fno_temporal_split.yaml /path/to/run_dir
+#   sbatch run_fno.slurm 3 config/fno_temporal_split.yaml /path/to/run_dir
 #   sbatch run_fno.slurm all config/fno_temporal_split.yaml
 #
 # Steps:
 #   1 - Single-step FNO training
 #   2 - Autoregressive rollout training
-#   all - Run both steps sequentially
+#   3 - Evaluation and prediction
+#   all - Run all steps sequentially
 #
 #=============================================================================
 
@@ -23,7 +25,7 @@
 #SBATCH -p gh              # GPU partition (adjust for your system)
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH -t 12:00:00
+#SBATCH -t 24:00:00         # 24 hours for long runs
 
 set -e
 
@@ -97,8 +99,18 @@ case $STEP in
         python fno/step_2_train.py --config $CONFIG --run-dir $RUN_DIR --test
         ;;
     
+    3)
+        if [ -z "$RUN_DIR" ]; then
+            echo "ERROR: Step 3 requires --run-dir from Steps 1/2"
+            echo "Usage: sbatch run_fno.slurm 3 config.yaml /path/to/run_dir"
+            exit 1
+        fi
+        echo "Running Step 3: Evaluation and prediction..."
+        python fno/step_3_evaluate.py --config $CONFIG --run-dir $RUN_DIR
+        ;;
+    
     all)
-        echo "Running Full Pipeline (Steps 1 + 2)..."
+        echo "Running Full Pipeline (Steps 1 + 2 + 3)..."
         echo ""
         
         # Step 1
@@ -121,11 +133,16 @@ case $STEP in
         # Step 2
         echo "=== Step 2: Autoregressive rollout training ==="
         python fno/step_2_train.py --config $CONFIG --run-dir $LATEST_RUN --test
+        
+        # Step 3
+        echo ""
+        echo "=== Step 3: Evaluation and prediction ==="
+        python fno/step_3_evaluate.py --config $CONFIG --run-dir $LATEST_RUN
         ;;
     
     *)
         echo "ERROR: Unknown step '$STEP'"
-        echo "Valid options: 1, 2, all"
+        echo "Valid options: 1, 2, 3, all"
         exit 1
         ;;
 esac
