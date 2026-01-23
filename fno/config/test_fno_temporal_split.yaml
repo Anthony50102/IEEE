@@ -20,10 +20,10 @@ physics:
 
 # Training mode configuration
 training_mode: "temporal_split"
-train_start: 8000      # Train from snapshot 8000
-train_end: 16000       # Train to snapshot 16000  
-test_start: 16000      # Test from snapshot 16000
-test_end: 20000  
+train_start: 8100      # Train from snapshot 8000
+train_end: 8200       # Train to snapshot 16000  
+test_start: 8200      # Test from snapshot 16000
+test_end: 8300
   #train_start: 8100      # Train from snapshot 8000
   #train_end: 8200       # Train to snapshot 16000  
   #test_start: 8300      # Test from snapshot 16000
@@ -39,7 +39,7 @@ model:
 
 # Training configuration
 training:
-  batch_size: 16        # Pairs per mini-batch
+  batch_size: 1       # Pairs per mini-batch
   n_epochs: 100         # Number of training epochs
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
