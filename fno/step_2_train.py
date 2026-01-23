@@ -44,13 +44,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # - rollout_length: number of autoregressive steps
 # - teacher_forcing_ratio: probability of using ground truth (vs model prediction)
 # - n_epochs: training epochs at this stage
+#
+# NOTE: Teacher forcing starts HIGH (training wheels) and decreases
+# so the model learns to recover from its own errors over time.
 
 DEFAULT_CURRICULUM = [
-    (5,  0.0, 20),   # Stage 1: Short rollouts, no teacher forcing
-    (10, 0.2, 20),   # Stage 2: Medium rollouts, 20% teacher forcing
+    (5,  0.8, 20),   # Stage 1: Short rollouts, 80% teacher forcing (learn basics)
+    (10, 0.6, 20),   # Stage 2: Medium rollouts, 60% teacher forcing
     (20, 0.4, 20),   # Stage 3: Longer rollouts, 40% teacher forcing
-    (40, 0.6, 20),   # Stage 4: Long rollouts, 60% teacher forcing
-    (80, 0.8, 30),   # Stage 5: Very long rollouts, 80% teacher forcing
+    (40, 0.2, 20),   # Stage 4: Long rollouts, 20% teacher forcing
+    (80, 0.0, 30),   # Stage 5: Very long rollouts, no teacher forcing (fully autoregressive)
 ]
 
 
@@ -75,6 +78,7 @@ def train_rollout_epoch(
     batch_size: int = 8,
     grad_clip: float = 1.0,
     use_checkpointing: bool = True,
+    noise_std: float = 0.01,
 ) -> float:
     """
     Train one epoch of rollout training.
@@ -93,6 +97,7 @@ def train_rollout_epoch(
         batch_size: Number of parallel rollouts
         grad_clip: Gradient clipping value
         use_checkpointing: If True, use gradient checkpointing to save memory
+        noise_std: Std of Gaussian noise added to inputs (robustness)
     
     Returns:
         Average loss for the epoch
@@ -122,6 +127,10 @@ def train_rollout_epoch(
             # Load initial state (memory efficient: load one at a time)
             x = torch.from_numpy(states[start_idx:start_idx+1]).float().to(device)
             
+            # Add noise for robustness (helps model handle its own prediction errors)
+            if noise_std > 0:
+                x = x + noise_std * torch.randn_like(x)
+            
             rollout_loss = 0.0
             
             for step in range(rollout_length):
@@ -148,6 +157,9 @@ def train_rollout_epoch(
                 # Scheduled sampling: use GT or prediction for next step
                 if np.random.random() < teacher_forcing_ratio:
                     x = y_true
+                    # Add noise even to GT to improve robustness
+                    if noise_std > 0:
+                        x = x + noise_std * torch.randn_like(x)
                 else:
                     x = y_pred.detach()
                 
@@ -402,6 +414,7 @@ def main():
         grad_clip = train_cfg.get('grad_clip', 1.0)
         batch_size = train_cfg.get('batch_size', 8)
         use_checkpointing = train_cfg.get('gradient_checkpointing', True)  # Default ON for memory
+        noise_std = train_cfg.get('noise_std', 0.01)  # Input noise for robustness
         
         if use_checkpointing:
             logger.info("Gradient checkpointing ENABLED (saves memory, slower training)")
@@ -439,7 +452,8 @@ def main():
                 train_loss = train_rollout_epoch(
                     model, train_states, optimizer, device,
                     rollout_length, tf_ratio, batch_size, grad_clip,
-                    use_checkpointing=use_checkpointing
+                    use_checkpointing=use_checkpointing,
+                    noise_std=noise_std,
                 )
                 all_losses.append(train_loss)
                 scheduler.step()
