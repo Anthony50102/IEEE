@@ -44,6 +44,8 @@ training:
   learning_rate: 1.0e-3
   weight_decay: 1.0e-4
   grad_clip: 1.0        # Gradient clipping norm
+  noise_std: 0.01       # Input noise for rollout robustness (step 2)
+  gradient_checkpointing: true  # Save memory during rollout training
   
   # Learning rate scheduler
   scheduler:
@@ -53,6 +55,16 @@ training:
   # Checkpointing
   save_every: 20        # Save checkpoint every N epochs
   eval_every: 10        # Evaluate on test set every N epochs
+
+# Step 2: Curriculum for autoregressive rollout training
+# Format: [rollout_length, teacher_forcing_ratio, n_epochs]
+# Teacher forcing: high early (training wheels) → low late (self-correct)
+curriculum:
+  - [5,  0.8, 20]   # Stage 1: Short rollouts, 80% teacher forcing
+  - [10, 0.6, 20]   # Stage 2: Medium rollouts, 60% teacher forcing
+  - [20, 0.4, 20]   # Stage 3: Longer rollouts, 40% teacher forcing
+  - [40, 0.2, 20]   # Stage 4: Long rollouts, 20% teacher forcing
+  - [80, 0.0, 30]   # Stage 5: Full autoregressive (no teacher forcing)
 
 # Logging
 log_level: "INFO"
