@@ -5,9 +5,10 @@
 #   ./run_local.sh config/fno_temporal_split.yaml [step]
 #
 # Examples:
-#   ./run_local.sh config/fno_temporal_split.yaml        # Run both steps
+#   ./run_local.sh config/fno_temporal_split.yaml        # Run all steps
 #   ./run_local.sh config/fno_temporal_split.yaml 1      # Run step 1 only
 #   ./run_local.sh config/fno_temporal_split.yaml 2      # Run step 2 only (requires existing run dir)
+#   ./run_local.sh config/fno_temporal_split.yaml 3      # Run step 3 only (requires existing run dir)
 
 set -e
 
@@ -37,6 +38,16 @@ if [ "$STEP" = "2" ]; then
     python step_2_train.py --config "$CONFIG" --run-dir "$RUN_DIR"
 fi
 
+if [ "$STEP" = "3" ]; then
+    if [ -z "$RUN_DIR" ]; then
+        echo "Error: Step 3 requires --run-dir argument"
+        echo "Usage: ./run_local.sh config.yaml 3 <run_dir>"
+        exit 1
+    fi
+    echo "Running Step 3: Evaluation..."
+    python step_3_evaluate.py --config "$CONFIG" --run-dir "$RUN_DIR"
+fi
+
 if [ "$STEP" = "all" ]; then
     # Find the most recent run directory
     LATEST_RUN=$(ls -td output/fno_* 2>/dev/null | head -1)
@@ -44,7 +55,11 @@ if [ "$STEP" = "all" ]; then
         echo ""
         echo "Running Step 2: Rollout Training..."
         python step_2_train.py --config "$CONFIG" --run-dir "$LATEST_RUN"
+        
+        echo ""
+        echo "Running Step 3: Evaluation..."
+        python step_3_evaluate.py --config "$CONFIG" --run-dir "$LATEST_RUN"
     else
-        echo "Warning: No run directory found for Step 2"
+        echo "Warning: No run directory found for Steps 2/3"
     fi
 fi
