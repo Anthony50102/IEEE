@@ -31,7 +31,7 @@ print_header() {
 
 run_step_1() {
     print_header "STEP 1: Preprocessing and POD"
-    mpirun -n $N_PROCS python3 dmd/step_1_preprocess.py \
+    python3 dmd/step_1_preprocess.py \
         --config "$CONFIG"
 }
 

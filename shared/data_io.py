@@ -391,3 +391,136 @@ def reconstruct_full_state_manifold(
     Q = V @ X_hat + W @ H + shift[:, np.newaxis]
     
     return Q
+
+
+# =============================================================================
+# KURAMOTO-SIVASHINSKY DATA LOADING
+# =============================================================================
+
+def get_ks_file_metadata(file_path: str) -> dict:
+    """
+    Get metadata from KS simulation file without loading full data.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+
+    Returns
+    -------
+    dict
+        Dictionary with n_time, N, n_spatial, dt, L, dx.
+    """
+    with h5py.File(file_path, 'r') as f:
+        n_time, N = f['u'].shape
+        dt = float(f.attrs.get('dt', 0.1))
+        L = float(f.attrs.get('L', 100.0))
+        dx = float(f.attrs.get('dx', L / N))
+
+    return {
+        'n_time': n_time,
+        'N': N,
+        'n_spatial': N,  # Single field
+        'n_fields': 1,
+        'dt': dt,
+        'L': L,
+        'dx': dx,
+    }
+
+
+def load_ks_timeseries(
+    file_path: str,
+    max_timesteps: Optional[int] = None,
+    start_timestep: int = 0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load full time series from KS simulation.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+    max_timesteps : int, optional
+        Maximum number of timesteps to load (None = all).
+    start_timestep : int
+        Starting timestep index.
+
+    Returns
+    -------
+    tuple
+        (u, energy, enstrophy)
+        - u: shape (n_time, N)
+        - energy: shape (n_time,)
+        - enstrophy: shape (n_time,)
+    """
+    with h5py.File(file_path, 'r') as f:
+        end_idx = start_timestep + max_timesteps if max_timesteps else None
+        u = np.array(f['u'][start_timestep:end_idx])
+        energy = np.array(f['energy'][start_timestep:end_idx])
+        enstrophy = np.array(f['enstrophy'][start_timestep:end_idx])
+
+    return u, energy, enstrophy
+
+
+def load_ks_stacked_state_matrix(
+    file_path: str,
+    max_timesteps: Optional[int] = None,
+    start_timestep: int = 0,
+) -> np.ndarray:
+    """
+    Load KS data as state matrix Q with shape (N, n_time).
+
+    This is the standard format for POD/ROM methods where each column
+    is a flattened state vector. For KS there is only one field (u).
+
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+    max_timesteps : int, optional
+        Maximum number of timesteps.
+    start_timestep : int
+        Starting timestep index.
+
+    Returns
+    -------
+    np.ndarray
+        Q matrix with shape (N, n_time).
+    """
+    with h5py.File(file_path, 'r') as f:
+        end_idx = start_timestep + max_timesteps if max_timesteps else None
+        u = np.array(f['u'][start_timestep:end_idx])  # (n_time, N)
+
+    return u.T  # (N, n_time)
+
+
+def load_ks_reference_states(
+    ref_file: str,
+    n_steps: int,
+    ref_offset: int = 0,
+) -> Tuple[np.ndarray, int]:
+    """
+    Load reference KS states from simulation file.
+
+    Returns states in shape (N, n_steps).
+
+    Parameters
+    ----------
+    ref_file : str
+        Path to HDF5 simulation file.
+    n_steps : int
+        Number of timesteps to load.
+    ref_offset : int
+        Starting offset into the file.
+
+    Returns
+    -------
+    Q : np.ndarray, shape (N, n_steps)
+        State matrix.
+    N : int
+        Number of spatial points.
+    """
+    with h5py.File(ref_file, 'r') as f:
+        u = np.array(f['u'][ref_offset:ref_offset + n_steps])  # (n_steps, N)
+    N = u.shape[1]
+    return u.T, N

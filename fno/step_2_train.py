@@ -261,11 +261,13 @@ def generate_rollout_figures(
     rollout_length: int = 20,
     n_snapshots: int = 5,
     logger = None,
+    pde: str = "hw2d",
 ):
     """
     Generate rollout comparison figures.
     
     Shows prediction vs ground truth at several points along a rollout.
+    Handles both 2D HW2D and 1D KS data.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -291,37 +293,54 @@ def generate_rollout_figures(
             predictions.append(y_pred[0].cpu().numpy())
             x = y_pred
     
-    predictions = np.array(predictions)  # (steps, C, H, W)
+    predictions = np.array(predictions)  # (steps, C, H, W) or (steps, 1, N)
     
     # Select snapshots to visualize (equally spaced)
     snapshot_indices = np.linspace(0, rollout_length - 1, n_snapshots, dtype=int)
+    is_1d = (pde == "ks")
     
     for i, step in enumerate(snapshot_indices):
-        pred = predictions[step]                    # (C, H, W)
-        truth = test_states[start_idx + step + 1]  # (C, H, W)
+        pred = predictions[step]                    # (C, H, W) or (1, N)
+        truth = test_states[start_idx + step + 1]  # (C, H, W) or (1, N)
         
-        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-        field_names = ['Density', 'Potential']
-        
-        for row, (name, p, t) in enumerate(zip(field_names, pred, truth)):
-            error = p - t
+        if is_1d:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+            pred_1d, truth_1d = pred[0], truth[0]
+            x_grid = np.arange(len(truth_1d))
             
-            vmin, vmax = t.min(), t.max()
-            im0 = axes[row, 0].imshow(p, cmap='viridis', vmin=vmin, vmax=vmax)
-            axes[row, 0].set_title(f'{name} - Prediction')
-            axes[row, 0].axis('off')
-            plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+            axes[0].plot(x_grid, truth_1d, 'b-', lw=1, label='Truth')
+            axes[0].plot(x_grid, pred_1d, 'r--', lw=1, label='Prediction')
+            axes[0].set_title('u — Prediction vs Truth')
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
             
-            im1 = axes[row, 1].imshow(t, cmap='viridis', vmin=vmin, vmax=vmax)
-            axes[row, 1].set_title(f'{name} - Ground Truth')
-            axes[row, 1].axis('off')
-            plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+            error_1d = pred_1d - truth_1d
+            axes[1].plot(x_grid, error_1d, 'k-', lw=1)
+            axes[1].set_title(f'Error (MSE={np.mean(error_1d**2):.2e})')
+            axes[1].grid(True, alpha=0.3)
+        else:
+            fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+            field_names = ['Density', 'Potential']
             
-            err_max = max(abs(error.min()), abs(error.max()))
-            im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
-            axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
-            axes[row, 2].axis('off')
-            plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
+            for row, (name, p, t) in enumerate(zip(field_names, pred, truth)):
+                error = p - t
+                
+                vmin, vmax = t.min(), t.max()
+                im0 = axes[row, 0].imshow(p, cmap='viridis', vmin=vmin, vmax=vmax)
+                axes[row, 0].set_title(f'{name} - Prediction')
+                axes[row, 0].axis('off')
+                plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+                
+                im1 = axes[row, 1].imshow(t, cmap='viridis', vmin=vmin, vmax=vmax)
+                axes[row, 1].set_title(f'{name} - Ground Truth')
+                axes[row, 1].axis('off')
+                plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+                
+                err_max = max(abs(error.min()), abs(error.max()))
+                im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
+                axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
+                axes[row, 2].axis('off')
+                plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
         
         plt.suptitle(f'Rollout Step {step + 1}/{rollout_length}', fontsize=14)
         plt.tight_layout()
@@ -333,8 +352,10 @@ def generate_rollout_figures(
         if logger:
             logger.debug(f"  Saved: {fig_path}")
     
-    # Also save error-over-time plot
-    step_mses = np.mean((predictions - test_states[start_idx+1:start_idx+rollout_length+1])**2, axis=(1,2,3))
+    # Error-over-time plot — use tuple of axes to compute mean over all non-time dims
+    ref_slice = test_states[start_idx+1:start_idx+rollout_length+1]
+    reduce_axes = tuple(range(1, predictions.ndim))
+    step_mses = np.mean((predictions - ref_slice)**2, axis=reduce_axes)
     
     fig, ax = plt.subplots(figsize=(8, 5))
     ax.semilogy(range(1, rollout_length + 1), step_mses, 'o-', markersize=4)
@@ -456,8 +477,9 @@ def main():
         test_end = cfg.get('test_end', 500)
         
         logger.info(f"Loading data from {file_path}")
-        train_states = load_trajectory_slice(file_path, train_start, train_end)
-        test_states = load_trajectory_slice(file_path, test_start, test_end)
+        pde = cfg.get('pde', 'hw2d')
+        train_states = load_trajectory_slice(file_path, train_start, train_end, pde=pde)
+        test_states = load_trajectory_slice(file_path, test_start, test_end, pde=pde)
         
         logger.info(f"  Train: {train_states.shape}")
         logger.info(f"  Test: {test_states.shape}")
@@ -599,6 +621,7 @@ def main():
                 rollout_length=min(final_rollout, len(test_states) - 1),
                 n_snapshots=5,
                 logger=logger,
+                pde=cfg.get('pde', 'hw2d'),
             )
         
         logger.info(f"Results saved to: {run_dir}")

@@ -24,6 +24,8 @@ def load_trajectory(file_path: str, cfg, logger) -> tuple:
     """
     Load a single simulation trajectory.
     
+    Dispatches based on cfg.pde: 'hw2d' loads density/phi, 'ks' loads u.
+    
     Parameters
     ----------
     file_path : str
@@ -37,8 +39,14 @@ def load_trajectory(file_path: str, cfg, logger) -> tuple:
     -------
     tuple
         (Q, n_y, n_x) - State matrix (n_spatial, n_time), grid dimensions.
+        For KS: n_y=1, n_x=N (1D PDE).
     """
     logger.info(f"  Loading: {os.path.basename(file_path)}")
+    
+    pde = getattr(cfg, 'pde', 'hw2d')
+    
+    if pde == "ks":
+        return _load_trajectory_ks(file_path, cfg, logger)
     
     fh = loader(file_path, engine=cfg.engine)
     
@@ -68,6 +76,35 @@ def load_trajectory(file_path: str, cfg, logger) -> tuple:
     Q = np.vstack([density_flat, phi_flat])  # (2*n_y*n_x, n_time)
     
     return Q, n_y, n_x
+
+
+def _load_trajectory_ks(file_path: str, cfg, logger) -> tuple:
+    """
+    Load a KS trajectory.
+    
+    State vector is [u], shape (N, n_time).
+    Returns n_y=1, n_x=N to encode the 1D geometry.
+    """
+    import h5py
+    with h5py.File(file_path, 'r') as f:
+        u = np.array(f['u'][:])  # (n_time, N)
+    
+    n_time_orig, N = u.shape
+    
+    # Apply truncation if enabled
+    if cfg.truncation_enabled:
+        if cfg.truncation_method == "time":
+            n_time = int(cfg.truncation_time / cfg.dt)
+        else:
+            n_time = cfg.truncation_snapshots
+        n_time = min(n_time, n_time_orig)
+        u = u[:n_time]
+    
+    n_time = u.shape[0]
+    logger.info(f"    KS Shape: ({n_time}, {N})")
+    
+    Q = u.T  # (N, n_time)
+    return Q, 1, N
 
 
 # =============================================================================

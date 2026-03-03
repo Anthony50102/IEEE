@@ -180,3 +180,129 @@ def get_hw2d_grid_params(k0: float = 0.15, nx: int = 256) -> dict:
         'nx': nx,
         'ny': nx,
     }
+
+
+# =============================================================================
+# KURAMOTO-SIVASHINSKY PHYSICS
+# =============================================================================
+
+def get_ks_grid_params(L: float = 100.0, N: int = 200) -> dict:
+    """
+    Get standard KS grid parameters.
+
+    Parameters
+    ----------
+    L : float
+        Domain length.
+    N : int
+        Number of spatial grid points.
+
+    Returns
+    -------
+    dict
+        Dictionary with L, dx, N.
+    """
+    dx = L / N
+    return {
+        'L': L,
+        'dx': dx,
+        'N': N,
+    }
+
+
+def compute_ks_energy(u: np.ndarray) -> float:
+    """
+    Compute spatial-mean kinetic energy for KS: E = <u^2> / 2.
+
+    Parameters
+    ----------
+    u : np.ndarray, shape (N,)
+        KS field at a single timestep.
+
+    Returns
+    -------
+    float
+        Scalar energy value.
+    """
+    return 0.5 * np.mean(u ** 2)
+
+
+def compute_ks_enstrophy(u: np.ndarray, dx: float) -> float:
+    """
+    Compute spatial-mean enstrophy (energy production) for KS: P = <u_x^2>.
+
+    Uses central differences with periodic boundary conditions.
+
+    Parameters
+    ----------
+    u : np.ndarray, shape (N,)
+        KS field at a single timestep.
+    dx : float
+        Grid spacing.
+
+    Returns
+    -------
+    float
+        Scalar enstrophy value.
+    """
+    u_padded = np.pad(u, (1, 1), mode='wrap')
+    u_x = (u_padded[2:] - u_padded[:-2]) / (2 * dx)
+    return np.mean(u_x ** 2)
+
+
+def compute_ks_qoi_timeseries(u: np.ndarray, dx: float) -> tuple:
+    """
+    Compute energy and enstrophy time series for KS data.
+
+    Parameters
+    ----------
+    u : np.ndarray, shape (n_time, N)
+        KS field evolution.
+    dx : float
+        Grid spacing.
+
+    Returns
+    -------
+    tuple
+        (energy, enstrophy), each shape (n_time,).
+    """
+    energy = 0.5 * np.mean(u ** 2, axis=-1)
+
+    u_padded = np.pad(u, ((0, 0), (1, 1)), mode='wrap')
+    u_x = (u_padded[:, 2:] - u_padded[:, :-2]) / (2 * dx)
+    enstrophy = np.mean(u_x ** 2, axis=-1)
+
+    return energy, enstrophy
+
+
+def compute_ks_qoi_from_state_vector(
+    state: np.ndarray,
+    N: int,
+    dx: float,
+) -> tuple:
+    """
+    Compute KS energy and enstrophy from a flattened state vector.
+
+    The state vector is assumed to be [u_flat].
+
+    Parameters
+    ----------
+    state : np.ndarray, shape (N,) or (N, n_time)
+        Flattened state vector(s).
+    N : int
+        Number of spatial points.
+    dx : float
+        Grid spacing.
+
+    Returns
+    -------
+    tuple
+        (energy, enstrophy) — scalars if input is 1D, arrays if 2D.
+    """
+    if state.ndim == 1:
+        u = state[:N]
+        return compute_ks_energy(u), compute_ks_enstrophy(u, dx)
+    else:
+        # state is (N, n_time), transpose to (n_time, N) for vectorized computation
+        u = state[:N, :].T
+        return compute_ks_qoi_timeseries(u, dx)

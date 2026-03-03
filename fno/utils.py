@@ -14,26 +14,40 @@ from torch.utils.data import Dataset, DataLoader
 
 # ============== Data Processing ==============
 
-def process_state_data(density, potential):
-    """Process density and potential into state tensor."""
+def process_state_data(density, potential=None, pde="hw2d"):
+    """Process fields into state tensor.
+    
+    For HW2D: stacks density and potential → (T, 2, H, W).
+    For KS: wraps u → (T, 1, N).
+    """
+    if pde == "ks":
+        return density[:, np.newaxis, :]  # density is actually u for KS: (T, 1, N)
     return np.stack([density, potential], axis=1)  # (T, 2, H, W)
 
 
-def process_derived_data(gamma_n, gamma_c):
-    """Process gamma_n and gamma_c into derived tensor."""
-    return np.stack([gamma_n, gamma_c], axis=1)  # (T, 2)
+def process_derived_data(qoi_1, qoi_2):
+    """Process QoI arrays into derived tensor: (T, 2)."""
+    return np.stack([qoi_1, qoi_2], axis=1)  # (T, 2)
 
 
-def load_h5_data(filepath, truncation=1.0):
+def load_h5_data(filepath, truncation=1.0, pde="hw2d"):
     """Load data from HDF5 file with optional truncation."""
     with h5py.File(filepath, 'r') as f:
-        end_idx = int(f['density'].shape[0] * truncation)
-        data = {
-            'density': f['density'][:end_idx],
-            'potential': f['phi'][:end_idx],
-            'gamma_n': f['gamma_n'][:end_idx],
-            'gamma_c': f['gamma_c'][:end_idx],
-        }
+        if pde == "ks":
+            end_idx = int(f['u'].shape[0] * truncation)
+            data = {
+                'u': f['u'][:end_idx],
+                'energy': f['energy'][:end_idx],
+                'enstrophy': f['enstrophy'][:end_idx],
+            }
+        else:
+            end_idx = int(f['density'].shape[0] * truncation)
+            data = {
+                'density': f['density'][:end_idx],
+                'potential': f['phi'][:end_idx],
+                'gamma_n': f['gamma_n'][:end_idx],
+                'gamma_c': f['gamma_c'][:end_idx],
+            }
     return data
 
 
@@ -309,16 +323,16 @@ def rollout_state(model, initial_state, num_steps, device):
     
     Args:
         model: State prediction model
-        initial_state: (C, H, W) numpy array
+        initial_state: (C, ...) numpy array (e.g. (2, H, W) for HW2D or (1, N) for KS)
         num_steps: Number of steps to predict
         device: torch device
     
     Returns:
-        (T, C, H, W) numpy array of predicted states
+        (T, C, ...) numpy array of predicted states
     """
     model.eval()
-    C, H, W = initial_state.shape
-    recon = np.zeros((num_steps, C, H, W))
+    shape = initial_state.shape
+    recon = np.zeros((num_steps,) + shape)
     recon[0] = initial_state
     
     state = torch.from_numpy(initial_state).float().to(device)
@@ -336,14 +350,14 @@ def rollout_combined(state_model, derived_model, initial_state, num_steps, devic
     Combined rollout: predict both states and derived quantities.
     
     Returns:
-        state_recon: (T, C, H, W)
+        state_recon: (T, C, ...) — e.g. (T, 2, H, W) or (T, 1, N)
         derived_recon: (T, 2)
     """
     state_model.eval()
     derived_model.eval()
     
-    C, H, W = initial_state.shape
-    state_recon = np.zeros((num_steps, C, H, W))
+    shape = initial_state.shape
+    state_recon = np.zeros((num_steps,) + shape)
     derived_recon = np.zeros((num_steps, 2))
     
     state_recon[0] = initial_state

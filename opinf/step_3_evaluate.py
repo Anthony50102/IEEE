@@ -30,39 +30,65 @@ from utils import (
 )
 from data import load_ensemble, load_preprocessing_info
 from evaluation import compute_ensemble_predictions, compute_metrics
-from shared.plotting import plot_gamma_timeseries, generate_state_diagnostic_plots
+from shared.plotting import (
+    plot_gamma_timeseries, plot_qoi_timeseries,
+    generate_state_diagnostic_plots,
+)
 from utils import load_dataset
 
 
 def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndarray,
                          dt: float, engine: str, output_dir: str, logger,
-                         start_offset: int = 0):
+                         start_offset: int = 0, pde: str = "hw2d"):
     """
-    Generate Gamma plots for OpInf ensemble predictions.
+    Generate QoI plots for OpInf ensemble predictions.
     
-    Loads reference data and calls the shared plotting function.
+    For hw2d: plots Gamma_n and Gamma_c.
+    For ks: plots energy and enstrophy.
     """
     os.makedirs(output_dir, exist_ok=True)
     n_traj = len(predictions['Gamma_n'])
     
     for i in range(n_traj):
-        fh = load_dataset(ref_files[i], engine)
         n_steps = boundaries[i + 1] - boundaries[i]
-        
-        ref_n = fh["gamma_n"].values[start_offset:start_offset + n_steps]
-        ref_c = fh["gamma_c"].values[start_offset:start_offset + n_steps]
         
         pred_n = predictions['Gamma_n'][i]  # Shape: (n_ensemble, n_steps)
         pred_c = predictions['Gamma_c'][i]
         
-        output_path = os.path.join(output_dir, f'traj_{i+1}_gamma.png')
-        plot_gamma_timeseries(
-            pred_n=pred_n, pred_c=pred_c,
-            ref_n=ref_n, ref_c=ref_c,
-            dt=dt, output_path=output_path, logger=logger,
-            title_prefix=f'Trajectory {i+1}: ',
-            method_name="OpInf"
-        )
+        # Skip trajectory if all models produced NaN (empty predictions)
+        if pred_n.size == 0 or pred_c.size == 0:
+            logger.warning(f"  Trajectory {i+1}: no valid predictions, skipping plot")
+            continue
+        
+        if pde == "ks":
+            import h5py
+            with h5py.File(ref_files[i], 'r') as f:
+                ref_n = np.array(f['energy'][start_offset:start_offset + n_steps])
+                ref_c = np.array(f['enstrophy'][start_offset:start_offset + n_steps])
+            
+            output_path = os.path.join(output_dir, f'traj_{i+1}_qoi.png')
+            plot_qoi_timeseries(
+                pred_1=pred_n, pred_2=pred_c,
+                ref_1=ref_n, ref_2=ref_c,
+                dt=dt, output_path=output_path, logger=logger,
+                label_1="Energy", label_2="Enstrophy",
+                symbol_1=r"$E$", symbol_2=r"$P$",
+                title_prefix=f'Trajectory {i+1}: ',
+                method_name="OpInf"
+            )
+        else:
+            fh = load_dataset(ref_files[i], engine)
+            ref_n = fh["gamma_n"].values[start_offset:start_offset + n_steps]
+            ref_c = fh["gamma_c"].values[start_offset:start_offset + n_steps]
+            
+            output_path = os.path.join(output_dir, f'traj_{i+1}_gamma.png')
+            plot_gamma_timeseries(
+                pred_n=pred_n, pred_c=pred_c,
+                ref_n=ref_n, ref_c=ref_c,
+                dt=dt, output_path=output_path, logger=logger,
+                title_prefix=f'Trajectory {i+1}: ',
+                method_name="OpInf"
+            )
     
     logger.info(f"Plots saved to {output_dir}")
 
@@ -159,11 +185,12 @@ def main():
         # Compute metrics
         train_metrics = compute_metrics(
             train_pred, cfg.training_files, train_bounds, cfg.engine, logger,
-            start_offset=train_offset
+            start_offset=train_offset, pde=cfg.pde
         )
         test_metrics = compute_metrics(
             test_pred, cfg.test_files if cfg.test_files else cfg.training_files,
-            test_bounds, cfg.engine, logger, start_offset=test_offset
+            test_bounds, cfg.engine, logger, start_offset=test_offset,
+            pde=cfg.pde
         )
         
         all_metrics = {'train': train_metrics, 'test': test_metrics}
@@ -176,12 +203,12 @@ def main():
             generate_gamma_plots(train_pred, cfg.training_files, train_bounds,
                                  cfg.dt, cfg.engine, 
                                  os.path.join(paths["figures_dir"], "train"), logger,
-                                 start_offset=train_offset)
+                                 start_offset=train_offset, pde=cfg.pde)
             generate_gamma_plots(test_pred, 
                                  cfg.test_files if cfg.test_files else cfg.training_files,
                                  test_bounds, cfg.dt, cfg.engine,
                                  os.path.join(paths["figures_dir"], "test"), logger,
-                                 start_offset=test_offset)
+                                 start_offset=test_offset, pde=cfg.pde)
         
         # Generate state diagnostic plots (optional)
         if cfg.plot_state_error or cfg.plot_state_snapshots:
@@ -230,37 +257,59 @@ def main():
             test_ref_files = cfg.test_files if cfg.test_files else cfg.training_files
             
             # Prepare reduced states for plotting (ensemble mean)
-            train_reduced = [np.mean(X, axis=0).T for X in train_pred['X_OpInf']]  # each becomes (r, n_time)
-            test_reduced = [np.mean(X, axis=0).T for X in test_pred['X_OpInf']]
+            # Skip trajectories where all models NaN'd (empty X_OpInf)
+            train_reduced = [
+                np.mean(X, axis=0).T if X.size > 0 else None
+                for X in train_pred['X_OpInf']
+            ]
+            test_reduced = [
+                np.mean(X, axis=0).T if X.size > 0 else None
+                for X in test_pred['X_OpInf']
+            ]
             
-            generate_state_diagnostic_plots(
-                train_reduced, train_ref_files, train_bounds,
-                pod_basis, temporal_mean, n_y, n_x,
-                cfg.engine, cfg.dt,
-                os.path.join(paths["figures_dir"], "train"), logger,
-                method_name="OpInf",
-                prefix="train_", ref_offset=train_offset,
-                plot_error=cfg.plot_state_error,
-                plot_snapshots=cfg.plot_state_snapshots,
-                n_snapshots=cfg.n_snapshot_samples,
-                reduction_method=reduction_method,
-                manifold_W=manifold_W,
-                manifold_shift=manifold_shift
-            )
-            generate_state_diagnostic_plots(
-                test_reduced, test_ref_files, test_bounds,
-                pod_basis, temporal_mean, n_y, n_x,
-                cfg.engine, cfg.dt,
-                os.path.join(paths["figures_dir"], "test"), logger,
-                method_name="OpInf",
-                prefix="test_", ref_offset=test_offset,
-                plot_error=cfg.plot_state_error,
-                plot_snapshots=cfg.plot_state_snapshots,
-                n_snapshots=cfg.n_snapshot_samples,
-                reduction_method=reduction_method,
-                manifold_W=manifold_W,
-                manifold_shift=manifold_shift
-            )
+            # Filter out None entries (trajectories with no valid predictions)
+            train_reduced = [x for x in train_reduced if x is not None]
+            test_reduced = [x for x in test_reduced if x is not None]
+            
+            ks_dx = cfg.ks_L / cfg.ks_N if cfg.pde == "ks" else None
+            if train_reduced:
+                generate_state_diagnostic_plots(
+                    train_reduced, train_ref_files, train_bounds,
+                    pod_basis, temporal_mean, n_y, n_x,
+                    cfg.engine, cfg.dt,
+                    os.path.join(paths["figures_dir"], "train"), logger,
+                    method_name="OpInf",
+                    prefix="train_", ref_offset=train_offset,
+                    plot_error=cfg.plot_state_error,
+                    plot_snapshots=cfg.plot_state_snapshots,
+                    n_snapshots=cfg.n_snapshot_samples,
+                    reduction_method=reduction_method,
+                    manifold_W=manifold_W,
+                    manifold_shift=manifold_shift,
+                    pde=cfg.pde,
+                    dx=ks_dx,
+                )
+            else:
+                logger.warning("No valid training predictions for state diagnostics")
+            if test_reduced:
+                generate_state_diagnostic_plots(
+                    test_reduced, test_ref_files, test_bounds,
+                    pod_basis, temporal_mean, n_y, n_x,
+                    cfg.engine, cfg.dt,
+                    os.path.join(paths["figures_dir"], "test"), logger,
+                    method_name="OpInf",
+                    prefix="test_", ref_offset=test_offset,
+                    plot_error=cfg.plot_state_error,
+                    plot_snapshots=cfg.plot_state_snapshots,
+                    n_snapshots=cfg.n_snapshot_samples,
+                    reduction_method=reduction_method,
+                    manifold_W=manifold_W,
+                    manifold_shift=manifold_shift,
+                    pde=cfg.pde,
+                    dx=ks_dx,
+                )
+            else:
+                logger.warning("No valid test predictions for state diagnostics")
         
         # Print summary
         print_header("EVALUATION SUMMARY")

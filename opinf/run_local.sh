@@ -18,7 +18,7 @@ set -e
 STEP=${1:-1}
 CONFIG=${2:-config/local_opinf.yaml}
 RUN_DIR=${3:-}
-N_PROCS=${N_PROCS:-4}
+N_PROCS=${N_PROCS:-11}
 
 cd "$(dirname "$0")/.."
 
@@ -34,6 +34,9 @@ run_step_1() {
     mpirun -n $N_PROCS python3 opinf/step_1_preprocess.py \
         --config "$CONFIG" \
         --save-pod-energy
+    # python opinf/step_1_preprocess_serial.py \
+    #     --config "$CONFIG" \
+    #     --save-pod-energy
 }
 
 run_step_2() {
@@ -69,9 +72,16 @@ case $STEP in
     2) run_step_2 ;;
     3) run_step_3 ;;
     all)
-        run_step_1
-        # Extract run directory from step 1 output
-        echo "Note: For 'all' mode, manually pass run_dir to steps 2 & 3"
+        # Run step 1 and capture its output to extract the run directory
+        STEP1_OUTPUT=$(run_step_1 | tee /dev/stderr)
+        RUN_DIR=$(echo "$STEP1_OUTPUT" | grep "Output:" | tail -1 | sed 's/.*Output: *//')
+        if [ -z "$RUN_DIR" ]; then
+            echo "ERROR: Could not extract run directory from Step 1 output"
+            exit 1
+        fi
+        echo "Extracted run directory: $RUN_DIR"
+        run_step_2
+        run_step_3
         ;;
     *) echo "Invalid step: $STEP"; exit 1 ;;
 esac

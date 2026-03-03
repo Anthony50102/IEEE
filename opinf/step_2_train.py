@@ -77,6 +77,12 @@ def main():
         data, windows = load_data_shared_memory(paths, comm, logger)
         comm.Barrier()
         
+        # Infer actual r from loaded data (step 1 may truncate below cfg.r)
+        actual_r = data['X_state'].shape[1]
+        if rank == 0 and actual_r != cfg.r:
+            logger.warning(f"Overriding cfg.r={cfg.r} with actual r={actual_r} from step 1 data")
+        cfg.r = actual_r
+        
         # Run sweep
         t_start = MPI.Wtime()
         results = parallel_hyperparameter_sweep(cfg, data, logger, comm)

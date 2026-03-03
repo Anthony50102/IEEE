@@ -17,12 +17,21 @@ from .data_io import (
     load_hw2d_snapshot,
     load_hw2d_timeseries,
     get_file_metadata,
+    get_ks_file_metadata,
+    load_ks_timeseries,
+    load_ks_stacked_state_matrix,
+    load_ks_reference_states,
 )
 
 from .physics import (
     compute_gamma_n,
     compute_gamma_c,
     periodic_gradient,
+    compute_ks_energy,
+    compute_ks_enstrophy,
+    compute_ks_qoi_timeseries,
+    compute_ks_qoi_from_state_vector,
+    get_ks_grid_params,
 )
 
 # NOTE: mpi_utils not imported here to avoid MPI initialization on import.

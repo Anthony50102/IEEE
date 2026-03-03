@@ -63,6 +63,7 @@ class DMDConfig(OpInfConfig):
     num_trials: int = 0  # Number of bagging trials for BOPDMD (0 = no bagging)
     use_proj: bool = True  # Use POD projection in BOPDMD
     eig_sort: str = "real"  # Eigenvalue sorting method
+    eig_stable: bool = False  # Force eigenvalues to have non-positive real parts
     
     # Physics parameters for Gamma computation
     k0: float = 0.15  # Wave number (dx = 2*pi/k0)
@@ -117,6 +118,7 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.num_trials = dmd_section.get("num_trials", 0)
     cfg.use_proj = dmd_section.get("use_proj", True)
     cfg.eig_sort = dmd_section.get("eig_sort", "real")
+    cfg.eig_stable = dmd_section.get("eig_stable", False)
     cfg.k0 = dmd_section.get("k0", 0.15)
     cfg.c1 = dmd_section.get("c1", 1.0)
     
@@ -161,6 +163,7 @@ def save_config(cfg: DMDConfig, output_path: str, step_name: str = None) -> str:
         "_step": step_name,
         "run_name": cfg.run_name,
         "run_dir": cfg.run_dir,
+        "pde": cfg.pde,
         "paths": {
             "output_base": cfg.output_base,
             "data_dir": cfg.data_dir,
@@ -192,6 +195,7 @@ def save_config(cfg: DMDConfig, output_path: str, step_name: str = None) -> str:
             "num_trials": cfg.num_trials,
             "use_proj": cfg.use_proj,
             "eig_sort": cfg.eig_sort,
+            "eig_stable": cfg.eig_stable,
         },
         "truncation": {
             "enabled": cfg.truncation_enabled,
@@ -299,7 +303,10 @@ def print_dmd_config_summary(cfg: DMDConfig):
     print(f"  DMD rank: {cfg.dmd_rank or 'same as POD r'}")
     print(f"  BOPDMD trials: {cfg.num_trials}")
     print(f"  Use projection: {cfg.use_proj}")
-    print(f"  Physics: k0={cfg.k0}, c1={cfg.c1} (dx={2*np.pi/cfg.k0:.4f})")
+    if cfg.pde == "ks":
+        print(f"  Physics (KS): L={cfg.ks_L}, N={cfg.ks_N}, dx={cfg.ks_L/cfg.ks_N:.4f}")
+    else:
+        print(f"  Physics: k0={cfg.k0}, c1={cfg.c1} (dx={2*np.pi/cfg.k0:.4f})")
     print(f"  Truncation: {'enabled' if cfg.truncation_enabled else 'disabled'}")
     if cfg.truncation_enabled:
         if cfg.truncation_method == "time":
@@ -801,6 +808,54 @@ def compute_gamma_from_state(
     gamma_c = get_gamma_c(n_field, p_field, c1, dx)  # (n_time,)
     
     return gamma_n, gamma_c
+
+
+def compute_qoi_from_state(
+    Q: np.ndarray,
+    pde: str,
+    n_fields: int,
+    n_y: int,
+    n_x: int,
+    k0: float = 0.15,
+    c1: float = 1.0,
+    ks_L: float = 100.0,
+    ks_N: int = 200,
+) -> tuple:
+    """
+    Compute QoIs from full state vector, dispatching by PDE type.
+
+    Parameters
+    ----------
+    Q : np.ndarray, shape (n_spatial, n_time) or (n_spatial,)
+        Full state vector.
+    pde : str
+        PDE type: "hw2d" or "ks".
+    n_fields : int
+        Number of fields (2 for HW2D, 1 for KS).
+    n_y : int
+        Grid points in y (1 for KS).
+    n_x : int
+        Grid points in x (N for KS).
+    k0 : float
+        Wave number for HW2D grid spacing.
+    c1 : float
+        Adiabaticity parameter for HW2D.
+    ks_L : float
+        Domain length for KS.
+    ks_N : int
+        Number of spatial points for KS.
+
+    Returns
+    -------
+    tuple
+        (qoi_1, qoi_2) — (Gamma_n, Gamma_c) for HW2D; (energy, enstrophy) for KS.
+    """
+    if pde == "ks":
+        from shared.physics import compute_ks_qoi_from_state_vector
+        dx = ks_L / ks_N
+        return compute_ks_qoi_from_state_vector(Q, ks_N, dx)
+    else:
+        return compute_gamma_from_state(Q, n_fields, n_y, n_x, k0, c1)
 
 
 def reconstruct_full_state(

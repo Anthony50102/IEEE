@@ -88,19 +88,36 @@ class SingleStepDataset(Dataset):
 # Data Loading (Memory-Efficient)
 # =============================================================================
 
-def load_trajectory_slice(file_path: str, start: int, end: int) -> np.ndarray:
+def load_trajectory_slice(file_path: str, start: int, end: int, pde: str = "hw2d") -> np.ndarray:
     """
     Load only a slice of the trajectory to save memory.
     
-    Returns:
-        states: (T, 2, H, W) array with density and potential
-    """
-    with h5py.File(file_path, 'r') as f:
-        density = f['density'][start:end]      # (T, H, W)
-        potential = f['phi'][start:end]        # (T, H, W)
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+    start : int
+        Start index.
+    end : int
+        End index.
+    pde : str
+        PDE type: "hw2d" or "ks".
     
-    # Stack: (T, 2, H, W)
-    return np.stack([density, potential], axis=1)
+    Returns
+    -------
+    np.ndarray
+        For HW2D: (T, 2, H, W) with density and potential.
+        For KS: (T, 1, N) with the u field.
+    """
+    if pde == "ks":
+        with h5py.File(file_path, 'r') as f:
+            u = f['u'][start:end]  # (T, N)
+        return u[:, np.newaxis, :]  # (T, 1, N)
+    else:
+        with h5py.File(file_path, 'r') as f:
+            density = f['density'][start:end]      # (T, H, W)
+            potential = f['phi'][start:end]        # (T, H, W)
+        return np.stack([density, potential], axis=1)  # (T, 2, H, W)
 
 
 def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.ndarray]:
@@ -113,6 +130,7 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.n
     data_dir = get_config_value(cfg, 'paths', 'data_dir')
     train_file = get_config_value(cfg, 'paths', 'training_files')[0]
     file_path = os.path.join(data_dir, train_file)
+    pde = cfg.get('pde', 'hw2d')
     
     train_start = cfg.get('train_start', 0)
     train_end = cfg.get('train_end', 400)
@@ -120,11 +138,11 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.n
     test_end = cfg.get('test_end', 500)
     batch_size = get_config_value(cfg, 'training', 'batch_size', default=16)
     
-    logger.info(f"Loading data from {file_path}")
+    logger.info(f"Loading data from {file_path} (pde={pde})")
     
     # Load train and test slices separately (memory efficient)
-    train_states = load_trajectory_slice(file_path, train_start, train_end)
-    test_states = load_trajectory_slice(file_path, test_start, test_end)
+    train_states = load_trajectory_slice(file_path, train_start, train_end, pde=pde)
+    test_states = load_trajectory_slice(file_path, test_start, test_end, pde=pde)
     
     logger.info(f"  Train: [{train_start}, {train_end}) -> {train_states.shape}")
     logger.info(f"  Test:  [{test_start}, {test_end}) -> {test_states.shape}")
@@ -299,11 +317,12 @@ def generate_loss_plot(train_losses: list, test_mses: list, run_dir: str, logger
     logger.info(f"Saved training loss plot to {plot_path}")
 
 
-def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5):
+def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5, pde="hw2d"):
     """
     Generate comparison figures: prediction vs ground truth + error.
     
     Saves n_figs equally-spaced snapshots from the test set.
+    Handles both 2D HW2D data (C, H, W) and 1D KS data (1, N).
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -318,40 +337,63 @@ def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5)
     fig_dir = os.path.join(run_dir, 'figures')
     os.makedirs(fig_dir, exist_ok=True)
     
+    is_1d = (pde == "ks")
+    
     for i, idx in enumerate(indices):
         x = torch.from_numpy(test_states[idx:idx+1]).float().to(device)
-        y_true = test_states[idx + 1]  # (C, H, W)
+        y_true = test_states[idx + 1]  # (C, H, W) or (1, N)
         
         with torch.no_grad():
-            y_pred = model(x)[0].cpu().numpy()  # (C, H, W)
+            y_pred = model(x)[0].cpu().numpy()  # (C, H, W) or (1, N)
         
-        # Create figure: 3 columns (pred, truth, error) x 2 rows (density, potential)
-        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-        
-        field_names = ['Density', 'Potential']
-        
-        for row, (name, pred, truth) in enumerate(zip(field_names, y_pred, y_true)):
-            error = pred - truth
+        if is_1d:
+            # KS: 1D line plots — single field
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+            pred_1d = y_pred[0]
+            truth_1d = y_true[0]
+            error_1d = pred_1d - truth_1d
+            x_grid = np.arange(len(truth_1d))
             
-            # Prediction
-            vmin, vmax = truth.min(), truth.max()
-            im0 = axes[row, 0].imshow(pred, cmap='viridis', vmin=vmin, vmax=vmax)
-            axes[row, 0].set_title(f'{name} - Prediction')
-            axes[row, 0].axis('off')
-            plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+            axes[0].plot(x_grid, truth_1d, 'b-', linewidth=1, label='Truth')
+            axes[0].plot(x_grid, pred_1d, 'r--', linewidth=1, label='Prediction')
+            axes[0].set_title('u — Prediction vs Truth')
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
             
-            # Ground truth
-            im1 = axes[row, 1].imshow(truth, cmap='viridis', vmin=vmin, vmax=vmax)
-            axes[row, 1].set_title(f'{name} - Ground Truth')
-            axes[row, 1].axis('off')
-            plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+            axes[1].plot(x_grid, error_1d, 'k-', linewidth=1)
+            axes[1].set_title(f'Error (MSE={np.mean(error_1d**2):.2e})')
+            axes[1].grid(True, alpha=0.3)
             
-            # Error
-            err_max = max(abs(error.min()), abs(error.max()))
-            im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
-            axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
-            axes[row, 2].axis('off')
-            plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
+            axes[2].semilogy(x_grid, np.abs(error_1d) + 1e-16, 'k-', linewidth=1)
+            axes[2].set_title('|Error| (log scale)')
+            axes[2].grid(True, alpha=0.3)
+        else:
+            # HW2D: 2D heatmaps — two fields
+            fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+            field_names = ['Density', 'Potential']
+            
+            for row, (name, pred, truth) in enumerate(zip(field_names, y_pred, y_true)):
+                error = pred - truth
+                
+                # Prediction
+                vmin, vmax = truth.min(), truth.max()
+                im0 = axes[row, 0].imshow(pred, cmap='viridis', vmin=vmin, vmax=vmax)
+                axes[row, 0].set_title(f'{name} - Prediction')
+                axes[row, 0].axis('off')
+                plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+                
+                # Ground truth
+                im1 = axes[row, 1].imshow(truth, cmap='viridis', vmin=vmin, vmax=vmax)
+                axes[row, 1].set_title(f'{name} - Ground Truth')
+                axes[row, 1].axis('off')
+                plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+                
+                # Error
+                err_max = max(abs(error.min()), abs(error.max()))
+                im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
+                axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
+                axes[row, 2].axis('off')
+                plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
         
         plt.suptitle(f'Single-Step Prediction: Test Index {idx}', fontsize=14)
         plt.tight_layout()
@@ -549,7 +591,8 @@ def main():
         # Generate test figures if requested
         if args.test:
             logger.info("Generating test figures...")
-            generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5)
+            pde = cfg.get('pde', 'hw2d')
+            generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5, pde=pde)
         
         logger.info(f"Results saved to: {run_dir}")
         logger.info(f"Next: python step_2_train.py --config {args.config} --run-dir {run_dir}")

@@ -75,8 +75,6 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     
     # Initial eigenvalue guess via standard DMD
     logger.info("  Computing initial eigenvalue guess...")
-    print(r)
-    print(type(r))
     dmd0 = DMD(svd_rank=r)
     dmd0.fit(X_dmd)
     init_alpha = np.log(dmd0.eigs) / dt  # Convert to continuous-time
@@ -92,15 +90,19 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
     # as it's r×r float64 = 8*r^2 bytes (e.g., 8GB for r=1000)
     # Setting use_proj=False and proj_basis=None saves this memory
     
-    dmd_model = BOPDMD(
+    # Build BOPDMD kwargs
+    bopdmd_kwargs = dict(
         svd_rank=r,
         num_trials=cfg.num_trials,
         proj_basis=None,  # Don't use projection to save memory
         use_proj=False,   # Disable projection
         eig_sort=cfg.eig_sort,
-        #eig_constraints={"stable"},  # forces all eigenvalues to have non-positive real parts.
         init_alpha=init_alpha,
     )
+    if cfg.eig_stable:
+        bopdmd_kwargs['eig_constraints'] = {"stable"}
+    
+    dmd_model = BOPDMD(**bopdmd_kwargs)
     
     # Convert to float64 for pydmd fitting (required by optimizer)
     logger.info(f"  Input data memory: {X_dmd.nbytes / 1e6:.1f} MB")
@@ -137,8 +139,18 @@ def fit_bopdmd(X_train: np.ndarray, t_train: np.ndarray, r: int, cfg: DMDConfig,
 # =============================================================================
 
 def load_gamma_reference(cfg: DMDConfig, n_train: int, logger) -> np.ndarray:
-    """Load reference Gamma values for output model training."""
-    logger.info("Loading reference Gamma for output model...")
+    """Load reference QoI values for output model training.
+    
+    For HW2D: loads gamma_n, gamma_c.
+    For KS: loads energy, enstrophy.
+    Returns array of shape (K, 2).
+    """
+    logger.info("Loading reference QoI for output model...")
+    
+    pde = getattr(cfg, 'pde', 'hw2d')
+    
+    if pde == "ks":
+        return _load_qoi_reference_ks(cfg, n_train, logger)
     
     if cfg.training_mode == "temporal_split":
         # Single file, use train portion
@@ -157,6 +169,28 @@ def load_gamma_reference(cfg: DMDConfig, n_train: int, logger) -> np.ndarray:
     
     Y_Gamma = np.column_stack([gamma_n, gamma_c])  # (K, 2)
     logger.info(f"  Loaded {Y_Gamma.shape[0]} Gamma samples")
+    return Y_Gamma
+
+
+def _load_qoi_reference_ks(cfg: DMDConfig, n_train: int, logger) -> np.ndarray:
+    """Load reference KS QoIs (energy, enstrophy) for output model training."""
+    import h5py
+    
+    if cfg.training_mode == "temporal_split":
+        with h5py.File(cfg.training_files[0], 'r') as f:
+            energy = np.array(f['energy'][cfg.train_start:cfg.train_start + n_train])
+            enstrophy = np.array(f['enstrophy'][cfg.train_start:cfg.train_start + n_train])
+    else:
+        energy_list, enstrophy_list = [], []
+        for fp in cfg.training_files:
+            with h5py.File(fp, 'r') as f:
+                energy_list.append(np.array(f['energy'][:n_train]))
+                enstrophy_list.append(np.array(f['enstrophy'][:n_train]))
+        energy = np.concatenate(energy_list)
+        enstrophy = np.concatenate(enstrophy_list)
+    
+    Y_Gamma = np.column_stack([energy, enstrophy])  # (K, 2)
+    logger.info(f"  Loaded {Y_Gamma.shape[0]} KS QoI samples")
     return Y_Gamma
 
 

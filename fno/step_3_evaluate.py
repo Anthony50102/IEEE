@@ -33,8 +33,11 @@ from step_1_train import (
 # Parent directory for shared imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from shared.physics import compute_gamma_n, compute_gamma_c, get_hw2d_grid_params
-from shared.plotting import plot_gamma_timeseries, generate_state_diagnostic_plots
+from shared.physics import (
+    compute_gamma_n, compute_gamma_c, get_hw2d_grid_params,
+    compute_ks_qoi_timeseries, get_ks_grid_params,
+)
+from shared.plotting import plot_gamma_timeseries, plot_qoi_timeseries, generate_state_diagnostic_plots
 
 
 from typing import Optional
@@ -74,20 +77,31 @@ def save_step_status(run_dir: str, step: str, status: str, info: Optional[dict] 
 # Data Loading
 # =============================================================================
 
-def load_reference_data(file_path: str, start: int, end: int, engine: str = "h5py"):
+def load_reference_data(file_path: str, start: int, end: int, engine: str = "h5py",
+                        pde: str = "hw2d"):
     """
-    Load reference data including density, potential, and gamma values.
+    Load reference data including fields and QoI values.
     
     Returns:
-        dict with 'density', 'phi', 'gamma_n', 'gamma_c' as numpy arrays
+        dict with field data and QoI arrays.
+        For HW2D: 'density', 'phi', 'gamma_n', 'gamma_c'.
+        For KS: 'u', 'energy', 'enstrophy'.
     """
-    with h5py.File(file_path, 'r') as f:
-        data = {
-            'density': np.array(f['density'][start:end]),  # (T, H, W)
-            'phi': np.array(f['phi'][start:end]),          # (T, H, W)
-            'gamma_n': np.array(f['gamma_n'][start:end]),  # (T,)
-            'gamma_c': np.array(f['gamma_c'][start:end]),  # (T,)
-        }
+    if pde == "ks":
+        with h5py.File(file_path, 'r') as f:
+            data = {
+                'u': np.array(f['u'][start:end]),               # (T, N)
+                'energy': np.array(f['energy'][start:end]),     # (T,)
+                'enstrophy': np.array(f['enstrophy'][start:end]),  # (T,)
+            }
+    else:
+        with h5py.File(file_path, 'r') as f:
+            data = {
+                'density': np.array(f['density'][start:end]),  # (T, H, W)
+                'phi': np.array(f['phi'][start:end]),          # (T, H, W)
+                'gamma_n': np.array(f['gamma_n'][start:end]),  # (T,)
+                'gamma_c': np.array(f['gamma_c'][start:end]),  # (T,)
+            }
     return data
 
 
@@ -138,37 +152,45 @@ def compute_gamma_from_predictions(
     predictions: np.ndarray,
     dx: float,
     c1: float = 1.0,
+    pde: str = "hw2d",
 ) -> tuple:
     """
-    Compute Gamma_n and Gamma_c from FNO predicted states.
+    Compute QoIs from FNO predicted states.
     
     Parameters
     ----------
-    predictions : np.ndarray, shape (n_steps, 2, H, W)
-        Predicted states [density, potential].
+    predictions : np.ndarray
+        For HW2D: shape (n_steps, 2, H, W) with [density, potential].
+        For KS: shape (n_steps, 1, N) with [u].
     dx : float
         Grid spacing.
     c1 : float
-        Adiabaticity parameter.
+        Adiabaticity parameter (HW2D only).
+    pde : str
+        PDE type: "hw2d" or "ks".
     
     Returns
     -------
-    gamma_n : np.ndarray, shape (n_steps,)
-        Particle flux.
-    gamma_c : np.ndarray, shape (n_steps,)
-        Conductive flux.
+    qoi_1 : np.ndarray, shape (n_steps,)
+        Gamma_n (HW2D) or Energy (KS).
+    qoi_2 : np.ndarray, shape (n_steps,)
+        Gamma_c (HW2D) or Enstrophy (KS).
     """
-    n_steps = len(predictions)
-    gamma_n = np.zeros(n_steps)
-    gamma_c = np.zeros(n_steps)
-    
-    for t in range(n_steps):
-        density = predictions[t, 0]   # (H, W)
-        phi = predictions[t, 1]       # (H, W)
-        gamma_n[t] = compute_gamma_n(density, phi, dx)
-        gamma_c[t] = compute_gamma_c(density, phi, c1)
-    
-    return gamma_n, gamma_c
+    if pde == "ks":
+        u = predictions[:, 0, :]  # (n_steps, N)
+        return compute_ks_qoi_timeseries(u, dx)
+    else:
+        n_steps = len(predictions)
+        gamma_n = np.zeros(n_steps)
+        gamma_c = np.zeros(n_steps)
+        
+        for t in range(n_steps):
+            density = predictions[t, 0]   # (H, W)
+            phi = predictions[t, 1]       # (H, W)
+            gamma_n[t] = compute_gamma_n(density, phi, dx)
+            gamma_c[t] = compute_gamma_c(density, phi, c1)
+        
+        return gamma_n, gamma_c
 
 
 # =============================================================================
@@ -235,8 +257,9 @@ def compute_state_metrics(
     
     Parameters
     ----------
-    predictions : np.ndarray, shape (n_steps, 2, H, W)
-    reference : np.ndarray, shape (n_steps, 2, H, W)
+    predictions : np.ndarray, shape (n_steps, C, ...) 
+        Predicted states — (n_steps, 2, H, W) for HW2D or (n_steps, 1, N) for KS.
+    reference : np.ndarray, shape (n_steps, C, ...)
     
     Returns
     -------
@@ -247,23 +270,29 @@ def compute_state_metrics(
     # Total MSE
     mse_total = np.mean((predictions - reference) ** 2)
     
-    # Per-field MSE
-    mse_density = np.mean((predictions[:, 0] - reference[:, 0]) ** 2)
-    mse_phi = np.mean((predictions[:, 1] - reference[:, 1]) ** 2)
+    # Per-channel MSE
+    n_channels = predictions.shape[1]
+    channel_mses = {}
+    channel_names = ['density', 'potential'] if n_channels == 2 else [f'field_{i}' for i in range(n_channels)]
+    for ch in range(n_channels):
+        reduce_axes = tuple(range(1, predictions[:, ch].ndim))
+        channel_mses[f'mse_{channel_names[ch]}'] = float(np.mean(
+            (predictions[:, ch] - reference[:, ch]) ** 2
+        ))
     
     # Relative L2 error over time
     pred_flat = predictions.reshape(n_steps, -1)
     ref_flat = reference.reshape(n_steps, -1)
     l2_error = np.linalg.norm(pred_flat - ref_flat, axis=1) / np.linalg.norm(ref_flat, axis=1)
     
-    return {
+    result = {
         'mse_total': float(mse_total),
-        'mse_density': float(mse_density),
-        'mse_potential': float(mse_phi),
         'mean_rel_l2_error': float(np.mean(l2_error)),
         'max_rel_l2_error': float(np.max(l2_error)),
         'final_rel_l2_error': float(l2_error[-1]),
     }
+    result.update(channel_mses)
+    return result
 
 
 # =============================================================================
@@ -279,19 +308,25 @@ def generate_gamma_plots(
     output_path: str,
     logger,
     title_prefix: str = "",
+    pde: str = "hw2d",
 ):
-    """Generate Gamma comparison plot using shared plotting function."""
-    plot_gamma_timeseries(
-        pred_n=pred_gamma_n,
-        pred_c=pred_gamma_c,
-        ref_n=ref_gamma_n,
-        ref_c=ref_gamma_c,
-        dt=dt,
-        output_path=output_path,
-        logger=logger,
-        title_prefix=title_prefix,
-        method_name="FNO"
-    )
+    """Generate QoI comparison plot using shared plotting function."""
+    if pde == "ks":
+        plot_qoi_timeseries(
+            pred_1=pred_gamma_n, pred_2=pred_gamma_c,
+            ref_1=ref_gamma_n, ref_2=ref_gamma_c,
+            dt=dt, output_path=output_path, logger=logger,
+            title_prefix=title_prefix, method_name="FNO",
+            label_1="Energy", label_2="Enstrophy",
+            symbol_1="E", symbol_2="P",
+        )
+    else:
+        plot_gamma_timeseries(
+            pred_n=pred_gamma_n, pred_c=pred_gamma_c,
+            ref_n=ref_gamma_n, ref_c=ref_gamma_c,
+            dt=dt, output_path=output_path, logger=logger,
+            title_prefix=title_prefix, method_name="FNO"
+        )
 
 
 def generate_state_snapshots(
@@ -302,11 +337,13 @@ def generate_state_snapshots(
     logger,
     n_snapshots: int = 5,
     prefix: str = "",
+    pde: str = "hw2d",
 ):
     """
     Generate state comparison snapshots.
     
-    Creates comparison figures for density and potential at selected timesteps.
+    Creates comparison figures for fields at selected timesteps.
+    Handles both 2D HW2D and 1D KS data.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -316,39 +353,63 @@ def generate_state_snapshots(
     snapshot_indices = np.linspace(0, n_steps - 1, n_snapshots, dtype=int)
     
     os.makedirs(output_dir, exist_ok=True)
+    is_1d = (pde == "ks")
     
     for snap_idx, t_idx in enumerate(snapshot_indices):
         t_val = t_idx * dt
         
-        fig, axes = plt.subplots(2, 3, figsize=(12, 8))
-        field_names = ['Density', 'Potential']
-        
-        for row, (name, pred_field, ref_field) in enumerate(zip(
-            field_names, predictions[t_idx], reference[t_idx]
-        )):
-            error = pred_field - ref_field
+        if is_1d:
+            # KS: 1D line plots
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+            pred_1d = predictions[t_idx, 0]
+            ref_1d = reference[t_idx, 0]
+            error_1d = pred_1d - ref_1d
+            x_grid = np.arange(len(ref_1d))
             
-            # Reference
-            vmin, vmax = ref_field.min(), ref_field.max()
-            im0 = axes[row, 0].imshow(ref_field, cmap='RdBu_r', vmin=vmin, vmax=vmax)
-            axes[row, 0].set_title(f'{name} - Reference')
-            axes[row, 0].axis('off')
-            plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+            axes[0].plot(x_grid, ref_1d, 'b-', lw=1, label='Reference')
+            axes[0].plot(x_grid, pred_1d, 'r--', lw=1, label='FNO')
+            axes[0].set_title('u(x)')
+            axes[0].legend()
+            axes[0].grid(True, alpha=0.3)
             
-            # Prediction
-            im1 = axes[row, 1].imshow(pred_field, cmap='RdBu_r', vmin=vmin, vmax=vmax)
-            axes[row, 1].set_title(f'{name} - FNO Prediction')
-            axes[row, 1].axis('off')
-            plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+            axes[1].plot(x_grid, error_1d, 'k-', lw=1)
+            axes[1].set_title(f'Error (MSE={np.mean(error_1d**2):.2e})')
+            axes[1].grid(True, alpha=0.3)
             
-            # Error
-            err_max = max(abs(error.min()), abs(error.max()))
-            if err_max == 0:
-                err_max = 1.0
-            im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
-            axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
-            axes[row, 2].axis('off')
-            plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
+            axes[2].semilogy(x_grid, np.abs(error_1d) + 1e-16, 'k-', lw=1)
+            axes[2].set_title('|Error| (log scale)')
+            axes[2].grid(True, alpha=0.3)
+        else:
+            # HW2D: 2D heatmaps
+            fig, axes = plt.subplots(2, 3, figsize=(12, 8))
+            field_names = ['Density', 'Potential']
+            
+            for row, (name, pred_field, ref_field) in enumerate(zip(
+                field_names, predictions[t_idx], reference[t_idx]
+            )):
+                error = pred_field - ref_field
+                
+                # Reference
+                vmin, vmax = ref_field.min(), ref_field.max()
+                im0 = axes[row, 0].imshow(ref_field, cmap='RdBu_r', vmin=vmin, vmax=vmax)
+                axes[row, 0].set_title(f'{name} - Reference')
+                axes[row, 0].axis('off')
+                plt.colorbar(im0, ax=axes[row, 0], fraction=0.046)
+                
+                # Prediction
+                im1 = axes[row, 1].imshow(pred_field, cmap='RdBu_r', vmin=vmin, vmax=vmax)
+                axes[row, 1].set_title(f'{name} - FNO Prediction')
+                axes[row, 1].axis('off')
+                plt.colorbar(im1, ax=axes[row, 1], fraction=0.046)
+                
+                # Error
+                err_max = max(abs(error.min()), abs(error.max()))
+                if err_max == 0:
+                    err_max = 1.0
+                im2 = axes[row, 2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max)
+                axes[row, 2].set_title(f'{name} - Error (MSE={np.mean(error**2):.2e})')
+                axes[row, 2].axis('off')
+                plt.colorbar(im2, ax=axes[row, 2], fraction=0.046)
         
         plt.suptitle(f'{prefix}t = {t_val:.2f} (step {t_idx})', fontsize=14)
         plt.tight_layout()
@@ -369,9 +430,11 @@ def generate_rollout_error_plot(
     output_path: str,
     logger,
     title_prefix: str = "",
+    pde: str = "hw2d",
 ):
     """
     Generate rollout error over time plot.
+    Handles both 2D HW2D and 1D KS data.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -380,29 +443,42 @@ def generate_rollout_error_plot(
     n_steps = len(predictions)
     t = np.arange(n_steps) * dt
     
-    # Compute errors over time
-    mse_per_step = np.mean((predictions - reference) ** 2, axis=(1, 2, 3))
+    is_1d = (pde == "ks")
     
-    # Per-field MSE
-    mse_density = np.mean((predictions[:, 0] - reference[:, 0]) ** 2, axis=(1, 2))
-    mse_phi = np.mean((predictions[:, 1] - reference[:, 1]) ** 2, axis=(1, 2))
+    # Compute errors over time — generic over spatial dims
+    reduce_axes = tuple(range(1, predictions.ndim))
+    mse_per_step = np.mean((predictions - reference) ** 2, axis=reduce_axes)
     
     # Relative L2 error
     pred_flat = predictions.reshape(n_steps, -1)
     ref_flat = reference.reshape(n_steps, -1)
     rel_l2 = np.linalg.norm(pred_flat - ref_flat, axis=1) / np.linalg.norm(ref_flat, axis=1)
     
-    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    
-    # MSE plot
-    ax = axes[0]
-    ax.semilogy(t, mse_per_step, 'k-', linewidth=1.5, label='Total MSE')
-    ax.semilogy(t, mse_density, 'b--', linewidth=1, label='Density MSE', alpha=0.7)
-    ax.semilogy(t, mse_phi, 'r--', linewidth=1, label='Potential MSE', alpha=0.7)
-    ax.set_ylabel('MSE (log scale)', fontsize=12)
-    ax.set_title(f'{title_prefix}FNO Rollout Error', fontsize=14)
-    ax.legend(loc='upper right')
-    ax.grid(True, alpha=0.3)
+    if is_1d:
+        # KS: simpler — single field
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        
+        ax = axes[0]
+        ax.semilogy(t, mse_per_step, 'k-', linewidth=1.5, label='MSE')
+        ax.set_ylabel('MSE (log scale)', fontsize=12)
+        ax.set_title(f'{title_prefix}FNO Rollout Error', fontsize=14)
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
+    else:
+        # HW2D: per-field MSE
+        mse_density = np.mean((predictions[:, 0] - reference[:, 0]) ** 2, axis=(1, 2))
+        mse_phi = np.mean((predictions[:, 1] - reference[:, 1]) ** 2, axis=(1, 2))
+        
+        fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+        
+        ax = axes[0]
+        ax.semilogy(t, mse_per_step, 'k-', linewidth=1.5, label='Total MSE')
+        ax.semilogy(t, mse_density, 'b--', linewidth=1, label='Density MSE', alpha=0.7)
+        ax.semilogy(t, mse_phi, 'r--', linewidth=1, label='Potential MSE', alpha=0.7)
+        ax.set_ylabel('MSE (log scale)', fontsize=12)
+        ax.set_title(f'{title_prefix}FNO Rollout Error', fontsize=14)
+        ax.legend(loc='upper right')
+        ax.grid(True, alpha=0.3)
     
     # Relative L2 error
     ax = axes[1]
@@ -469,29 +545,36 @@ def main():
         test_end = cfg.get('test_end', 500)
         
         # Get physics parameters
+        pde = cfg.get('pde', 'hw2d')
         physics_cfg = cfg.get('physics', {})
         dt = physics_cfg.get('dt', 0.025)
-        n_x = physics_cfg.get('n_x', 512)
-        n_y = physics_cfg.get('n_y', 512)
         c1 = physics_cfg.get('c1', 1.0)
         k0 = physics_cfg.get('k0', 0.15)
         
-        # Compute grid spacing
-        grid_params = get_hw2d_grid_params(k0=k0, nx=n_x)
-        dx = grid_params['dx']
+        # Compute grid spacing based on PDE type
+        if pde == "ks":
+            ks_L = physics_cfg.get('L', 100.0)
+            ks_N = physics_cfg.get('N', 200)
+            grid_params = get_ks_grid_params(L=ks_L, N=ks_N)
+            dx = grid_params['dx']
+        else:
+            n_x = physics_cfg.get('n_x', 512)
+            n_y = physics_cfg.get('n_y', 512)
+            grid_params = get_hw2d_grid_params(k0=k0, nx=n_x)
+            dx = grid_params['dx']
         
-        logger.info(f"Loading data from {file_path}")
+        logger.info(f"Loading data from {file_path} (pde={pde})")
         logger.info(f"  Train: [{train_start}, {train_end})")
         logger.info(f"  Test:  [{test_start}, {test_end})")
-        logger.info(f"  Physics: dt={dt}, dx={dx:.4f}, c1={c1}, k0={k0}")
+        logger.info(f"  Physics: dt={dt}, dx={dx:.4f}")
         
         # Load reference data
-        train_ref = load_reference_data(file_path, train_start, train_end)
-        test_ref = load_reference_data(file_path, test_start, test_end)
+        train_ref = load_reference_data(file_path, train_start, train_end, pde=pde)
+        test_ref = load_reference_data(file_path, test_start, test_end, pde=pde)
         
         # Load state data for predictions
-        train_states = load_trajectory_slice(file_path, train_start, train_end)
-        test_states = load_trajectory_slice(file_path, test_start, test_end)
+        train_states = load_trajectory_slice(file_path, train_start, train_end, pde=pde)
+        test_states = load_trajectory_slice(file_path, test_start, test_end, pde=pde)
         
         logger.info(f"  Train states: {train_states.shape}")
         logger.info(f"  Test states: {test_states.shape}")
@@ -527,14 +610,18 @@ def main():
             model, train_states[0], n_train_steps, device
         )
         
-        # Compute gamma from predictions
+        # Compute QoIs from predictions
         train_pred_gamma_n, train_pred_gamma_c = compute_gamma_from_predictions(
-            train_predictions, dx, c1
+            train_predictions, dx, c1, pde=pde
         )
         
-        # Reference gamma (skip first timestep to align with predictions)
-        train_ref_gamma_n = train_ref['gamma_n'][1:]
-        train_ref_gamma_c = train_ref['gamma_c'][1:]
+        # Reference QoIs (skip first timestep to align with predictions)
+        if pde == "ks":
+            train_ref_gamma_n = train_ref['energy'][1:]
+            train_ref_gamma_c = train_ref['enstrophy'][1:]
+        else:
+            train_ref_gamma_n = train_ref['gamma_n'][1:]
+            train_ref_gamma_c = train_ref['gamma_c'][1:]
         
         # Compute metrics
         train_gamma_metrics = compute_metrics(
@@ -563,18 +650,18 @@ def main():
             train_pred_gamma_n, train_pred_gamma_c,
             train_ref_gamma_n, train_ref_gamma_c,
             dt, os.path.join(train_fig_dir, "gamma_comparison.png"),
-            logger, title_prefix="Training: "
+            logger, title_prefix="Training: ", pde=pde
         )
         
         generate_rollout_error_plot(
             train_predictions, train_states[1:],
             dt, os.path.join(train_fig_dir, "rollout_error.png"),
-            logger, title_prefix="Training: "
+            logger, title_prefix="Training: ", pde=pde
         )
         
         generate_state_snapshots(
             train_predictions, train_states[1:],
-            dt, train_fig_dir, logger, n_snapshots=5, prefix="train_"
+            dt, train_fig_dir, logger, n_snapshots=5, prefix="train_", pde=pde
         )
         
         # =====================================================================
@@ -587,14 +674,18 @@ def main():
             model, test_states[0], n_test_steps, device
         )
         
-        # Compute gamma from predictions
+        # Compute QoIs from predictions
         test_pred_gamma_n, test_pred_gamma_c = compute_gamma_from_predictions(
-            test_predictions, dx, c1
+            test_predictions, dx, c1, pde=pde
         )
         
-        # Reference gamma
-        test_ref_gamma_n = test_ref['gamma_n'][1:]
-        test_ref_gamma_c = test_ref['gamma_c'][1:]
+        # Reference QoIs
+        if pde == "ks":
+            test_ref_gamma_n = test_ref['energy'][1:]
+            test_ref_gamma_c = test_ref['enstrophy'][1:]
+        else:
+            test_ref_gamma_n = test_ref['gamma_n'][1:]
+            test_ref_gamma_c = test_ref['gamma_c'][1:]
         
         # Compute metrics
         test_gamma_metrics = compute_metrics(
@@ -623,18 +714,18 @@ def main():
             test_pred_gamma_n, test_pred_gamma_c,
             test_ref_gamma_n, test_ref_gamma_c,
             dt, os.path.join(test_fig_dir, "gamma_comparison.png"),
-            logger, title_prefix="Test: "
+            logger, title_prefix="Test: ", pde=pde
         )
         
         generate_rollout_error_plot(
             test_predictions, test_states[1:],
             dt, os.path.join(test_fig_dir, "rollout_error.png"),
-            logger, title_prefix="Test: "
+            logger, title_prefix="Test: ", pde=pde
         )
         
         generate_state_snapshots(
             test_predictions, test_states[1:],
-            dt, test_fig_dir, logger, n_snapshots=5, prefix="test_"
+            dt, test_fig_dir, logger, n_snapshots=5, prefix="test_", pde=pde
         )
         
         # =====================================================================
@@ -685,10 +776,12 @@ def main():
         logger.info("=" * 60)
         logger.info(f"Runtime: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
         logger.info("TEST SUMMARY:")
-        logger.info(f"  Γn mean error: {test_gamma_metrics['err_mean_Gamma_n']:.4f}")
-        logger.info(f"  Γn std error:  {test_gamma_metrics['err_std_Gamma_n']:.4f}")
-        logger.info(f"  Γc mean error: {test_gamma_metrics['err_mean_Gamma_c']:.4f}")
-        logger.info(f"  Γc std error:  {test_gamma_metrics['err_std_Gamma_c']:.4f}")
+        qoi_1 = "Energy" if pde == "ks" else "Γn"
+        qoi_2 = "Enstrophy" if pde == "ks" else "Γc"
+        logger.info(f"  {qoi_1} mean error: {test_gamma_metrics['err_mean_Gamma_n']:.4f}")
+        logger.info(f"  {qoi_1} std error:  {test_gamma_metrics['err_std_Gamma_n']:.4f}")
+        logger.info(f"  {qoi_2} mean error: {test_gamma_metrics['err_mean_Gamma_c']:.4f}")
+        logger.info(f"  {qoi_2} std error:  {test_gamma_metrics['err_std_Gamma_c']:.4f}")
         logger.info(f"  State MSE:     {test_state_metrics['mse_total']:.6f}")
         logger.info(f"  Rel L2 (mean): {test_state_metrics['mean_rel_l2_error']:.4f}")
         logger.info(f"Results saved to: {run_dir}")

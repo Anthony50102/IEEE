@@ -98,12 +98,14 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
 # =============================================================================
 
 def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
-                    engine: str, logger, start_offset: int = 0) -> dict:
+                    engine: str, logger, start_offset: int = 0,
+                    pde: str = "hw2d") -> dict:
     """Compute evaluation metrics comparing predictions to reference.
     
     Args:
         start_offset: For temporal_split mode, the starting snapshot index
                       (e.g., train_start or test_start) for loading reference data.
+        pde: PDE type ("hw2d" or "ks").
     """
     logger.info("Computing evaluation metrics...")
     
@@ -113,16 +115,44 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
     all_errs = {'mean_n': [], 'std_n': [], 'mean_c': [], 'std_c': []}
     
     for traj_idx in range(n_traj):
-        fh = load_dataset(ref_files[traj_idx], engine)
         traj_len = boundaries[traj_idx + 1] - boundaries[traj_idx]
         
-        # Apply offset for temporal_split mode
-        ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
-        ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
+        # Load reference QoIs based on PDE type
+        if pde == "ks":
+            import h5py
+            with h5py.File(ref_files[traj_idx], 'r') as f:
+                ref_n = np.array(f['energy'][start_offset:start_offset + traj_len])
+                ref_c = np.array(f['enstrophy'][start_offset:start_offset + traj_len])
+        else:
+            fh = load_dataset(ref_files[traj_idx], engine)
+            ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
+            ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
         
         # Ensemble mean predictions
         pred_n = predictions['Gamma_n'][traj_idx]
         pred_c = predictions['Gamma_c'][traj_idx]
+        
+        # Handle case where all models produced NaN (empty predictions)
+        if pred_n.size == 0 or pred_c.size == 0:
+            logger.warning(f"  Traj {traj_idx + 1}: all models NaN, reporting NaN metrics")
+            nan_metrics = {
+                'trajectory': traj_idx, 'n_steps': traj_len,
+                'ref_mean_Gamma_n': float(np.mean(ref_n)), 'ref_std_Gamma_n': float(np.std(ref_n, ddof=1)),
+                'pred_mean_Gamma_n': float('nan'), 'pred_std_Gamma_n': float('nan'),
+                'err_mean_Gamma_n': float('nan'), 'err_std_Gamma_n': float('nan'),
+                'rmse_Gamma_n': float('nan'),
+                'ref_mean_Gamma_c': float(np.mean(ref_c)), 'ref_std_Gamma_c': float(np.std(ref_c, ddof=1)),
+                'pred_mean_Gamma_c': float('nan'), 'pred_std_Gamma_c': float('nan'),
+                'err_mean_Gamma_c': float('nan'), 'err_std_Gamma_c': float('nan'),
+                'rmse_Gamma_c': float('nan'),
+            }
+            metrics['trajectories'].append(nan_metrics)
+            all_errs['mean_n'].append(float('nan'))
+            all_errs['std_n'].append(float('nan'))
+            all_errs['mean_c'].append(float('nan'))
+            all_errs['std_c'].append(float('nan'))
+            continue
+        
         mean_pred_n = np.mean(pred_n, axis=0)
         mean_pred_c = np.mean(pred_c, axis=0)
         
@@ -166,10 +196,10 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
                    f"Γc err=[{err_mean_c:.4f}, {err_std_c:.4f}]")
     
     metrics['ensemble'] = {
-        'mean_err_Gamma_n': float(np.mean(all_errs['mean_n'])),
-        'std_err_Gamma_n': float(np.mean(all_errs['std_n'])),
-        'mean_err_Gamma_c': float(np.mean(all_errs['mean_c'])),
-        'std_err_Gamma_c': float(np.mean(all_errs['std_c'])),
+        'mean_err_Gamma_n': float(np.nanmean(all_errs['mean_n'])),
+        'std_err_Gamma_n': float(np.nanmean(all_errs['std_n'])),
+        'mean_err_Gamma_c': float(np.nanmean(all_errs['mean_c'])),
+        'std_err_Gamma_c': float(np.nanmean(all_errs['std_c'])),
     }
     
     return metrics

@@ -25,14 +25,17 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dmd.utils import (
     load_dmd_config, get_dmd_output_paths, print_dmd_config_summary, save_config,
-    dmd_forecast_reduced, compute_gamma_from_state, reconstruct_full_state,
-    predict_gamma_learned,
+    dmd_forecast_reduced, compute_gamma_from_state, compute_qoi_from_state,
+    reconstruct_full_state, predict_gamma_learned,
 )
 from opinf.utils import (
     setup_logging, save_step_status, check_step_completed,
     print_header, load_dataset as loader,
 )
-from shared.plotting import plot_gamma_comparison, generate_state_diagnostic_plots
+from shared.plotting import (
+    plot_gamma_comparison, plot_qoi_timeseries,
+    generate_state_diagnostic_plots,
+)
 
 
 # =============================================================================
@@ -105,7 +108,8 @@ def compute_amplitudes_from_ic(x0: np.ndarray, modes_reduced: np.ndarray) -> np.
 
 
 def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: dict, 
-                        k0: float, c1: float, use_learned_output: bool = False) -> dict:
+                        k0: float, c1: float, use_learned_output: bool = False,
+                        pde: str = "hw2d", ks_L: float = 100.0, ks_N: int = 200) -> dict:
     """
     Forecast a single trajectory.
     
@@ -120,9 +124,15 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
     pod_basis : dict
         POD basis for full-state reconstruction (only needed for physics Gamma).
     k0, c1 : float
-        Physics parameters for Gamma computation.
+        Physics parameters for HW2D Gamma computation.
     use_learned_output : bool
         If True, use learned C, G, c operators instead of physics-based Gamma.
+    pde : str
+        PDE type: "hw2d" or "ks".
+    ks_L : float
+        KS domain length.
+    ks_N : int
+        KS number of spatial points.
     """
     r = model['dmd_rank']
     
@@ -144,29 +154,32 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
     
     result = {'is_nan': False, 'X_hat': X_hat}
     
-    # Compute Gamma using learned output model
+    # Compute QoIs using learned output model (PDE-agnostic)
     if use_learned_output and 'output_model' in model:
         Gamma_n, Gamma_c = predict_gamma_learned(X_hat, model['output_model'])
         result['Gamma_n'] = Gamma_n
         result['Gamma_c'] = Gamma_c
-    # Compute Gamma from physics (fallback or default)
+    # Compute QoIs from physics (fallback or default)
     elif pod_basis is not None:
         mean_data = pod_basis.get('mean')
         U_r_truncated = pod_basis['U_r'][:, :r]
         Q_full = reconstruct_full_state(X_hat, U_r_truncated, mean_data)
         
-        Gamma_n, Gamma_c = compute_gamma_from_state(
-            Q_full, 2, pod_basis['n_y'], pod_basis['n_x'], k0, c1
+        n_fields = 1 if pde == "ks" else 2
+        qoi_1, qoi_2 = compute_qoi_from_state(
+            Q_full, pde, n_fields, pod_basis['n_y'], pod_basis['n_x'],
+            k0=k0, c1=c1, ks_L=ks_L, ks_N=ks_N,
         )
-        result['Gamma_n'] = Gamma_n
-        result['Gamma_c'] = Gamma_c
+        result['Gamma_n'] = qoi_1
+        result['Gamma_c'] = qoi_2
     
     return result
 
 
 def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
                       pod_basis, k0: float, c1: float, logger, name: str,
-                      use_learned_output: bool = False) -> dict:
+                      use_learned_output: bool = False,
+                      pde: str = "hw2d", ks_L: float = 100.0, ks_N: int = 200) -> dict:
     """Compute forecasts for all trajectories."""
     n_traj = len(boundaries) - 1
     forecasts = {'X_hat': [], 'Gamma_n': [], 'Gamma_c': [], 'is_nan': []}
@@ -191,7 +204,8 @@ def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
         x0 = ICs[i, :]
         
         result = forecast_trajectory(model, x0, n_steps, pod_basis, k0, c1,
-                                      use_learned_output=use_learned_output)
+                                      use_learned_output=use_learned_output,
+                                      pde=pde, ks_L=ks_L, ks_N=ks_N)
         
         forecasts['is_nan'].append(result['is_nan'])
         if result['is_nan']:
@@ -213,7 +227,8 @@ def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
 # =============================================================================
 
 def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
-                    engine: str, logger, name: str, ref_offset: int = 0) -> dict:
+                    engine: str, logger, name: str, ref_offset: int = 0,
+                    pde: str = "hw2d") -> dict:
     """Compute evaluation metrics.
     
     Parameters
@@ -221,8 +236,14 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
     ref_offset : int
         Offset into reference file (for temporal_split mode where test
         data starts at a later index in the same file).
+    pde : str
+        PDE type: "hw2d" or "ks".
     """
     logger.info(f"Computing {name} metrics...")
+    
+    # Use generic labels internally
+    label_1 = "Energy" if pde == "ks" else "Gamma_n"
+    label_2 = "Enstrophy" if pde == "ks" else "Gamma_c"
     
     metrics = {'trajectories': [], 'summary': {}}
     all_errs = {'mean_n': [], 'std_n': [], 'mean_c': [], 'std_c': []}
@@ -235,11 +256,16 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             continue
         
         # Load reference
-        fh = loader(ref_files[i], engine=engine)
         n_steps = boundaries[i + 1] - boundaries[i]
-        # Apply offset for temporal_split mode
-        ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
-        ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
+        if pde == "ks":
+            import h5py
+            with h5py.File(ref_files[i], 'r') as fh:
+                ref_n = np.array(fh['energy'][ref_offset:ref_offset + n_steps])
+                ref_c = np.array(fh['enstrophy'][ref_offset:ref_offset + n_steps])
+        else:
+            fh = loader(ref_files[i], engine=engine)
+            ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
+            ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
         
         pred_n = forecasts['Gamma_n'][i]
         pred_c = forecasts['Gamma_c'][i]
@@ -289,11 +315,13 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
 
 def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarray,
                          engine: str, dt: float, output_dir: str, logger, 
-                         prefix: str = "", ref_offset: int = 0):
+                         prefix: str = "", ref_offset: int = 0,
+                         pde: str = "hw2d"):
     """
-    Generate plots comparing predicted vs reference Gamma values.
+    Generate plots comparing predicted vs reference QoI values.
     
     Uses the shared plotting module for consistent styling across methods.
+    Dispatches to appropriate plot function based on PDE type.
     """
     os.makedirs(output_dir, exist_ok=True)
     n_traj = len(boundaries) - 1
@@ -303,23 +331,40 @@ def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarra
             continue
         
         # Load reference
-        fh = loader(ref_files[i], engine=engine)
         n_steps = boundaries[i + 1] - boundaries[i]
-        ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
-        ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
+        if pde == "ks":
+            import h5py
+            with h5py.File(ref_files[i], 'r') as fh:
+                ref_n = np.array(fh['energy'][ref_offset:ref_offset + n_steps])
+                ref_c = np.array(fh['enstrophy'][ref_offset:ref_offset + n_steps])
+        else:
+            fh = loader(ref_files[i], engine=engine)
+            ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
+            ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
         
         pred_n = forecasts['Gamma_n'][i]
         pred_c = forecasts['Gamma_c'][i]
         
-        # Use shared plotting function
+        # Use shared plotting function — dispatch by PDE type
         output_path = os.path.join(output_dir, f'{prefix}traj_{i+1}_gamma.png')
-        plot_gamma_comparison(
-            pred_n=pred_n, pred_c=pred_c,
-            ref_n=ref_n, ref_c=ref_c,
-            dt=dt, output_path=output_path, logger=logger,
-            title_prefix=f'{prefix.replace("_", " ").title()}Trajectory {i+1}: ',
-            method_name="DMD"
-        )
+        if pde == "ks":
+            plot_qoi_timeseries(
+                pred_1=pred_n, pred_2=pred_c,
+                ref_1=ref_n, ref_2=ref_c,
+                dt=dt, output_path=output_path, logger=logger,
+                title_prefix=f'{prefix.replace("_", " ").title()}Trajectory {i+1}: ',
+                method_name="DMD",
+                label_1="Energy", label_2="Enstrophy",
+                symbol_1="E", symbol_2="P",
+            )
+        else:
+            plot_gamma_comparison(
+                pred_n=pred_n, pred_c=pred_c,
+                ref_n=ref_n, ref_c=ref_c,
+                dt=dt, output_path=output_path, logger=logger,
+                title_prefix=f'{prefix.replace("_", " ").title()}Trajectory {i+1}: ',
+                method_name="DMD"
+            )
     
     logger.info(f"Plots saved to {output_dir}")
 
@@ -366,10 +411,12 @@ def main():
         # Compute forecasts
         train_pred = compute_forecasts(model, train_ICs, train_bounds, pod_basis,
                                         cfg.k0, cfg.c1, logger, "training",
-                                        use_learned_output=use_learned_output)
+                                        use_learned_output=use_learned_output,
+                                        pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N)
         test_pred = compute_forecasts(model, test_ICs, test_bounds, pod_basis,
                                        cfg.k0, cfg.c1, logger, "test",
-                                       use_learned_output=use_learned_output)
+                                       use_learned_output=use_learned_output,
+                                       pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N)
         
         # Determine reference files and offsets for metrics
         if cfg.training_mode == "temporal_split":
@@ -387,10 +434,12 @@ def main():
         # Compute metrics
         train_metrics = compute_metrics(train_pred, train_ref_files, train_bounds,
                                          cfg.engine, logger, "training", 
-                                         ref_offset=train_ref_offset)
+                                         ref_offset=train_ref_offset,
+                                         pde=cfg.pde)
         test_metrics = compute_metrics(test_pred, test_ref_files, test_bounds,
                                         cfg.engine, logger, "test",
-                                        ref_offset=test_ref_offset)
+                                        ref_offset=test_ref_offset,
+                                        pde=cfg.pde)
         
         # Save results
         all_metrics = {
@@ -424,12 +473,14 @@ def main():
             generate_gamma_plots(
                 train_pred, train_ref_files, train_bounds,
                 cfg.engine, cfg.dt, figures_dir, logger,
-                prefix="train_", ref_offset=train_ref_offset
+                prefix="train_", ref_offset=train_ref_offset,
+                pde=cfg.pde
             )
             generate_gamma_plots(
                 test_pred, test_ref_files, test_bounds,
                 cfg.engine, cfg.dt, figures_dir, logger,
-                prefix="test_", ref_offset=test_ref_offset
+                prefix="test_", ref_offset=test_ref_offset,
+                pde=cfg.pde
             )
         
         # Generate state diagnostic plots (optional)
@@ -442,6 +493,7 @@ def main():
             n_y = pod_basis['n_y'] if pod_basis else cfg.n_y
             n_x = pod_basis['n_x'] if pod_basis else cfg.n_x
             
+            ks_dx = cfg.ks_L / cfg.ks_N if cfg.pde == "ks" else None
             generate_state_diagnostic_plots(
                 reduced_states=train_pred['X_hat'],
                 ref_files=train_ref_files,
@@ -457,7 +509,9 @@ def main():
                 plot_error=cfg.plot_state_error,
                 plot_snapshots=cfg.plot_state_snapshots,
                 n_snapshots=cfg.n_snapshot_samples,
-                is_nan_flags=train_pred['is_nan']
+                is_nan_flags=train_pred['is_nan'],
+                pde=cfg.pde,
+                dx=ks_dx,
             )
             generate_state_diagnostic_plots(
                 reduced_states=test_pred['X_hat'],
@@ -474,7 +528,9 @@ def main():
                 plot_error=cfg.plot_state_error,
                 plot_snapshots=cfg.plot_state_snapshots,
                 n_snapshots=cfg.n_snapshot_samples,
-                is_nan_flags=test_pred['is_nan']
+                is_nan_flags=test_pred['is_nan'],
+                pde=cfg.pde,
+                dx=ks_dx,
             )
         
         # Final timing
@@ -489,9 +545,11 @@ def main():
         print(f"  Runtime: {t_elapsed:.1f}s")
         
         if test_metrics.get('summary'):
+            qoi_1_label = "Energy" if cfg.pde == "ks" else "Γn"
+            qoi_2_label = "Enstrophy" if cfg.pde == "ks" else "Γc"
             print(f"\n  TEST SUMMARY:")
-            print(f"    Avg Γn mean error: {test_metrics['summary']['mean_err_Gamma_n']:.4f}")
-            print(f"    Avg Γc mean error: {test_metrics['summary']['mean_err_Gamma_c']:.4f}")
+            print(f"    Avg {qoi_1_label} mean error: {test_metrics['summary']['mean_err_Gamma_n']:.4f}")
+            print(f"    Avg {qoi_2_label} mean error: {test_metrics['summary']['mean_err_Gamma_c']:.4f}")
         
     except Exception as e:
         logger.error(f"Step 3 failed: {e}", exc_info=True)

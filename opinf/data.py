@@ -41,14 +41,23 @@ def _get_mpi():
 # =============================================================================
 
 def get_file_metadata(cfg, file_path: str) -> tuple:
-    """Get metadata from a file without loading full data."""
-    with load_dataset(file_path, cfg.engine) as fh:
-        n_time = fh["density"].shape[0]
-        if fh["density"].ndim == 3:
-            n_y, n_x = fh["density"].shape[1], fh["density"].shape[2]
-        else:
-            n_y = n_x = int(np.sqrt(fh["density"].shape[1]))
-        n_spatial = cfg.n_fields * n_y * n_x
+    """Get metadata from a file without loading full data.
+    
+    Dispatches based on cfg.pde: 'hw2d' reads density/phi, 'ks' reads u.
+    """
+    if getattr(cfg, 'pde', 'hw2d') == 'ks':
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            n_time, N = f['u'].shape
+        n_spatial = N  # Single field
+    else:
+        with load_dataset(file_path, cfg.engine) as fh:
+            n_time = fh["density"].shape[0]
+            if fh["density"].ndim == 3:
+                n_y, n_x = fh["density"].shape[1], fh["density"].shape[2]
+            else:
+                n_y = n_x = int(np.sqrt(fh["density"].shape[1]))
+            n_spatial = cfg.n_fields * n_y * n_x
     
     if cfg.truncation_enabled:
         max_snaps = compute_truncation_snapshots(
@@ -67,8 +76,15 @@ def get_file_metadata(cfg, file_path: str) -> tuple:
 
 def load_distributed_snapshots(
     file_path: str, start_idx: int, end_idx: int, engine: str, max_snapshots: int,
+    pde: str = "hw2d",
 ) -> np.ndarray:
-    """Load a portion of snapshots corresponding to this rank's spatial DOF."""
+    """Load a portion of snapshots corresponding to this rank's spatial DOF.
+    
+    Dispatches based on pde: 'hw2d' loads density/phi, 'ks' loads u.
+    """
+    if pde == "ks":
+        return _load_distributed_snapshots_ks(file_path, start_idx, end_idx, max_snapshots)
+    
     with load_dataset(file_path, engine) as fh:
         density = fh["density"].values
         phi = fh["phi"].values
@@ -91,6 +107,24 @@ def load_distributed_snapshots(
     Q_full = Q_full.reshape(n_field * n_y * n_x, n_time)
     
     # Return contiguous copy in native dtype (float32 or float64)
+    return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
+
+
+def _load_distributed_snapshots_ks(
+    file_path: str, start_idx: int, end_idx: int, max_snapshots: int,
+) -> np.ndarray:
+    """Load KS snapshots for distributed processing.
+    
+    KS state vector is [u_flat], shape (N, n_time).
+    """
+    import h5py
+    with h5py.File(file_path, 'r') as f:
+        u = np.array(f['u'][:])  # (n_time, N)
+    
+    if max_snapshots is not None and max_snapshots < u.shape[0]:
+        u = u[:max_snapshots]
+    
+    Q_full = u.T  # (N, n_time)
     return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
 
 
@@ -153,9 +187,11 @@ def load_all_data_distributed(cfg, run_dir: str, comm, rank: int, size: int, log
     test_boundaries = [0] + list(np.cumsum(metadata['test_timesteps']))
     
     # Load data
+    pde = getattr(cfg, 'pde', 'hw2d')
     for i, fp in enumerate(cfg.training_files):
         Q_local = load_distributed_snapshots(
-            fp, start_idx, end_idx, cfg.engine, metadata['train_truncations'][i]
+            fp, start_idx, end_idx, cfg.engine, metadata['train_truncations'][i],
+            pde=pde,
         )
         Q_train_local[:, train_boundaries[i]:train_boundaries[i + 1]] = Q_local
         del Q_local
@@ -163,7 +199,8 @@ def load_all_data_distributed(cfg, run_dir: str, comm, rank: int, size: int, log
     
     for i, fp in enumerate(cfg.test_files):
         Q_local = load_distributed_snapshots(
-            fp, start_idx, end_idx, cfg.engine, metadata['test_truncations'][i]
+            fp, start_idx, end_idx, cfg.engine, metadata['test_truncations'][i],
+            pde=pde,
         )
         Q_test_local[:, test_boundaries[i]:test_boundaries[i + 1]] = Q_local
         del Q_local
@@ -232,8 +269,10 @@ def load_temporal_split_distributed(cfg, run_dir: str, comm, rank: int, size: in
     
     # Load full trajectory (we need to load enough to cover both ranges)
     max_snap_needed = max(train_end, test_end)
+    pde = getattr(cfg, 'pde', 'hw2d')
     Q_full_local = load_distributed_snapshots(
-        cfg.training_files[0], start_idx, end_idx, cfg.engine, max_snap_needed
+        cfg.training_files[0], start_idx, end_idx, cfg.engine, max_snap_needed,
+        pde=pde,
     )
     
     # Extract train and test ranges
@@ -310,9 +349,19 @@ def scale_data_distributed(
 # =============================================================================
 
 def load_reference_gamma(cfg, rank, logger) -> dict:
-    """Load reference Gamma values from training files (rank 0 only)."""
+    """Load reference QoI values from training files (rank 0 only).
+    
+    For HW2D: loads gamma_n, gamma_c.
+    For KS: loads energy, enstrophy.
+    Returns dict with 'Y_Gamma' (2, n_time) regardless of PDE type.
+    """
     if rank != 0:
         return None
+    
+    pde = getattr(cfg, 'pde', 'hw2d')
+    
+    if pde == "ks":
+        return _load_reference_qoi_ks(cfg, logger)
     
     logger.info("Loading reference Gamma values...")
     
@@ -349,6 +398,47 @@ def load_reference_gamma(cfg, rank, logger) -> dict:
         'Y_Gamma': Y_Gamma,
         'mean_Gamma_n': np.mean(Gamma_n), 'std_Gamma_n': np.std(Gamma_n, ddof=1),
         'mean_Gamma_c': np.mean(Gamma_c), 'std_Gamma_c': np.std(Gamma_c, ddof=1),
+    }
+
+
+def _load_reference_qoi_ks(cfg, logger) -> dict:
+    """Load reference KS QoIs (energy, enstrophy) from training files."""
+    import h5py
+    logger.info("Loading reference KS QoIs (energy, enstrophy)...")
+    
+    energy_list, enstrophy_list = [], []
+    
+    for fp in cfg.training_files:
+        with h5py.File(fp, 'r') as f:
+            energy = np.array(f['energy'][:])
+            enstrophy = np.array(f['enstrophy'][:])
+        
+        if cfg.training_mode == "temporal_split":
+            train_start, train_end = cfg.train_start, cfg.train_end
+            energy = energy[train_start:train_end]
+            enstrophy = enstrophy[train_start:train_end]
+            logger.info(f"  Temporal split: using QoI[{train_start}:{train_end}]")
+        elif cfg.truncation_enabled:
+            max_snaps = compute_truncation_snapshots(
+                fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
+            )
+            if max_snaps:
+                energy = energy[:max_snaps]
+                enstrophy = enstrophy[:max_snaps]
+        
+        energy_list.append(energy)
+        enstrophy_list.append(enstrophy)
+    
+    Energy = np.concatenate(energy_list)
+    Enstrophy = np.concatenate(enstrophy_list)
+    Y_Gamma = np.vstack([Energy, Enstrophy])  # Same layout as HW2D for compatibility
+    
+    logger.info(f"  Y_Gamma (KS QoI) shape: {Y_Gamma.shape}")
+    
+    return {
+        'Y_Gamma': Y_Gamma,
+        'mean_Gamma_n': np.mean(Energy), 'std_Gamma_n': np.std(Energy, ddof=1),
+        'mean_Gamma_c': np.mean(Enstrophy), 'std_Gamma_c': np.std(Enstrophy, ddof=1),
     }
 
 

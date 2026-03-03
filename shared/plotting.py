@@ -613,6 +613,8 @@ def generate_state_diagnostic_plots(
     reduction_method: str = "linear",
     manifold_W: Optional[np.ndarray] = None,
     manifold_shift: Optional[np.ndarray] = None,
+    pde: str = "hw2d",
+    dx: float = None,
 ):
     """
     Generate state-based diagnostic plots (L2 error and snapshots).
@@ -669,7 +671,7 @@ def generate_state_diagnostic_plots(
         Required if reduction_method == "manifold".
     """
     # Import here to avoid circular imports
-    from shared.data_io import load_reference_states, reconstruct_full_state, reconstruct_full_state_manifold
+    from shared.data_io import load_reference_states, load_ks_reference_states, reconstruct_full_state, reconstruct_full_state_manifold
     
     if pod_basis is None:
         logger.warning("POD basis not available, skipping state diagnostic plots")
@@ -703,10 +705,15 @@ def generate_state_diagnostic_plots(
         
         n_steps = boundaries[i + 1] - boundaries[i]
         
-        # Load reference states
-        ref_Q, ref_ny, ref_nx = load_reference_states(
-            ref_files[i], engine, n_steps, ref_offset
-        )
+        # Load reference states (PDE-specific)
+        if pde == "ks":
+            ref_Q, ref_N = load_ks_reference_states(
+                ref_files[i], n_steps, ref_offset
+            )
+        else:
+            ref_Q, ref_ny, ref_nx = load_reference_states(
+                ref_files[i], engine, n_steps, ref_offset
+            )
         
         # Truncate POD basis if needed
         r = X_hat.shape[0] if X_hat.shape[0] < X_hat.shape[1] else X_hat.shape[1]
@@ -723,32 +730,348 @@ def generate_state_diagnostic_plots(
         # L2 error timeseries
         if plot_error:
             error_path = os.path.join(output_dir, f'{prefix}traj_{i+1}_state_error.png')
-            plot_state_error_timeseries(
-                pred_states=pred_Q,
-                ref_states=ref_Q,
-                dt=dt,
-                output_path=error_path,
-                logger=logger,
-                n_y=n_y,
-                n_x=n_x,
-                title_prefix=title_prefix,
-                method_name=method_name
-            )
+            if pde == "ks":
+                plot_ks_state_error_timeseries(
+                    pred_states=pred_Q,
+                    ref_states=ref_Q,
+                    dt=dt,
+                    output_path=error_path,
+                    logger=logger,
+                    title_prefix=title_prefix,
+                    method_name=method_name
+                )
+            else:
+                plot_state_error_timeseries(
+                    pred_states=pred_Q,
+                    ref_states=ref_Q,
+                    dt=dt,
+                    output_path=error_path,
+                    logger=logger,
+                    n_y=n_y,
+                    n_x=n_x,
+                    title_prefix=title_prefix,
+                    method_name=method_name
+                )
         
         # Snapshot comparisons
         if plot_snapshots:
             snapshot_path = os.path.join(output_dir, f'{prefix}traj_{i+1}_snapshots.png')
-            plot_state_snapshots(
-                pred_states=pred_Q,
-                ref_states=ref_Q,
-                n_y=n_y,
-                n_x=n_x,
-                dt=dt,
-                output_path=snapshot_path,
-                logger=logger,
-                n_snapshots=n_snapshots,
-                title_prefix=title_prefix,
-                method_name=method_name
-            )
+            if pde == "ks":
+                ks_dx = dx if dx is not None else (n_x * 1.0 / n_x if n_x > 0 else 0.5)
+                plot_ks_state_snapshots(
+                    pred_states=pred_Q,
+                    ref_states=ref_Q,
+                    N=ref_N,
+                    dt=dt,
+                    dx=ks_dx,
+                    output_path=snapshot_path,
+                    logger=logger,
+                    n_snapshots=n_snapshots,
+                    title_prefix=title_prefix,
+                    method_name=method_name
+                )
+            else:
+                plot_state_snapshots(
+                    pred_states=pred_Q,
+                    ref_states=ref_Q,
+                    n_y=n_y,
+                    n_x=n_x,
+                    dt=dt,
+                    output_path=snapshot_path,
+                    logger=logger,
+                    n_snapshots=n_snapshots,
+                    title_prefix=title_prefix,
+                    method_name=method_name
+                )
     
     logger.info(f"State diagnostic plots saved to {output_dir}")
+
+
+# =============================================================================
+# KS / GENERIC QOI PLOTS
+# =============================================================================
+
+def plot_qoi_timeseries(
+    pred_1: np.ndarray,
+    pred_2: np.ndarray,
+    ref_1: np.ndarray,
+    ref_2: np.ndarray,
+    dt: float,
+    output_path: str,
+    logger,
+    label_1: str = "Energy",
+    label_2: str = "Enstrophy",
+    symbol_1: str = r"$E$",
+    symbol_2: str = r"$P$",
+    title_prefix: str = "",
+    method_name: str = "ROM",
+):
+    """
+    Generate a generic QoI comparison plot (reference vs prediction).
+
+    Works for both HW2D (Gamma_n, Gamma_c) and KS (energy, enstrophy).
+    Handles single predictions and ensemble predictions (with uncertainty).
+
+    Parameters
+    ----------
+    pred_1, pred_2 : np.ndarray, shape (n_steps,) or (n_ensemble, n_steps)
+        Predicted QoIs. If 2D, ensemble mean and +/-2sigma are plotted.
+    ref_1, ref_2 : np.ndarray, shape (n_steps,)
+        Reference QoIs.
+    dt : float
+        Time step size.
+    output_path : str
+        Full path to save the figure.
+    logger : logging.Logger
+        Logger instance.
+    label_1, label_2 : str
+        Human-readable names for the QoIs.
+    symbol_1, symbol_2 : str
+        LaTeX symbols for axis labels.
+    title_prefix : str
+        Prefix for the plot title.
+    method_name : str
+        Name of the method for legend.
+    """
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib not available, skipping plots")
+        return
+
+    n_steps = len(ref_1)
+    t = np.arange(n_steps) * dt
+
+    is_ensemble = pred_1.ndim == 2
+
+    if is_ensemble:
+        mean_1, std_1 = np.mean(pred_1, axis=0), np.std(pred_1, axis=0)
+        mean_2, std_2 = np.mean(pred_2, axis=0), np.std(pred_2, axis=0)
+    else:
+        mean_1, std_1 = pred_1, None
+        mean_2, std_2 = pred_2, None
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    # QoI 1 plot
+    ax = axes[0]
+    ax.plot(t, ref_1, 'k-', label='Reference', linewidth=1, alpha=0.8)
+    ax.plot(t, mean_1, 'b--', label=f'{method_name} Prediction', linewidth=1)
+    if is_ensemble and std_1 is not None:
+        ax.fill_between(t, mean_1 - 2 * std_1, mean_1 + 2 * std_1,
+                        alpha=0.3, color='blue', label='±2σ')
+    ax.set_ylabel(f'{symbol_1} ({label_1})', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.set_title(f'{title_prefix}Quantities of Interest', fontsize=14)
+    ax.grid(True, alpha=0.3)
+
+    ref_mean_1 = np.mean(ref_1)
+    if abs(ref_mean_1) > 1e-12:
+        err_1 = np.abs(np.mean(ref_1) - np.mean(mean_1)) / np.abs(ref_mean_1)
+        ax.text(0.02, 0.95, f'Mean Error: {err_1:.2%}', transform=ax.transAxes,
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # QoI 2 plot
+    ax = axes[1]
+    ax.plot(t, ref_2, 'k-', label='Reference', linewidth=1, alpha=0.8)
+    ax.plot(t, mean_2, 'r--', label=f'{method_name} Prediction', linewidth=1)
+    if is_ensemble and std_2 is not None:
+        ax.fill_between(t, mean_2 - 2 * std_2, mean_2 + 2 * std_2,
+                        alpha=0.3, color='red', label='±2σ')
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel(f'{symbol_2} ({label_2})', fontsize=12)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    ref_mean_2 = np.mean(ref_2)
+    if abs(ref_mean_2) > 1e-12:
+        err_2 = np.abs(np.mean(ref_2) - np.mean(mean_2)) / np.abs(ref_mean_2)
+        ax.text(0.02, 0.95, f'Mean Error: {err_2:.2%}', transform=ax.transAxes,
+                fontsize=10, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_state_snapshots(
+    pred_states: np.ndarray,
+    ref_states: np.ndarray,
+    N: int,
+    dt: float,
+    dx: float,
+    output_path: str,
+    logger,
+    snapshot_indices: Optional[List[int]] = None,
+    n_snapshots: int = 5,
+    title_prefix: str = "",
+    method_name: str = "ROM",
+):
+    """
+    Plot 1D KS field comparisons at selected timesteps.
+
+    Creates a multi-row figure with rows:
+    - Top: space–time heatmap comparison (reference, predicted, error)
+    - Below: line plots at selected timesteps
+
+    Parameters
+    ----------
+    pred_states : np.ndarray, shape (N, n_time)
+        Predicted states.
+    ref_states : np.ndarray, shape (N, n_time)
+        Reference states.
+    N : int
+        Number of spatial points.
+    dt : float
+        Time step.
+    dx : float
+        Spatial grid spacing.
+    output_path : str
+        Full path to save the figure.
+    logger : logging.Logger
+        Logger instance.
+    snapshot_indices : list, optional
+        Specific timestep indices to plot lines for.
+    n_snapshots : int
+        Number of snapshots if indices not specified.
+    title_prefix : str
+        Prefix for the plot title.
+    method_name : str
+        Method name for labels.
+    """
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib not available, skipping KS snapshot plots")
+        return
+
+    n_spatial, n_time = pred_states.shape
+    L = N * dx
+    t_max = n_time * dt
+    x = np.linspace(0, L, N, endpoint=False)
+
+    if snapshot_indices is None:
+        snapshot_indices = np.linspace(0, n_time - 1, n_snapshots, dtype=int)
+
+    n_snaps = len(snapshot_indices)
+
+    fig, axes = plt.subplots(1 + n_snaps, 3, figsize=(16, 3 * (1 + n_snaps)),
+                             gridspec_kw={'height_ratios': [2] + [1] * n_snaps})
+
+    # Determine consistent color limits
+    vmin = min(ref_states.min(), pred_states.min())
+    vmax = max(ref_states.max(), pred_states.max())
+
+    # Top row: space-time heatmaps
+    extent = (0, t_max, 0, L)
+
+    im0 = axes[0, 0].imshow(ref_states, cmap='RdBu', aspect='auto', origin='lower',
+                              extent=extent, vmin=vmin, vmax=vmax)
+    axes[0, 0].set_title('Reference u(x,t)')
+    axes[0, 0].set_ylabel('x')
+
+    im1 = axes[0, 1].imshow(pred_states, cmap='RdBu', aspect='auto', origin='lower',
+                              extent=extent, vmin=vmin, vmax=vmax)
+    axes[0, 1].set_title(f'{method_name} u(x,t)')
+
+    err = np.abs(pred_states - ref_states)
+    im2 = axes[0, 2].imshow(err, cmap='hot', aspect='auto', origin='lower', extent=extent)
+    axes[0, 2].set_title('|Error|')
+    fig.colorbar(im2, ax=axes[0, 2], fraction=0.046, pad=0.04)
+
+    for col in range(2):
+        fig.colorbar([im0, im1][col], ax=axes[0, col], fraction=0.046, pad=0.04)
+
+    # Line plots at selected timesteps
+    for row, idx in enumerate(snapshot_indices, start=1):
+        t_val = idx * dt
+        ref_line = ref_states[:, idx]
+        pred_line = pred_states[:, idx]
+
+        axes[row, 0].plot(x, ref_line, 'k-', linewidth=1, label='Reference')
+        axes[row, 0].plot(x, pred_line, 'b--', linewidth=1, label=method_name)
+        axes[row, 0].set_ylabel(f't={t_val:.1f}')
+        axes[row, 0].legend(fontsize=8)
+        axes[row, 0].grid(True, alpha=0.3)
+
+        axes[row, 1].plot(x, pred_line - ref_line, 'r-', linewidth=1)
+        axes[row, 1].set_title('Error' if row == 1 else '')
+        axes[row, 1].grid(True, alpha=0.3)
+
+        rel_l2 = np.linalg.norm(pred_line - ref_line) / max(np.linalg.norm(ref_line), 1e-12)
+        axes[row, 2].text(0.5, 0.5, f'Rel L2: {rel_l2:.2e}',
+                          transform=axes[row, 2].transAxes,
+                          ha='center', va='center', fontsize=12)
+        axes[row, 2].axis('off')
+
+    fig.suptitle(f'{title_prefix}KS State Comparison', fontsize=14, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    logger.info(f"  Saved KS snapshot comparison to {output_path}")
+
+
+def plot_ks_state_error_timeseries(
+    pred_states: np.ndarray,
+    ref_states: np.ndarray,
+    dt: float,
+    output_path: str,
+    logger,
+    title_prefix: str = "",
+    method_name: str = "ROM",
+):
+    """
+    Plot relative L2 error of KS state predictions over time.
+
+    Parameters
+    ----------
+    pred_states : np.ndarray, shape (N, n_time)
+        Predicted states.
+    ref_states : np.ndarray, shape (N, n_time)
+        Reference states.
+    dt : float
+        Time step.
+    output_path : str
+        Full path to save the figure.
+    logger : logging.Logger
+        Logger instance.
+    title_prefix : str
+        Prefix for the plot title.
+    method_name : str
+        Method name for legend.
+    """
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib not available, skipping state error plot")
+        return
+
+    n_spatial, n_time = pred_states.shape
+    t = np.arange(n_time) * dt
+
+    diff = pred_states - ref_states
+    ref_norms = np.linalg.norm(ref_states, axis=0)
+    ref_norms = np.where(ref_norms < 1e-12, 1e-12, ref_norms)
+    l2_error = np.linalg.norm(diff, axis=0) / ref_norms
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 4))
+    ax.semilogy(t, l2_error, 'b-', linewidth=1, label=method_name)
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Relative L2 Error', fontsize=12)
+    ax.set_title(f'{title_prefix}KS State Prediction Error', fontsize=14)
+    ax.legend(loc='upper right')
+    ax.grid(True, alpha=0.3)
+
+    mean_err = np.mean(l2_error)
+    max_err = np.max(l2_error)
+    ax.text(0.02, 0.95, f'Mean: {mean_err:.2e}, Max: {max_err:.2e}',
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.tight_layout()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    logger.info(f"  Saved KS state error plot to {output_path}")

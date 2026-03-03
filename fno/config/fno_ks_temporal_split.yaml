@@ -1,0 +1,68 @@
+run_name: "fno_ks_temporal_split"  # FNO on Kuramoto-Sivashinsky, temporal split
+
+pde: "ks"
+
+paths:
+  output_base: "/work/10407/anthony50102/vista/"
+  
+  data_dir: "/work/10407/anthony50102/vista/"
+  
+  # Single trajectory for temporal split mode
+  training_files: 
+    - "ks_sim.h5"
+
+  # test_files not used in temporal_split mode
+  test_files: []
+
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  L: 100.0
+  N: 200
+
+# Training mode configuration
+training_mode: "temporal_split"
+train_start: 0          # Train from snapshot 0
+train_end: 500          # Train to snapshot 500  
+test_start: 500         # Test from snapshot 500
+test_end: 1000
+
+# FNO model configuration
+model:
+  n_modes: [64]          # Fourier modes — 1D for KS
+  in_channels: 1         # Single field u
+  out_channels: 1        # Predict next u
+  hidden_channels: 64    # Width of the network
+  n_layers: 4            # Number of Fourier layers
+
+# Training configuration
+training:
+  batch_size: 16         # Larger batch OK for 1D data
+  n_epochs: 100
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  noise_std: 0.01
+  gradient_checkpointing: false  # Not needed for 1D
+  
+  # Learning rate scheduler
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  
+  # Checkpointing
+  save_every: 20
+  eval_every: 10
+
+# Step 2: Curriculum for autoregressive rollout training
+curriculum:
+  - [5,  0.8, 20]   # Stage 1: Short rollouts, 80% teacher forcing
+  - [10, 0.6, 20]   # Stage 2: Medium rollouts, 60% teacher forcing
+  - [20, 0.4, 20]   # Stage 3: Longer rollouts, 40% teacher forcing
+  - [40, 0.2, 20]   # Stage 4: Long rollouts, 20% teacher forcing
+  - [80, 0.0, 30]   # Stage 5: Full autoregressive
+
+# Logging
+log_level: "INFO"

@@ -44,6 +44,9 @@ class OpInfConfig:
     run_name: str = ""
     run_dir: str = ""
     
+    # PDE type: "hw2d" or "ks"
+    pde: str = "hw2d"
+    
     # Paths
     output_base: str = ""
     data_dir: str = ""
@@ -62,6 +65,10 @@ class OpInfConfig:
     n_fields: int = 2
     n_x: int = 512
     n_y: int = 512
+    
+    # KS-specific physics params (only used when pde="ks")
+    ks_L: float = 100.0       # KS domain length
+    ks_N: int = 200            # KS spatial points
     
     # Dimensionality reduction
     reduction_method: str = "linear"  # "linear" (POD) or "manifold" (quadratic)
@@ -130,6 +137,9 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg = OpInfConfig()
     cfg.run_name = raw.get("run_name", "")
     
+    # PDE type
+    cfg.pde = raw.get("pde", "hw2d")
+    
     # Paths
     paths = raw.get("paths", {})
     cfg.output_base = paths.get("output_base", "")
@@ -149,6 +159,14 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.n_fields = physics.get("n_fields", 2)
     cfg.n_x = physics.get("n_x", 512)
     cfg.n_y = physics.get("n_y", 512)
+    
+    # KS-specific physics (only relevant when pde="ks")
+    if cfg.pde == "ks":
+        cfg.ks_L = physics.get("L", 100.0)
+        cfg.ks_N = physics.get("N", 200)
+        cfg.n_fields = 1  # KS has a single field
+        cfg.n_x = cfg.ks_N
+        cfg.n_y = 1  # 1D PDE
     
     # Dimensionality reduction
     reduction = raw.get("reduction", raw.get("pod", {}))  # fallback to 'pod' for compatibility
@@ -220,6 +238,7 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
         "_step": step_name,
         "run_name": cfg.run_name,
         "run_dir": cfg.run_dir,
+        "pde": cfg.pde,
         "paths": {
             "output_base": cfg.output_base,
             "data_dir": cfg.data_dir,
@@ -236,7 +255,7 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
         },
         "reduction": {
             "method": cfg.reduction_method,
-            "r": cfg.r,
+            "r": int(cfg.r),
             "target_energy": cfg.target_energy,
             "n_vectors_to_check": cfg.n_vectors_to_check,
             "reg_magnitude": cfg.reg_magnitude,
@@ -369,6 +388,24 @@ class DummyLogger:
 # STEP STATUS TRACKING
 # =============================================================================
 
+def _sanitize_for_yaml(obj):
+    """Convert numpy/non-native types to Python builtins for safe YAML serialization."""
+    import numpy as np
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_yaml(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_sanitize_for_yaml(v) for v in obj]
+    elif isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.bool_):
+        return bool(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
 def save_step_status(run_dir: str, step: str, status: str, metadata: dict = None):
     """Save step completion status."""
     status_file = os.path.join(run_dir, "pipeline_status.yaml")
@@ -381,7 +418,7 @@ def save_step_status(run_dir: str, step: str, status: str, metadata: dict = None
     
     status_data[step] = {"status": status, "timestamp": datetime.now().isoformat()}
     if metadata:
-        status_data[step].update(metadata)
+        status_data[step].update(_sanitize_for_yaml(metadata))
     
     with open(status_file, 'w') as f:
         yaml.dump(status_data, f, default_flow_style=False)
