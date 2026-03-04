@@ -68,9 +68,16 @@ case $STEP in
     2) run_step_2 ;;
     3) run_step_3 ;;
     all)
-        run_step_1
-        # Extract run directory from step 1 output
-        echo "Note: For 'all' mode, manually pass run_dir to steps 2 & 3"
+        # Run step 1 and capture its output to extract the run directory
+        STEP1_OUTPUT=$(run_step_1 | tee /dev/stderr)
+        RUN_DIR=$(echo "$STEP1_OUTPUT" | grep "Run directory:" | tail -1 | sed 's/.*Run directory: *//')
+        if [ -z "$RUN_DIR" ]; then
+            echo "ERROR: Could not extract run directory from Step 1 output"
+            exit 1
+        fi
+        echo "Extracted run directory: $RUN_DIR"
+        run_step_2
+        run_step_3
         ;;
     *) echo "Invalid step: $STEP"; exit 1 ;;
 esac

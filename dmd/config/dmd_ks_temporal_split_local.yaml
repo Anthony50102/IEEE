@@ -46,9 +46,9 @@ dmd:
 
 # Quadratic output model (OpInf-style, for fair comparison)
 output_model:
-  enabled: false
-  alpha_lin: 1.0e-4
-  alpha_quad: 1.0e-4
+  enabled: true
+  alpha_lin: 1.0e-2
+  alpha_quad: 1.0e0
   
 truncation:
   enabled: false

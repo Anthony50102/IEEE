@@ -230,8 +230,8 @@ def train_output_model(
     output_model = fit_output_operators(
         X_train=Xhat_train,
         Y_Gamma=Y_Gamma,
-        alpha_lin=cfg.output_alpha_lin,
-        alpha_quad=cfg.output_alpha_quad,
+        alpha_lin=float(cfg.output_alpha_lin),
+        alpha_quad=float(cfg.output_alpha_quad),
     )
     
     logger.info(f"  Output operators: C {output_model['C'].shape}, G {output_model['G'].shape}")
