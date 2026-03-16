@@ -3,9 +3,9 @@ run_name: "dmd_ks_temporal_split"  # DMD on Kuramoto-Sivashinsky, temporal split
 pde: "ks"
 
 paths:
-  output_base: "/home/anthonypoole/repos/not_work/IEEE/local_output/"
+  output_base: "/home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/"
   
-  data_dir: "/home/anthonypoole/repos/not_work/IEEE/data/ks"
+  data_dir: "/home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks"
   
   # Single trajectory for temporal split mode
   training_files: 
