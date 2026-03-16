@@ -35,6 +35,7 @@ from opinf.utils import (
 from shared.plotting import (
     plot_gamma_comparison, plot_qoi_timeseries,
     generate_state_diagnostic_plots,
+    plot_ks_full_trajectory_reconstruction, plot_ks_full_trajectory_qoi,
 )
 
 
@@ -533,6 +534,117 @@ def main():
                 dx=ks_dx,
             )
         
+        # =================================================================
+        # FULL TRAJECTORY PLOTS (KS only)
+        # =================================================================
+        if cfg.pde == "ks" and cfg.training_mode == "temporal_split":
+            logger.info("Generating full-trajectory KS plots...")
+            
+            try:
+                # Load POD basis if not already loaded
+                _pod = pod_basis
+                if _pod is None:
+                    pod_path = paths['pod_basis']
+                    if os.path.exists(pod_path):
+                        _pod_data = np.load(pod_path, allow_pickle=True)
+                        _pod = {
+                            'mean': _pod_data['mean'],
+                            'U_r': _pod_data['U_r'],
+                            'n_y': int(_pod_data['n_y']),
+                            'n_x': int(_pod_data['n_x']),
+                        }
+                
+                if _pod is not None and not train_pred['is_nan'][0] and not test_pred['is_nan'][0]:
+                    import h5py
+                    
+                    dmd_rank = model['dmd_rank']
+                    U_r = _pod['U_r'][:, :dmd_rank]
+                    mean = _pod.get('mean')
+                    
+                    # Reconstruct full states from reduced predictions
+                    X_hat_train = train_pred['X_hat'][0]  # (r, n_train)
+                    X_hat_test = test_pred['X_hat'][0]     # (r, n_test)
+                    
+                    X_hat_full = np.concatenate([X_hat_train, X_hat_test], axis=1)
+                    Q_full = reconstruct_full_state(X_hat_full, U_r, mean)
+                    pred_u = Q_full.T  # (n_total, N)
+                    
+                    # Load reference states
+                    n_train = train_bounds[1] - train_bounds[0]
+                    n_test = test_bounds[1] - test_bounds[0]
+                    ref_file = train_ref_files[0]
+                    with h5py.File(ref_file, 'r') as f:
+                        ref_u_train = np.array(f['u'][train_ref_offset:train_ref_offset + n_train])
+                        ref_u_test = np.array(f['u'][test_ref_offset:test_ref_offset + n_test])
+                    ref_u = np.concatenate([ref_u_train, ref_u_test], axis=0)
+                    
+                    # Concatenate QoI arrays (DMD: no ensemble, direct 1D arrays)
+                    full_pred_energy = np.concatenate([train_pred['Gamma_n'][0], test_pred['Gamma_n'][0]])
+                    full_pred_enstrophy = np.concatenate([train_pred['Gamma_c'][0], test_pred['Gamma_c'][0]])
+                    
+                    # Load reference QoIs
+                    with h5py.File(ref_file, 'r') as f:
+                        ref_energy_train = np.array(f['energy'][train_ref_offset:train_ref_offset + n_train])
+                        ref_enstrophy_train = np.array(f['enstrophy'][train_ref_offset:train_ref_offset + n_train])
+                        ref_energy_test = np.array(f['energy'][test_ref_offset:test_ref_offset + n_test])
+                        ref_enstrophy_test = np.array(f['enstrophy'][test_ref_offset:test_ref_offset + n_test])
+                    full_ref_energy = np.concatenate([ref_energy_train, ref_energy_test])
+                    full_ref_enstrophy = np.concatenate([ref_enstrophy_train, ref_enstrophy_test])
+                    
+                    # Consistent limits from reference
+                    ref_vmin = float(ref_u.min())
+                    ref_vmax = float(ref_u.max())
+                    train_n_steps = n_train
+                    ks_dx = cfg.ks_L / cfg.ks_N
+                    t_start_val = cfg.train_start * cfg.dt
+                    
+                    energy_range = full_ref_energy.max() - full_ref_energy.min()
+                    energy_pad = 0.1 * energy_range if energy_range > 0 else 1.0
+                    enstrophy_range = full_ref_enstrophy.max() - full_ref_enstrophy.min()
+                    enstrophy_pad = 0.1 * enstrophy_range if enstrophy_range > 0 else 1.0
+                    energy_ylim = (float(full_ref_energy.min() - energy_pad),
+                                   float(full_ref_energy.max() + energy_pad))
+                    enstrophy_ylim = (float(full_ref_enstrophy.min() - enstrophy_pad),
+                                      float(full_ref_enstrophy.max() + enstrophy_pad))
+                    
+                    figures_dir = os.path.join(args.run_dir, "figures")
+                    ft_dir = os.path.join(figures_dir, "full_trajectory")
+                    os.makedirs(ft_dir, exist_ok=True)
+                    
+                    plot_ks_full_trajectory_reconstruction(
+                        pred_states=pred_u,
+                        ref_states=ref_u,
+                        dt=cfg.dt, dx=ks_dx,
+                        train_n_steps=train_n_steps,
+                        output_path=os.path.join(ft_dir, "ks_full_trajectory_reconstruction.png"),
+                        logger=logger,
+                        method_name="DMD",
+                        vmin=ref_vmin, vmax=ref_vmax,
+                        t_start=t_start_val,
+                    )
+                    
+                    plot_ks_full_trajectory_qoi(
+                        pred_qoi_1=full_pred_energy,
+                        pred_qoi_2=full_pred_enstrophy,
+                        ref_qoi_1=full_ref_energy,
+                        ref_qoi_2=full_ref_enstrophy,
+                        dt=cfg.dt,
+                        train_n_steps=train_n_steps,
+                        output_path=os.path.join(ft_dir, "ks_full_trajectory_qoi.png"),
+                        logger=logger,
+                        method_name="DMD",
+                        ylim_1=energy_ylim,
+                        ylim_2=enstrophy_ylim,
+                        t_start=t_start_val,
+                    )
+                else:
+                    if _pod is None:
+                        logger.warning("POD basis not available for full trajectory reconstruction")
+                    else:
+                        logger.warning("NaN predictions, skipping full trajectory plot")
+            except Exception as e:
+                logger.warning(f"Full trajectory plot failed (non-fatal): {e}")
+
         # Final timing
         t_elapsed = time.time() - t_start
         

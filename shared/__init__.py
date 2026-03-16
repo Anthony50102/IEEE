@@ -34,5 +34,10 @@ from .physics import (
     get_ks_grid_params,
 )
 
+from .plotting import (
+    plot_ks_full_trajectory_reconstruction,
+    plot_ks_full_trajectory_qoi,
+)
+
 # NOTE: mpi_utils not imported here to avoid MPI initialization on import.
 # Import directly when needed: from shared.mpi_utils import distribute_indices

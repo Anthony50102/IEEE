@@ -1,0 +1,47 @@
+run_name: "fno_ks_temporal_split"
+pde: "ks"
+paths:
+  output_base: "/home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/"
+  data_dir: "/home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks"
+  training_files: 
+    - "ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5"
+  test_files: []
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  L: 100.0
+  N: 200
+training_mode: "temporal_split"
+train_start: 1250
+train_end: 1800
+test_start: 1800
+test_end: 2000
+model:
+  n_modes: [96]
+  in_channels: 1
+  out_channels: 1
+  hidden_channels: 128
+  n_layers: 5
+training:
+  batch_size: 16
+  n_epochs: 200
+  learning_rate: 5.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  noise_std: 0.02
+  gradient_checkpointing: false
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  save_every: 20
+  eval_every: 10
+curriculum:
+  - [5,  0.8, 20]   # Stage 1: Short rollouts, 80% teacher forcing
+  - [10, 0.6, 20]   # Stage 2: Medium rollouts, 60% teacher forcing
+  - [20, 0.4, 20]   # Stage 3: Longer rollouts, 40% teacher forcing
+  - [40, 0.2, 20]   # Stage 4: Long rollouts, 20% teacher forcing
+  - [60, 0.1, 20]   # Stage 5: Very long rollouts, 10% teacher forcing
+  - [80, 0.0, 50]   # Stage 6: Full autoregressive (extended)
+log_level: "INFO"

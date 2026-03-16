@@ -1075,3 +1075,224 @@ def plot_ks_state_error_timeseries(
     plt.close(fig)
 
     logger.info(f"  Saved KS state error plot to {output_path}")
+
+
+# =============================================================================
+# KS FULL TRAJECTORY PLOTS
+# =============================================================================
+
+def plot_ks_full_trajectory_reconstruction(
+    pred_states,
+    ref_states,
+    dt, dx,
+    train_n_steps,
+    output_path,
+    logger,
+    method_name="ROM",
+    vmin=None, vmax=None,
+    err_vmax=None,
+    t_start=0.0,
+):
+    """
+    Full trajectory space-time reconstruction for KS equation.
+
+    Three-panel figure showing reference, prediction, and absolute error
+    as space-time heatmaps. A horizontal dashed line marks the train/test
+    boundary. Colormap limits default to reference data range for
+    cross-method consistency.
+
+    Parameters
+    ----------
+    pred_states : np.ndarray, shape (n_time, N)
+        Concatenated train+test predicted u field.
+    ref_states : np.ndarray, shape (n_time, N)
+        Concatenated train+test reference u field.
+    dt : float
+        Time step size.
+    dx : float
+        Spatial grid spacing.
+    train_n_steps : int
+        Number of training timesteps (for boundary marker).
+    output_path : str
+        Path to save figure.
+    logger : logging.Logger
+        Logger instance.
+    method_name : str
+        Name for titles (e.g., "FNO", "OpInf", "DMD").
+    vmin, vmax : float, optional
+        Colormap limits for field values. Defaults to reference min/max.
+    err_vmax : float, optional
+        Upper limit for error colormap. Defaults to 99th percentile.
+    t_start : float
+        Time offset for first snapshot.
+    """
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib not available, skipping trajectory reconstruction plot")
+        return
+
+    n_time, N = ref_states.shape
+
+    if vmin is None:
+        vmin = ref_states.min()
+    if vmax is None:
+        vmax = ref_states.max()
+
+    abs_error = np.abs(pred_states - ref_states)
+    if err_vmax is None:
+        err_vmax = np.percentile(abs_error, 99)
+
+    # Build pcolormesh edge arrays
+    x_edges = np.arange(N + 1) * dx
+    t_edges = t_start + np.arange(n_time + 1) * dt
+    t_boundary = t_start + train_n_steps * dt
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6), sharey=True)
+
+    # Panel 1 — Reference
+    im0 = axes[0].pcolormesh(x_edges, t_edges, ref_states,
+                             cmap='RdBu_r', vmin=vmin, vmax=vmax, shading='flat')
+    axes[0].axhline(t_boundary, color='k', linestyle='--', linewidth=1.5)
+    axes[0].set_title('Reference')
+    axes[0].set_xlabel('x')
+    axes[0].set_ylabel('Time')
+    plt.colorbar(im0, ax=axes[0], fraction=0.046, pad=0.04)
+
+    # Panel 2 — Prediction
+    im1 = axes[1].pcolormesh(x_edges, t_edges, pred_states,
+                             cmap='RdBu_r', vmin=vmin, vmax=vmax, shading='flat')
+    axes[1].axhline(t_boundary, color='k', linestyle='--', linewidth=1.5)
+    axes[1].set_title(method_name)
+    axes[1].set_xlabel('x')
+    plt.colorbar(im1, ax=axes[1], fraction=0.046, pad=0.04)
+
+    # Panel 3 — |Error|
+    im2 = axes[2].pcolormesh(x_edges, t_edges, abs_error,
+                             cmap='hot', vmin=0, vmax=err_vmax, shading='flat')
+    axes[2].axhline(t_boundary, color='w', linestyle='--', linewidth=1.5)
+    axes[2].set_title('|Error|')
+    axes[2].set_xlabel('x')
+    plt.colorbar(im2, ax=axes[2], fraction=0.046, pad=0.04)
+
+    plt.suptitle(f'{method_name} — Full Trajectory u(x,t)', fontsize=14)
+    plt.tight_layout()
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    logger.info(f"  Saved KS full trajectory reconstruction to {output_path}")
+
+
+def plot_ks_full_trajectory_qoi(
+    pred_qoi_1, pred_qoi_2,
+    ref_qoi_1, ref_qoi_2,
+    dt,
+    train_n_steps,
+    output_path,
+    logger,
+    method_name="ROM",
+    label_1="Energy", label_2="Enstrophy",
+    symbol_1=r"$E$", symbol_2=r"$P$",
+    ylim_1=None, ylim_2=None,
+    t_start=0.0,
+):
+    """
+    Full trajectory derived quantity comparison for KS equation.
+
+    Two-panel figure showing Energy and Enstrophy timeseries with
+    reference vs prediction. A vertical dashed line marks the
+    train/test boundary. Axis limits can be specified for cross-method
+    consistency.
+
+    Parameters
+    ----------
+    pred_qoi_1, pred_qoi_2 : np.ndarray, shape (n_time,)
+        Predicted QoI arrays (Energy, Enstrophy).
+    ref_qoi_1, ref_qoi_2 : np.ndarray, shape (n_time,)
+        Reference QoI arrays.
+    dt : float
+        Time step size.
+    train_n_steps : int
+        Number of training timesteps (for boundary marker).
+    output_path : str
+        Path to save figure.
+    logger : logging.Logger
+        Logger instance.
+    method_name : str
+        Name for legend entries.
+    label_1, label_2 : str
+        Labels for the two QoIs.
+    symbol_1, symbol_2 : str
+        Symbols for axis labels.
+    ylim_1, ylim_2 : tuple, optional
+        (ymin, ymax) for each panel. Defaults to reference range with 10% padding.
+    t_start : float
+        Time offset for first snapshot.
+    """
+    if not HAS_MATPLOTLIB:
+        logger.warning("matplotlib not available, skipping trajectory QoI plot")
+        return
+
+    n_time = len(ref_qoi_1)
+    t = t_start + np.arange(n_time) * dt
+    t_boundary = t_start + train_n_steps * dt
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+
+    # --- Panel 1: QoI 1 (Energy) ---
+    axes[0].plot(t, ref_qoi_1, 'k-', linewidth=1.5, alpha=0.8, label='Reference')
+    axes[0].plot(t, pred_qoi_1, 'b-', linewidth=1.5, alpha=0.8, label=method_name)
+    axes[0].axvline(t_boundary, color='gray', linestyle='--', linewidth=1.5,
+                    alpha=0.7, label='Train/Test')
+    axes[0].set_ylabel(f'{label_1} ({symbol_1})')
+    axes[0].legend()
+    axes[0].grid(True, alpha=0.3)
+
+    if ylim_1 is not None:
+        axes[0].set_ylim(ylim_1)
+    else:
+        ref_range = ref_qoi_1.max() - ref_qoi_1.min()
+        pad = 0.1 * ref_range if ref_range > 0 else 1.0
+        axes[0].set_ylim(ref_qoi_1.min() - pad, ref_qoi_1.max() + pad)
+
+    ref_mean_1 = np.mean(ref_qoi_1)
+    rel_err_1 = np.abs(np.mean(pred_qoi_1) - ref_mean_1) / max(np.abs(ref_mean_1), 1e-12)
+    axes[0].text(0.02, 0.95, f'Rel. mean error: {rel_err_1:.2e}',
+                 transform=axes[0].transAxes, fontsize=10, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    # --- Panel 2: QoI 2 (Enstrophy) ---
+    axes[1].plot(t, ref_qoi_2, 'k-', linewidth=1.5, alpha=0.8, label='Reference')
+    axes[1].plot(t, pred_qoi_2, 'r-', linewidth=1.5, alpha=0.8, label=method_name)
+    axes[1].axvline(t_boundary, color='gray', linestyle='--', linewidth=1.5,
+                    alpha=0.7, label='Train/Test')
+    axes[1].set_ylabel(f'{label_2} ({symbol_2})')
+    axes[1].set_xlabel('Time')
+    axes[1].legend()
+    axes[1].grid(True, alpha=0.3)
+
+    if ylim_2 is not None:
+        axes[1].set_ylim(ylim_2)
+    else:
+        ref_range = ref_qoi_2.max() - ref_qoi_2.min()
+        pad = 0.1 * ref_range if ref_range > 0 else 1.0
+        axes[1].set_ylim(ref_qoi_2.min() - pad, ref_qoi_2.max() + pad)
+
+    ref_mean_2 = np.mean(ref_qoi_2)
+    rel_err_2 = np.abs(np.mean(pred_qoi_2) - ref_mean_2) / max(np.abs(ref_mean_2), 1e-12)
+    axes[1].text(0.02, 0.95, f'Rel. mean error: {rel_err_2:.2e}',
+                 transform=axes[1].transAxes, fontsize=10, verticalalignment='top',
+                 bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    plt.suptitle(f'{method_name} — Full Trajectory Derived Quantities', fontsize=14)
+    plt.tight_layout()
+
+    out_dir = os.path.dirname(output_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+
+    logger.info(f"  Saved KS full trajectory QoI plot to {output_path}")

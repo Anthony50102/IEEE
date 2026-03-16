@@ -33,6 +33,7 @@ from evaluation import compute_ensemble_predictions, compute_metrics
 from shared.plotting import (
     plot_gamma_timeseries, plot_qoi_timeseries,
     generate_state_diagnostic_plots,
+    plot_ks_full_trajectory_reconstruction, plot_ks_full_trajectory_qoi,
 )
 from utils import load_dataset
 
@@ -210,13 +211,14 @@ def main():
                                  os.path.join(paths["figures_dir"], "test"), logger,
                                  start_offset=test_offset, pde=cfg.pde)
         
+        # Initialize basis variables (used by both state diagnostics and full trajectory plots)
+        pod_basis = None
+        temporal_mean = None
+        manifold_W = None
+        manifold_shift = None
+        
         # Generate state diagnostic plots (optional)
         if cfg.plot_state_error or cfg.plot_state_snapshots:
-            # Load POD basis and temporal mean for state reconstruction
-            pod_basis = None
-            temporal_mean = None
-            manifold_W = None
-            manifold_shift = None
             
             # Get reduction method from preprocessing info
             preproc = np.load(paths["preprocessing_info"])
@@ -310,6 +312,130 @@ def main():
                 )
             else:
                 logger.warning("No valid test predictions for state diagnostics")
+        
+        # =================================================================
+        # FULL TRAJECTORY PLOTS (KS only)
+        # =================================================================
+        if cfg.pde == "ks" and cfg.training_mode == "temporal_split":
+            logger.info("Generating full-trajectory KS plots...")
+            
+            try:
+                # Load POD basis if not already loaded
+                if pod_basis is None and os.path.exists(paths["pod_basis"]):
+                    pod_basis = np.load(paths["pod_basis"])
+                    logger.info(f"Loaded POD basis for full trajectory: {pod_basis.shape}")
+                if temporal_mean is None:
+                    ics_data = np.load(paths["initial_conditions"])
+                    if 'train_temporal_mean' in ics_data:
+                        temporal_mean = ics_data['train_temporal_mean']
+                
+                if pod_basis is not None:
+                    from shared.data_io import reconstruct_full_state
+                    from shared.plotting import (
+                        plot_ks_full_trajectory_reconstruction,
+                        plot_ks_full_trajectory_qoi,
+                    )
+                    import h5py
+                    
+                    # Get ensemble mean reduced states for first trajectory
+                    n_train = train_bounds[1] - train_bounds[0]
+                    n_test = test_bounds[1] - test_bounds[0]
+                    
+                    X_train = train_pred['X_OpInf'][0]
+                    X_test = test_pred['X_OpInf'][0]
+                    
+                    if X_train.size > 0 and X_test.size > 0:
+                        # Ensemble mean → shape after mean: (n_steps, r) or (r, n_steps)
+                        X_hat_train = np.mean(X_train, axis=0)
+                        X_hat_test = np.mean(X_test, axis=0)
+                        
+                        # Ensure (r, n_time) format
+                        if X_hat_train.shape[0] != pod_basis.shape[1]:
+                            X_hat_train = X_hat_train.T
+                        if X_hat_test.shape[0] != pod_basis.shape[1]:
+                            X_hat_test = X_hat_test.T
+                        
+                        # Concatenate reduced states and reconstruct
+                        X_hat_full = np.concatenate([X_hat_train, X_hat_test], axis=1)
+                        Q_full = reconstruct_full_state(X_hat_full, pod_basis, temporal_mean)
+                        pred_u = Q_full.T  # (n_total, N)
+                        
+                        # Load reference states from HDF5
+                        ref_file = cfg.training_files[0]
+                        with h5py.File(ref_file, 'r') as f:
+                            ref_u_train = np.array(f['u'][cfg.train_start:cfg.train_start + n_train])
+                            ref_u_test = np.array(f['u'][cfg.test_start:cfg.test_start + n_test])
+                        ref_u = np.concatenate([ref_u_train, ref_u_test], axis=0)
+                        
+                        # QoI: ensemble mean
+                        pred_energy_train = np.mean(train_pred['Gamma_n'][0], axis=0)
+                        pred_enstrophy_train = np.mean(train_pred['Gamma_c'][0], axis=0)
+                        pred_energy_test = np.mean(test_pred['Gamma_n'][0], axis=0)
+                        pred_enstrophy_test = np.mean(test_pred['Gamma_c'][0], axis=0)
+                        
+                        full_pred_energy = np.concatenate([pred_energy_train, pred_energy_test])
+                        full_pred_enstrophy = np.concatenate([pred_enstrophy_train, pred_enstrophy_test])
+                        
+                        # Load reference QoIs
+                        with h5py.File(ref_file, 'r') as f:
+                            ref_energy_train = np.array(f['energy'][cfg.train_start:cfg.train_start + n_train])
+                            ref_enstrophy_train = np.array(f['enstrophy'][cfg.train_start:cfg.train_start + n_train])
+                            ref_energy_test = np.array(f['energy'][cfg.test_start:cfg.test_start + n_test])
+                            ref_enstrophy_test = np.array(f['enstrophy'][cfg.test_start:cfg.test_start + n_test])
+                        full_ref_energy = np.concatenate([ref_energy_train, ref_energy_test])
+                        full_ref_enstrophy = np.concatenate([ref_enstrophy_train, ref_enstrophy_test])
+                        
+                        # Consistent limits from reference
+                        ref_vmin = float(ref_u.min())
+                        ref_vmax = float(ref_u.max())
+                        train_n_steps = n_train
+                        ks_dx = cfg.ks_L / cfg.ks_N
+                        t_start_val = cfg.train_start * cfg.dt
+                        
+                        energy_range = full_ref_energy.max() - full_ref_energy.min()
+                        energy_pad = 0.1 * energy_range if energy_range > 0 else 1.0
+                        enstrophy_range = full_ref_enstrophy.max() - full_ref_enstrophy.min()
+                        enstrophy_pad = 0.1 * enstrophy_range if enstrophy_range > 0 else 1.0
+                        energy_ylim = (float(full_ref_energy.min() - energy_pad),
+                                       float(full_ref_energy.max() + energy_pad))
+                        enstrophy_ylim = (float(full_ref_enstrophy.min() - enstrophy_pad),
+                                          float(full_ref_enstrophy.max() + enstrophy_pad))
+                        
+                        ft_dir = os.path.join(paths["figures_dir"], "full_trajectory")
+                        os.makedirs(ft_dir, exist_ok=True)
+                        
+                        plot_ks_full_trajectory_reconstruction(
+                            pred_states=pred_u,
+                            ref_states=ref_u,
+                            dt=cfg.dt, dx=ks_dx,
+                            train_n_steps=train_n_steps,
+                            output_path=os.path.join(ft_dir, "ks_full_trajectory_reconstruction.png"),
+                            logger=logger,
+                            method_name="OpInf",
+                            vmin=ref_vmin, vmax=ref_vmax,
+                            t_start=t_start_val,
+                        )
+                        
+                        plot_ks_full_trajectory_qoi(
+                            pred_qoi_1=full_pred_energy,
+                            pred_qoi_2=full_pred_enstrophy,
+                            ref_qoi_1=full_ref_energy,
+                            ref_qoi_2=full_ref_enstrophy,
+                            dt=cfg.dt,
+                            train_n_steps=train_n_steps,
+                            output_path=os.path.join(ft_dir, "ks_full_trajectory_qoi.png"),
+                            logger=logger,
+                            method_name="OpInf",
+                            ylim_1=energy_ylim,
+                            ylim_2=enstrophy_ylim,
+                            t_start=t_start_val,
+                        )
+                    else:
+                        logger.warning("No valid predictions for full trajectory plot")
+                else:
+                    logger.warning("POD basis not available for full trajectory reconstruction")
+            except Exception as e:
+                logger.warning(f"Full trajectory plot failed (non-fatal): {e}")
         
         # Print summary
         print_header("EVALUATION SUMMARY")

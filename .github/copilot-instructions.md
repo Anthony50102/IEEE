@@ -21,17 +21,19 @@ The quantity of interest for **all** methods is prediction of transport coeffici
 ## Repository Structure
 
 ```
-IEEE/
-├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
-├── dmd/             # DMD pipeline (3-step)
-├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
-├── fno/             # FNO pipeline (3-step, PyTorch)
-├── analysis/        # Post-hoc comparison scripts
-├── data/
-│   ├── hw2d/        # Hasegawa-Wakatani HDF5 simulations + generation notebook
-│   └── ks/          # Kuramoto-Sivashinsky data + generation notebook
-├── scripts/         # SLURM job scripts (Frontera) + local bash runners
-└── frontera_pip_constraints.txt
+    IEEE-CiSE-Special-Issue/ # Github clone of overleaf project for this paper
+../
+    IEEE/
+    ├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
+    ├── dmd/             # DMD pipeline (3-step)
+    ├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
+    ├── fno/             # FNO pipeline (3-step, PyTorch)
+    ├── analysis/        # Post-hoc comparison scripts
+    ├── data/
+    │   ├── hw2d/        # Hasegawa-Wakatani HDF5 simulations + generation notebook
+    │   └── ks/          # Kuramoto-Sivashinsky data + generation notebook
+    ├── scripts/         # SLURM job scripts (Frontera) + local bash runners
+    └── frontera_pip_constraints.txt
 ```
 
 ### The 3-Step Pipeline Pattern

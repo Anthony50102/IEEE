@@ -25,7 +25,11 @@ echo ""
 
 if [ "$STEP" = "1" ] || [ "$STEP" = "all" ]; then
     echo "Running Step 1: Single-Step Training..."
-    python step_1_train.py --config "$CONFIG"
+    if [ "$STEP" = "all" ]; then
+        python step_1_train.py --config "$CONFIG" --test
+    else
+        python step_1_train.py --config "$CONFIG"
+    fi
 fi
 
 if [ "$STEP" = "2" ]; then
@@ -49,12 +53,14 @@ if [ "$STEP" = "3" ]; then
 fi
 
 if [ "$STEP" = "all" ]; then
-    # Find the most recent run directory
-    LATEST_RUN=$(ls -td output/fno_* 2>/dev/null | head -1)
+    # Extract output_base and run_name from config YAML
+    OUTPUT_BASE=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print(cfg.get('paths',{}).get('output_base','./output/'))")
+    RUN_NAME=$(python -c "import yaml; cfg=yaml.safe_load(open('$CONFIG')); print(cfg.get('run_name','fno_experiment'))")
+    LATEST_RUN=$(ls -td ${OUTPUT_BASE}/${RUN_NAME}_* 2>/dev/null | head -1)
     if [ -n "$LATEST_RUN" ]; then
         echo ""
         echo "Running Step 2: Rollout Training..."
-        python step_2_train.py --config "$CONFIG" --run-dir "$LATEST_RUN"
+        python step_2_train.py --config "$CONFIG" --run-dir "$LATEST_RUN" --test
         
         echo ""
         echo "Running Step 3: Evaluation..."

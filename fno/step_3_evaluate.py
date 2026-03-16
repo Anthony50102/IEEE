@@ -37,7 +37,7 @@ from shared.physics import (
     compute_gamma_n, compute_gamma_c, get_hw2d_grid_params,
     compute_ks_qoi_timeseries, get_ks_grid_params,
 )
-from shared.plotting import plot_gamma_timeseries, plot_qoi_timeseries, generate_state_diagnostic_plots
+from shared.plotting import plot_gamma_timeseries, plot_qoi_timeseries, generate_state_diagnostic_plots, plot_ks_full_trajectory_reconstruction, plot_ks_full_trajectory_qoi
 
 
 from typing import Optional
@@ -727,6 +727,72 @@ def main():
             test_predictions, test_states[1:],
             dt, test_fig_dir, logger, n_snapshots=5, prefix="test_", pde=pde
         )
+        
+        # =====================================================================
+        # FULL TRAJECTORY PLOTS (KS only)
+        # =====================================================================
+        if pde == "ks":
+            logger.info("Generating full-trajectory KS plots...")
+            
+            # Assemble full trajectory: concatenate train + test predictions
+            full_pred_u = np.concatenate([
+                train_predictions[:, 0, :],   # (n_train-1, N)
+                test_predictions[:, 0, :],     # (n_test-1, N)
+            ], axis=0)
+            full_ref_u = np.concatenate([
+                train_states[1:, 0, :],        # (n_train-1, N)
+                test_states[1:, 0, :],          # (n_test-1, N)
+            ], axis=0)
+            
+            # Concatenate QoI arrays
+            full_pred_energy = np.concatenate([train_pred_gamma_n, test_pred_gamma_n])
+            full_pred_enstrophy = np.concatenate([train_pred_gamma_c, test_pred_gamma_c])
+            full_ref_energy = np.concatenate([train_ref_gamma_n, test_ref_gamma_n])
+            full_ref_enstrophy = np.concatenate([train_ref_gamma_c, test_ref_gamma_c])
+            
+            # Consistent limits from reference data
+            ref_vmin = float(full_ref_u.min())
+            ref_vmax = float(full_ref_u.max())
+            train_n_steps = len(train_predictions)
+            t_start_val = train_start * dt
+            
+            energy_range = full_ref_energy.max() - full_ref_energy.min()
+            energy_pad = 0.1 * energy_range if energy_range > 0 else 1.0
+            enstrophy_range = full_ref_enstrophy.max() - full_ref_enstrophy.min()
+            enstrophy_pad = 0.1 * enstrophy_range if enstrophy_range > 0 else 1.0
+            energy_ylim = (float(full_ref_energy.min() - energy_pad),
+                           float(full_ref_energy.max() + energy_pad))
+            enstrophy_ylim = (float(full_ref_enstrophy.min() - enstrophy_pad),
+                              float(full_ref_enstrophy.max() + enstrophy_pad))
+            
+            # Full trajectory state reconstruction (space-time heatmap)
+            plot_ks_full_trajectory_reconstruction(
+                pred_states=full_pred_u,
+                ref_states=full_ref_u,
+                dt=dt, dx=dx,
+                train_n_steps=train_n_steps,
+                output_path=os.path.join(figures_dir, "ks_full_trajectory_reconstruction.png"),
+                logger=logger,
+                method_name="FNO",
+                vmin=ref_vmin, vmax=ref_vmax,
+                t_start=t_start_val,
+            )
+            
+            # Full trajectory QoI comparison
+            plot_ks_full_trajectory_qoi(
+                pred_qoi_1=full_pred_energy,
+                pred_qoi_2=full_pred_enstrophy,
+                ref_qoi_1=full_ref_energy,
+                ref_qoi_2=full_ref_enstrophy,
+                dt=dt,
+                train_n_steps=train_n_steps,
+                output_path=os.path.join(figures_dir, "ks_full_trajectory_qoi.png"),
+                logger=logger,
+                method_name="FNO",
+                ylim_1=energy_ylim,
+                ylim_2=enstrophy_ylim,
+                t_start=t_start_val,
+            )
         
         # =====================================================================
         # SAVE RESULTS

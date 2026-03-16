@@ -31,20 +31,20 @@ test_end: 1000
 
 # FNO model configuration
 model:
-  n_modes: [64]          # Fourier modes — 1D for KS
+  n_modes: [96]          # Fourier modes — 1D for KS
   in_channels: 1         # Single field u
   out_channels: 1        # Predict next u
-  hidden_channels: 64    # Width of the network
-  n_layers: 4            # Number of Fourier layers
+  hidden_channels: 128   # Width of the network
+  n_layers: 5            # Number of Fourier layers
 
 # Training configuration
 training:
   batch_size: 16         # Larger batch OK for 1D data
-  n_epochs: 100
-  learning_rate: 1.0e-3
+  n_epochs: 200
+  learning_rate: 5.0e-4
   weight_decay: 1.0e-4
   grad_clip: 1.0
-  noise_std: 0.01
+  noise_std: 0.02
   gradient_checkpointing: false  # Not needed for 1D
   
   # Learning rate scheduler
@@ -62,7 +62,8 @@ curriculum:
   - [10, 0.6, 20]   # Stage 2: Medium rollouts, 60% teacher forcing
   - [20, 0.4, 20]   # Stage 3: Longer rollouts, 40% teacher forcing
   - [40, 0.2, 20]   # Stage 4: Long rollouts, 20% teacher forcing
-  - [80, 0.0, 30]   # Stage 5: Full autoregressive
+  - [60, 0.1, 20]   # Stage 5: Very long rollouts, 10% teacher forcing
+  - [80, 0.0, 50]   # Stage 6: Full autoregressive (extended)
 
 # Logging
 log_level: "INFO"
