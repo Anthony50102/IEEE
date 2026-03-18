@@ -4,16 +4,16 @@ step_1:
   r: 15
   reduction_method: linear
   status: completed
-  timestamp: '2026-03-16T09:07:29.333442'
-  total_time_seconds: 2.441385269165039
+  timestamp: '2026-03-18T13:22:04.867092'
+  total_time_seconds: 9.91201400756836
 step_2:
-  best_error: 0.04054611790364285
-  n_models: 1084
+  best_error: 0.04054611790373128
+  n_models: 2385
   status: completed
-  sweep_time_seconds: 119.41436672210693
-  timestamp: '2026-03-16T09:09:37.223469'
+  sweep_time_seconds: 363.48745092900003
+  timestamp: '2026-03-18T13:28:30.722785'
 step_3:
   status: completed
-  test_mean_err_Gamma_n: 0.0317343188260734
-  timestamp: '2026-03-16T09:10:10.324452'
-  train_mean_err_Gamma_n: 0.0420355256636521
+  test_mean_err_Gamma_n: 0.1261267230582298
+  timestamp: '2026-03-18T13:29:54.618839'
+  train_mean_err_Gamma_n: 0.1588146132546515

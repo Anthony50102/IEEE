@@ -32,10 +32,10 @@ KS_DATA_FILE = os.path.join(
 )
 
 DEFAULT_OPINF_DIR = os.path.join(
-    REPO_ROOT, "local_output/20260316_090726_opinf_ks_temporal_split"
+    REPO_ROOT, "local_output/20260318_132154_opinf_ks_temporal_split"
 )
 DEFAULT_DMD_DIR = os.path.join(
-    REPO_ROOT, "local_output/20260316_090304_dmd_ks_temporal_split"
+    REPO_ROOT, "local_output/20260318_130434_dmd_ks_temporal_split"
 )
 DEFAULT_FNO_DIR = os.path.join(
     REPO_ROOT, "local_output/fno_ks_temporal_split_20260309_192216"

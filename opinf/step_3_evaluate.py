@@ -29,7 +29,7 @@ from utils import (
     check_step_completed, get_output_paths, print_header,
 )
 from data import load_ensemble, load_preprocessing_info
-from evaluation import compute_ensemble_predictions, compute_metrics
+from evaluation import compute_ensemble_predictions, compute_metrics, recompute_qoi_from_physics
 from shared.plotting import (
     plot_gamma_timeseries, plot_qoi_timeseries,
     generate_state_diagnostic_plots,
@@ -148,13 +148,42 @@ def main():
         t_start = time.time()
         
         train_pred = compute_ensemble_predictions(
-            models, train_ICs, train_bounds, mean_Xhat, scaling_Xhat, logger, "training"
+            models, train_ICs, train_bounds, mean_Xhat, scaling_Xhat, logger, "training",
+            max_ensemble=cfg.max_models
         )
         test_pred = compute_ensemble_predictions(
-            models, test_ICs, test_bounds, mean_Xhat, scaling_Xhat, logger, "test"
+            models, test_ICs, test_bounds, mean_Xhat, scaling_Xhat, logger, "test",
+            max_ensemble=cfg.max_models
         )
         
         logger.info(f"Predictions completed in {time.time() - t_start:.1f}s")
+        
+        # Optionally recompute QoI from physics instead of learned operators
+        if getattr(cfg, 'qoi_method', 'learned') == 'physics':
+            logger.info("Recomputing QoI from physics (reconstructing full state)...")
+            
+            # Load POD basis for reconstruction
+            pod_basis_path = paths.get("pod_basis")
+            if pod_basis_path and os.path.exists(pod_basis_path):
+                _pod_basis = np.load(pod_basis_path)
+            else:
+                raise FileNotFoundError(f"POD basis required for physics QoI but not found at {pod_basis_path}")
+            
+            # Load temporal mean
+            _temporal_mean = None
+            ics_data = np.load(paths["initial_conditions"])
+            if 'train_temporal_mean' in ics_data:
+                _temporal_mean = ics_data['train_temporal_mean']
+            
+            train_pred = recompute_qoi_from_physics(
+                train_pred, _pod_basis, _temporal_mean,
+                pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N, logger=logger
+            )
+            test_pred = recompute_qoi_from_physics(
+                test_pred, _pod_basis, _temporal_mean,
+                pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N, logger=logger
+            )
+            logger.info("QoI recomputation complete.")
         
         # Save predictions
         if cfg.save_predictions:

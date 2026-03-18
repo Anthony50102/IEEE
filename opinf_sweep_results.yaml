@@ -1,0 +1,56 @@
+baseline:
+  energy_mean_err: 0.0105
+  enstrophy_mean_err: 0.0317
+  enstrophy_std_err: 0.2866
+  n_selected: 1084
+best_enstrophy_std_err: 1.0
+best_experiment: Baseline
+experiments:
+  10a:
+    metrics:
+      energy_mean_err: 0.8497560864728892
+      energy_std_err: 3.760599016757264
+      enstrophy_mean_err: 0.4588201145343609
+      enstrophy_std_err: 2.1159783870859115
+      n_models: 210
+      n_selected: 210
+      n_total: 10000
+      r_actual: 15
+    name: 'Exp 10a: max_models=210'
+    run_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/20260318_140249_opinf_ks_temporal_split
+  10b:
+    metrics:
+      energy_mean_err: 0.8756330568471529
+      energy_std_err: 3.8355556187131534
+      enstrophy_mean_err: 0.4761902893313242
+      enstrophy_std_err: 2.2124799206907553
+      n_models: 200
+      n_selected: 200
+      n_total: 10000
+      r_actual: 15
+    name: 'Exp 10b: max_models=200'
+    run_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/20260318_140707_opinf_ks_temporal_split
+  10c:
+    metrics:
+      energy_mean_err: 0.8949569881128734
+      energy_std_err: 3.848261176711329
+      enstrophy_mean_err: 0.4885741357489706
+      enstrophy_std_err: 2.277216710089647
+      n_models: 150
+      n_selected: 150
+      n_total: 10000
+      r_actual: 15
+    name: 'Exp 10c: max_models=150'
+    run_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/20260318_141129_opinf_ks_temporal_split
+  10d:
+    metrics:
+      energy_mean_err: 0.9362891728226126
+      energy_std_err: 5.6340907245924345
+      enstrophy_mean_err: 0.5892848342046173
+      enstrophy_std_err: 6.36561238034143
+      n_models: 2385
+      n_selected: 2385
+      n_total: 10000
+      r_actual: 15
+    name: 'Exp 10d: max_models=250'
+    run_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/20260318_141616_opinf_ks_temporal_split

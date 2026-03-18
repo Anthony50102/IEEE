@@ -1,14 +1,14 @@
 test:
   ensemble:
-    mean_err_Gamma_c: 0.010506337889103266
-    mean_err_Gamma_n: 0.0317343188260734
-    std_err_Gamma_c: 0.026934446570797747
-    std_err_Gamma_n: 0.2865744955970551
+    mean_err_Gamma_c: 0.3151258537024091
+    mean_err_Gamma_n: 0.1261267230582298
+    std_err_Gamma_c: 1.2919257189029456
+    std_err_Gamma_n: 1.0241568021787086
   trajectories:
-  - err_mean_Gamma_c: 0.010506337889103266
-    err_mean_Gamma_n: 0.0317343188260734
-    err_std_Gamma_c: 0.026934446570797747
-    err_std_Gamma_n: 0.2865744955970551
+  - err_mean_Gamma_c: 0.3151258537024091
+    err_mean_Gamma_n: 0.1261267230582298
+    err_std_Gamma_c: 1.2919257189029456
+    err_std_Gamma_n: 1.0241568021787086
     n_steps: !!python/object/apply:numpy._core.multiarray.scalar
     - &id001 !!python/object/apply:numpy.dtype
       args:
@@ -26,40 +26,40 @@ test:
       - 0
     - !!binary |
       yAAAAAAAAAA=
-    pred_mean_Gamma_c: 1.140623598581292
-    pred_mean_Gamma_n: 0.912553492245002
-    pred_std_Gamma_c: 0.11876757708997826
-    pred_std_Gamma_n: 0.05529653967291247
+    pred_mean_Gamma_c: 1.515991098555634
+    pred_mean_Gamma_n: 1.0613315062362663
+    pred_std_Gamma_c: 0.2650670307274996
+    pred_std_Gamma_n: 0.15688935456483602
     ref_mean_Gamma_c: 1.1527346179741953
     ref_mean_Gamma_n: 0.9424618779616571
     ref_std_Gamma_c: 0.11565253993239219
     ref_std_Gamma_n: 0.07750849854910824
-    rmse_Gamma_c: 0.13848133188824352
-    rmse_Gamma_n: 0.08034835179554245
+    rmse_Gamma_c: 0.47149004465461586
+    rmse_Gamma_n: 0.24777437599254623
     trajectory: 0
 train:
   ensemble:
-    mean_err_Gamma_c: 0.06412025126485524
-    mean_err_Gamma_n: 0.0420355256636521
-    std_err_Gamma_c: 0.10504411502078836
-    std_err_Gamma_n: 0.10814738261059595
+    mean_err_Gamma_c: 0.16349203227710923
+    mean_err_Gamma_n: 0.1588146132546515
+    std_err_Gamma_c: 0.12687213764151944
+    std_err_Gamma_n: 0.08843550191232823
   trajectories:
-  - err_mean_Gamma_c: 0.06412025126485524
-    err_mean_Gamma_n: 0.0420355256636521
-    err_std_Gamma_c: 0.10504411502078836
-    err_std_Gamma_n: 0.10814738261059595
+  - err_mean_Gamma_c: 0.16349203227710923
+    err_mean_Gamma_n: 0.1588146132546515
+    err_std_Gamma_c: 0.12687213764151944
+    err_std_Gamma_n: 0.08843550191232823
     n_steps: !!python/object/apply:numpy._core.multiarray.scalar
     - *id001
     - !!binary |
       JgIAAAAAAAA=
-    pred_mean_Gamma_c: 0.9522502821898936
-    pred_mean_Gamma_n: 0.8201118551440418
-    pred_std_Gamma_c: 0.1522394597519028
-    pred_std_Gamma_n: 0.09806663525546205
+    pred_mean_Gamma_c: 0.8511402767233572
+    pred_mean_Gamma_n: 0.7201374649323053
+    pred_std_Gamma_c: 0.19169034845555735
+    pred_std_Gamma_n: 0.11968256333381055
     ref_mean_Gamma_c: 1.0174921334464966
     ref_mean_Gamma_n: 0.85609840146963
     ref_std_Gamma_c: 0.17010833975960624
     ref_std_Gamma_n: 0.10995834215581365
-    rmse_Gamma_c: 0.08883872601820864
-    rmse_Gamma_n: 0.05008723741226612
+    rmse_Gamma_c: 0.20441207457539184
+    rmse_Gamma_n: 0.1699959864185662
     trajectory: 0

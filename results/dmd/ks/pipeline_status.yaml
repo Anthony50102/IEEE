@@ -1,19 +1,19 @@
 step_1:
   n_test_snapshots: 200
   n_train_snapshots: 550
-  r: 20
+  r: 10
   status: completed
-  time_seconds: 1.0529932975769043
-  timestamp: '2026-03-16T09:03:05.495792'
+  time_seconds: 6.530400037765503
+  timestamp: '2026-03-18T13:04:40.545282'
   training_mode: temporal_split
 step_2:
-  dmd_rank: 20
+  dmd_rank: 10
   n_train_snapshots: 550
   status: completed
-  time_seconds: 15.04249620437622
-  timestamp: '2026-03-16T09:03:56.272254'
-  use_learned_output: true
+  time_seconds: 3.4872372150421143
+  timestamp: '2026-03-18T13:04:56.024701'
+  use_learned_output: false
 step_3:
   status: completed
-  time_seconds: 6.130979537963867
-  timestamp: '2026-03-16T09:04:10.523773'
+  time_seconds: 6.3194074630737305
+  timestamp: '2026-03-18T13:05:03.612366'

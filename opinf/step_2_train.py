@@ -18,7 +18,30 @@ Author: Anthony Poole
 
 import argparse
 import numpy as np
-from mpi4py import MPI
+import time as _time
+
+try:
+    from mpi4py import MPI
+    _HAS_MPI = True
+except (ImportError, RuntimeError):
+    _HAS_MPI = False
+
+    class _SerialComm:
+        """Minimal MPI communicator mock for single-rank serial execution."""
+        def Get_rank(self): return 0
+        def Get_size(self): return 1
+        def Barrier(self): pass
+        def bcast(self, data, root=0): return data
+        def gather(self, data, root=0): return [data]
+        def Abort(self, code):
+            import sys
+            sys.exit(code)
+
+    class MPI:
+        COMM_WORLD = _SerialComm()
+        @staticmethod
+        def Wtime():
+            return _time.time()
 
 from utils import (
     load_config, save_config, setup_logging, DummyLogger,
@@ -73,9 +96,32 @@ def main():
     windows = []
     
     try:
-        # Load data with shared memory
-        data, windows = load_data_shared_memory(paths, comm, logger)
-        comm.Barrier()
+        # Load data — use serial loader if MPI unavailable
+        if _HAS_MPI:
+            data, windows = load_data_shared_memory(paths, comm, logger)
+            comm.Barrier()
+        else:
+            logger.info("Loading pre-computed data (serial)...")
+            learning = np.load(paths["learning_matrices"])
+            gamma_ref = np.load(paths["gamma_ref"])
+            data = {
+                'X_state': learning['X_state'].copy(),
+                'Y_state': learning['Y_state'].copy(),
+                'D_state': learning['D_state'].copy(),
+                'D_state_2': learning['D_state_2'].copy(),
+                'D_out': learning['D_out'].copy(),
+                'D_out_2': learning['D_out_2'].copy(),
+                'mean_Xhat': learning['mean_Xhat'].copy(),
+                'scaling_Xhat': float(learning['scaling_Xhat']),
+                'Y_Gamma': gamma_ref['Y_Gamma'].copy(),
+                'mean_Gamma_n': float(gamma_ref['mean_Gamma_n']),
+                'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
+                'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
+                'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
+            }
+            learning.close()
+            gamma_ref.close()
+            logger.info("Data loaded successfully")
         
         # Infer actual r from loaded data (step 1 may truncate below cfg.r)
         actual_r = data['X_state'].shape[1]

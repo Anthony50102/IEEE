@@ -1,0 +1,78 @@
+run_name: dmd_ks_temporal_split
+pde: ks
+paths:
+  output_base: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/
+  data_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks
+  training_files:
+  - ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+  test_files: []
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  L: 100.0
+  N: 200
+reduction:
+  method: linear
+  r: 20
+  target_energy: 0.95
+dmd:
+  training_mode: temporal_split
+  train_start: 1250
+  train_end: 1800
+  test_start: 1800
+  test_end: 2000
+  rank: null
+  num_trials: 0
+  use_proj: true
+  eig_sort: real
+  eig_stable: true
+  k0: null
+  c1: null
+output_model:
+  enabled: true
+  alpha_lin: 10.0
+  alpha_quad: 10.0
+truncation:
+  enabled: false
+preprocessing:
+  centering: true
+  scaling: false
+training:
+  training_end: 550
+  n_steps: 550
+regularization:
+  state_lin:
+    min: 0.0001
+    max: 1.0e6
+    num: 1
+    scale: linear
+  state_quad:
+    min: 1.0e5
+    max: 1.0e15
+    num: 1
+    scale: linear
+  output_lin:
+    min: 1.0e-10
+    max: 1.0e1
+    num: 1
+    scale: linear
+  output_quad:
+    min: 1.0e-12
+    max: 1.0e1
+    num: 1
+    scale: linear
+model_selection:
+  method: top_k
+  num_top_models: 1
+  threshold_mean: 0.05
+  threshold_std: 0.4
+evaluation:
+  save_predictions: false
+  generate_plots: false
+  plot_state_error: false
+  plot_state_snapshots: false
+  n_snapshot_samples: 5
+execution:
+  verbose: false

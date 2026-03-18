@@ -49,8 +49,12 @@ def predict_trajectory(u0: np.ndarray, n_steps: int, model: dict,
 
 def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.ndarray,
                                   mean_Xhat: np.ndarray, scaling_Xhat: float,
-                                  logger, name: str = "trajectory") -> dict:
-    """Compute ensemble predictions for multiple trajectories."""
+                                  logger, name: str = "trajectory",
+                                  max_ensemble: int = 0) -> dict:
+    """Compute ensemble predictions for multiple trajectories.
+    
+    If max_ensemble > 0, only use the first max_ensemble non-divergent models.
+    """
     n_traj = len(boundaries) - 1
     predictions = {'Gamma_n': [], 'Gamma_c': [], 'X_OpInf': []}
     
@@ -85,10 +89,85 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
             traj_Gamma_n.append(result['Gamma_n'])
             traj_Gamma_c.append(result['Gamma_c'])
             traj_X.append(result['X_OpInf'])
+            
+            if max_ensemble > 0 and len(traj_Gamma_n) >= max_ensemble:
+                logger.info(f"    Reached max_ensemble={max_ensemble} valid models")
+                break
         
         predictions['Gamma_n'].append(np.array(traj_Gamma_n))
         predictions['Gamma_c'].append(np.array(traj_Gamma_c))
         predictions['X_OpInf'].append(np.array(traj_X))
+    
+    return predictions
+
+
+def recompute_qoi_from_physics(predictions: dict, pod_basis: np.ndarray,
+                                temporal_mean: np.ndarray,
+                                pde: str, ks_L: float = 100.0, ks_N: int = 200,
+                                logger=None) -> dict:
+    """
+    Replace learned-operator QoI with physics-based QoI.
+    
+    For each model in the ensemble, reconstruct the full state from the
+    reduced state using the POD basis, then compute energy/enstrophy
+    directly from the physics formulas.
+    
+    Parameters
+    ----------
+    predictions : dict
+        Output from compute_ensemble_predictions(). Must contain 'X_OpInf'.
+    pod_basis : np.ndarray, shape (n_spatial, r)
+        POD basis matrix.
+    temporal_mean : np.ndarray, shape (n_spatial,)
+        Temporal mean for de-centering.
+    pde : str
+        PDE type ("hw2d" or "ks").
+    ks_L : float
+        KS domain length.
+    ks_N : int
+        KS spatial grid points.
+    logger : optional
+        Logger instance.
+    """
+    from shared.data_io import reconstruct_full_state
+    
+    if pde == "ks":
+        from shared.physics import compute_ks_qoi_from_state_vector
+        dx = ks_L / ks_N
+    else:
+        from shared.physics import compute_gamma_n, compute_gamma_c
+    
+    for traj_idx in range(len(predictions['X_OpInf'])):
+        X_ensemble = predictions['X_OpInf'][traj_idx]  # (n_models, n_steps, r)
+        
+        if X_ensemble.size == 0:
+            continue
+        
+        new_gamma_n = []
+        new_gamma_c = []
+        
+        n_models = X_ensemble.shape[0]
+        if logger:
+            logger.info(f"  Traj {traj_idx + 1}: recomputing QoI from physics for {n_models} models...")
+        
+        for model_idx in range(n_models):
+            X_model = X_ensemble[model_idx]  # (n_steps, r)
+            
+            # Reconstruct full state: X_model.T is (r, n_steps)
+            Q_full = reconstruct_full_state(X_model.T, pod_basis, temporal_mean)  # (N, n_steps)
+            
+            if pde == "ks":
+                energy, enstrophy = compute_ks_qoi_from_state_vector(Q_full, ks_N, dx)
+                new_gamma_n.append(energy)
+                new_gamma_c.append(enstrophy)
+            else:
+                raise NotImplementedError("Physics-based QoI for hw2d not yet implemented in OpInf")
+        
+        predictions['Gamma_n'][traj_idx] = np.array(new_gamma_n)
+        predictions['Gamma_c'][traj_idx] = np.array(new_gamma_c)
+    
+    if logger:
+        logger.info("  QoI recomputed from physics.")
     
     return predictions
 

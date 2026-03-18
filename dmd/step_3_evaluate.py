@@ -248,6 +248,7 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
     
     metrics = {'trajectories': [], 'summary': {}}
     all_errs = {'mean_n': [], 'std_n': [], 'mean_c': [], 'std_c': []}
+    all_mse = {'n': [], 'c': []}
     
     n_traj = len(boundaries) - 1
     
@@ -282,10 +283,18 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
         err_mean_c = np.abs(ref_mean_c - pred_mean_c) / np.abs(ref_mean_c)
         err_std_c = np.abs(ref_std_c - pred_std_c) / ref_std_c
         
+        # Pointwise MSE/RMSE
+        mse_n = float(np.mean((pred_n - ref_n) ** 2))
+        mse_c = float(np.mean((pred_c - ref_c) ** 2))
+        rmse_n = float(np.sqrt(mse_n))
+        rmse_c = float(np.sqrt(mse_c))
+        
         all_errs['mean_n'].append(err_mean_n)
         all_errs['std_n'].append(err_std_n)
         all_errs['mean_c'].append(err_mean_c)
         all_errs['std_c'].append(err_std_c)
+        all_mse['n'].append(mse_n)
+        all_mse['c'].append(mse_c)
         
         metrics['trajectories'].append({
             'valid': True,
@@ -294,6 +303,10 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             'err_std_Gamma_n': float(err_std_n),
             'err_mean_Gamma_c': float(err_mean_c),
             'err_std_Gamma_c': float(err_std_c),
+            'mse_Gamma_n': mse_n,
+            'rmse_Gamma_n': rmse_n,
+            'mse_Gamma_c': mse_c,
+            'rmse_Gamma_c': rmse_c,
         })
         
         logger.info(f"  Traj {i+1}: Γn=[{err_mean_n:.4f}, {err_std_n:.4f}], "
@@ -305,6 +318,8 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             'std_err_Gamma_n': float(np.mean(all_errs['std_n'])),
             'mean_err_Gamma_c': float(np.mean(all_errs['mean_c'])),
             'std_err_Gamma_c': float(np.mean(all_errs['std_c'])),
+            'mean_mse_Gamma_n': float(np.mean(all_mse['n'])),
+            'mean_mse_Gamma_c': float(np.mean(all_mse['c'])),
         }
     
     return metrics

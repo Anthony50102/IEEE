@@ -102,6 +102,7 @@ class OpInfConfig:
     # Model selection (threshold-based)
     threshold_mean: float = 0.05
     threshold_std: float = 0.30
+    max_models: int = 0  # 0 = no limit
     
     # Evaluation
     save_predictions: bool = True
@@ -114,6 +115,9 @@ class OpInfConfig:
     verbose: bool = True
     log_level: str = "INFO"
     engine: str = "h5netcdf"
+    
+    # QoI computation method: "learned" (C,G,c operators) or "physics" (reconstruct & compute)
+    qoi_method: str = "learned"
 
 
 def _build_reg_array(reg_config: dict) -> np.ndarray:
@@ -212,6 +216,7 @@ def load_config(config_path: str) -> OpInfConfig:
     selection = raw.get("model_selection", {})
     cfg.threshold_mean = selection.get("threshold_mean", 0.05)
     cfg.threshold_std = selection.get("threshold_std", 0.30)
+    cfg.max_models = selection.get("max_models", 0)
     
     # Evaluation
     evaluation = raw.get("evaluation", {})
@@ -226,6 +231,8 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.verbose = execution.get("verbose", True)
     cfg.log_level = execution.get("log_level", "INFO")
     cfg.engine = execution.get("engine", "h5netcdf")
+    
+    cfg.qoi_method = evaluation.get("qoi_method", "learned")
     
     return cfg
 
@@ -277,6 +284,7 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
         "model_selection": {
             "threshold_mean": cfg.threshold_mean,
             "threshold_std": cfg.threshold_std,
+            "max_models": cfg.max_models,
         },
         "evaluation": {
             "save_predictions": cfg.save_predictions, 
@@ -284,6 +292,7 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
             "plot_state_error": cfg.plot_state_error,
             "plot_state_snapshots": cfg.plot_state_snapshots,
             "n_snapshot_samples": cfg.n_snapshot_samples,
+            "qoi_method": cfg.qoi_method,
         },
         "execution": {"verbose": cfg.verbose, "log_level": cfg.log_level, "engine": cfg.engine},
     }

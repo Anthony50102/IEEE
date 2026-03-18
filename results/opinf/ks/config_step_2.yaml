@@ -1,7 +1,7 @@
-_saved_at: '2026-03-16T09:07:36.327658'
+_saved_at: '2026-03-18T13:22:15.303709'
 _step: step_2
 run_name: opinf_ks_temporal_split
-run_dir: local_output/20260316_090726_opinf_ks_temporal_split
+run_dir: local_output/20260318_132154_opinf_ks_temporal_split
 pde: ks
 paths:
   output_base: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/
@@ -84,13 +84,14 @@ regularization:
   - 10000.0
 model_selection:
   threshold_mean: 0.5
-  threshold_std: 0.15
+  threshold_std: 0.5
 evaluation:
   save_predictions: true
   generate_plots: true
   plot_state_error: true
   plot_state_snapshots: true
   n_snapshot_samples: 5
+  qoi_method: physics
 execution:
   verbose: true
   log_level: INFO

@@ -1,27 +1,39 @@
 test:
   summary:
-    mean_err_Gamma_c: 0.2637910957816719
-    mean_err_Gamma_n: 0.2017698772412764
-    std_err_Gamma_c: 0.14949150444582743
-    std_err_Gamma_n: 0.3896100618460724
+    mean_err_Gamma_c: 0.11068026218848621
+    mean_err_Gamma_n: 0.03243403040938716
+    mean_mse_Gamma_c: 0.11303838663869817
+    mean_mse_Gamma_n: 0.07335414721587233
+    std_err_Gamma_c: 1.2431428181734787
+    std_err_Gamma_n: 1.744953683028247
   trajectories:
-  - err_mean_Gamma_c: 0.2637910957816719
-    err_mean_Gamma_n: 0.2017698772412764
-    err_std_Gamma_c: 0.14949150444582743
-    err_std_Gamma_n: 0.3896100618460724
+  - err_mean_Gamma_c: 0.11068026218848621
+    err_mean_Gamma_n: 0.03243403040938716
+    err_std_Gamma_c: 1.2431428181734787
+    err_std_Gamma_n: 1.744953683028247
+    mse_Gamma_c: 0.11303838663869817
+    mse_Gamma_n: 0.07335414721587233
+    rmse_Gamma_c: 0.3362118181127757
+    rmse_Gamma_n: 0.2708397076055731
     trajectory: 0
     valid: true
 train:
   summary:
-    mean_err_Gamma_c: 0.0022704150679635077
-    mean_err_Gamma_n: 0.00027503704757319034
-    std_err_Gamma_c: 0.00012277126792007762
-    std_err_Gamma_n: 0.036484771796270944
+    mean_err_Gamma_c: 0.09932706881633663
+    mean_err_Gamma_n: 0.07783682650574755
+    mean_mse_Gamma_c: 0.025004259566529855
+    mean_mse_Gamma_n: 0.009906297255955787
+    std_err_Gamma_c: 0.1482183510388511
+    std_err_Gamma_n: 0.1641274071575695
   trajectories:
-  - err_mean_Gamma_c: 0.0022704150679635077
-    err_mean_Gamma_n: 0.00027503704757319034
-    err_std_Gamma_c: 0.00012277126792007762
-    err_std_Gamma_n: 0.036484771796270944
+  - err_mean_Gamma_c: 0.09932706881633663
+    err_mean_Gamma_n: 0.07783682650574755
+    err_std_Gamma_c: 0.1482183510388511
+    err_std_Gamma_n: 0.1641274071575695
+    mse_Gamma_c: 0.025004259566529855
+    mse_Gamma_n: 0.009906297255955787
+    rmse_Gamma_c: 0.1581273523667865
+    rmse_Gamma_n: 0.09953038358187809
     trajectory: 0
     valid: true
-use_learned_output: true
+use_learned_output: false

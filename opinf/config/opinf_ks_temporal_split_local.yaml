@@ -71,7 +71,7 @@ regularization:
 model_selection:
   method: "threshold"
   threshold_mean: 0.5
-  threshold_std: 0.15
+  threshold_std: 0.50
 
 evaluation:
   save_predictions: true
@@ -79,6 +79,7 @@ evaluation:
   plot_state_error: true
   plot_state_snapshots: true
   n_snapshot_samples: 5
+  qoi_method: "physics"
 
 execution:
   verbose: true

@@ -25,7 +25,7 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 20
+  r: 10
   target_energy: 0.95
 
 # DMD-specific settings
@@ -46,7 +46,7 @@ dmd:
 
 # Quadratic output model (OpInf-style, for fair comparison)
 output_model:
-  enabled: true
+  enabled: false
   alpha_lin: 1.0e-2
   alpha_quad: 1.0e0
   
