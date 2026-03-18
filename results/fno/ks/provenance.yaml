@@ -1,0 +1,6 @@
+source_run: fno_ks_slim
+source_path: /Users/anthonypoole/Repositories/IEEE/local_output/fno_ks_slim
+method: fno
+pde: ks
+files_copied: 27
+total_size_mb: 98.8

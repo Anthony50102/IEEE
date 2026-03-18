@@ -50,6 +50,7 @@ METHOD_ARTIFACTS = {
     "fno": {
         "model": [
             "checkpoint_best.pt",
+            "checkpoint_rollout_final.pt",
         ],
         "predictions": [
             "predictions.npz",
