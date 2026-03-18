@@ -37,49 +37,17 @@ sys.path.insert(0, REPO_ROOT)
 
 from shared.plotting import setup_publication_style
 from shared.physics import (
-    compute_ks_qoi_timeseries,
+    compute_ks_psd,
     get_ks_grid_params,
 )
-from shared.data_io import load_ks_timeseries
-
-
-# =============================================================================
-# CONSTANTS
-# =============================================================================
-
-KS_DATA_FILE = os.path.join(
-    REPO_ROOT,
-    "data/ks/ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5",
+from analysis.ks_loaders import (
+    load_reference,
+    load_all_methods,
+    add_common_args,
+    DT, L, N_GRID, TRAIN_START, TRAIN_END, TEST_END,
+    COLOR_REF, COLOR_OPINF, COLOR_DMD, COLOR_FNO,
+    CORR_THRESHOLD,
 )
-
-DEFAULT_OPINF_DIR = os.path.join(
-    REPO_ROOT, "local_output/20260316_090726_opinf_ks_temporal_split"
-)
-DEFAULT_DMD_DIR = os.path.join(
-    REPO_ROOT, "local_output/20260316_090304_dmd_ks_temporal_split"
-)
-DEFAULT_FNO_DIR = os.path.join(
-    REPO_ROOT, "local_output/fno_ks_temporal_split_20260309_192216"
-)
-DEFAULT_OUTPUT_DIR = os.path.join(
-    os.path.dirname(REPO_ROOT), "IEEE-CiSE-Special-Issue/results/comparison/"
-)
-
-# Physics parameters
-DT = 0.1
-L = 100.0
-N_GRID = 200
-TRAIN_START = 1250
-TRAIN_END = 1800
-TEST_END = 2000
-
-# Method colours (consistent across all figures)
-COLOR_REF = "black"
-COLOR_OPINF = "#1f77b4"   # blue
-COLOR_DMD = "#d62728"     # red
-COLOR_FNO = "#ff7f0e"     # orange
-
-CORR_THRESHOLD = 0.8
 
 
 # =============================================================================
@@ -95,217 +63,6 @@ def _setup_logger() -> logging.Logger:
         ch.setFormatter(logging.Formatter("%(asctime)s  %(message)s", "%H:%M:%S"))
         logger.addHandler(ch)
     return logger
-
-
-# =============================================================================
-# DATA LOADING HELPERS
-# =============================================================================
-
-def load_reference(ks_file: str, grid: dict) -> dict:
-    """
-    Load reference DNS data for the train+test window.
-
-    Parameters
-    ----------
-    ks_file : str
-        Path to KS HDF5 file.
-    grid : dict
-        Grid parameters from ``get_ks_grid_params``.
-
-    Returns
-    -------
-    dict
-        Keys: u_train, u_test, energy_train, energy_test,
-        enstrophy_train, enstrophy_test.
-    """
-    n_train = TRAIN_END - TRAIN_START
-    n_test = TEST_END - TRAIN_END
-
-    u_train, energy_train, enstrophy_train = load_ks_timeseries(
-        ks_file, max_timesteps=n_train, start_timestep=TRAIN_START
-    )
-    u_test, energy_test, enstrophy_test = load_ks_timeseries(
-        ks_file, max_timesteps=n_test, start_timestep=TRAIN_END
-    )
-
-    return {
-        "u_train": u_train,       # (n_train, N)
-        "u_test": u_test,         # (n_test, N)
-        "energy_train": energy_train,
-        "energy_test": energy_test,
-        "enstrophy_train": enstrophy_train,
-        "enstrophy_test": enstrophy_test,
-    }
-
-
-def _reconstruct_opinf(run_dir: str, grid: dict, ref: dict, logger) -> dict:
-    """
-    Load OpInf predictions and reconstruct full states.
-
-    Returns dict with keys: name, color, u_train, u_test,
-    energy_train, energy_test, enstrophy_train, enstrophy_test,
-    has_ensemble (bool), and optionally ensemble arrays.
-    """
-    ens = np.load(os.path.join(run_dir, "ensemble_predictions.npz"))
-    Ur = np.load(os.path.join(run_dir, "POD_basis_Ur.npy"))
-    ic = np.load(os.path.join(run_dir, "initial_conditions.npz"))
-    mean_train = ic["train_temporal_mean"]
-    mean_test = ic["test_temporal_mean"]
-
-    # Reduced-state ensemble — train/test may have different model counts
-    # (some test simulations may diverge and be excluded).
-    X_train_all = ens["train_traj_0_X_OpInf"]  # (n_models_train, n_train, r)
-    X_test_all = ens["test_traj_0_X_OpInf"]    # (n_models_test, n_test, r)
-    n_models_train = X_train_all.shape[0]
-    n_models_test = X_test_all.shape[0]
-
-    n_train = ref["u_train"].shape[0]
-    n_test = ref["u_test"].shape[0]
-    dx = grid["dx"]
-
-    # Reconstruct ensemble full states and compute QoI
-    ens_energy_train = np.zeros((n_models_train, n_train))
-    ens_enstrophy_train = np.zeros((n_models_train, n_train))
-    ens_energy_test = np.zeros((n_models_test, n_test))
-    ens_enstrophy_test = np.zeros((n_models_test, n_test))
-
-    # Accumulate ensemble mean states for error computation
-    u_train_mean = np.zeros((n_train, N_GRID), dtype=np.float64)
-    u_test_mean = np.zeros((n_test, N_GRID), dtype=np.float64)
-
-    for m in range(n_models_train):
-        Q_tr = Ur @ X_train_all[m].T + mean_train[:, None]
-        u_tr = Q_tr.T  # (n_train, N)
-        e, p = compute_ks_qoi_timeseries(u_tr, dx)
-        ens_energy_train[m] = e
-        ens_enstrophy_train[m] = p
-        u_train_mean += u_tr
-
-    u_train_mean /= n_models_train
-
-    for m in range(n_models_test):
-        Q_te = Ur @ X_test_all[m].T + mean_test[:, None]
-        u_te = Q_te.T  # (n_test, N)
-        e, p = compute_ks_qoi_timeseries(u_te, dx)
-        ens_energy_test[m] = e
-        ens_enstrophy_test[m] = p
-        u_test_mean += u_te
-
-    u_test_mean /= n_models_test
-
-    logger.info(f"  OpInf: loaded {n_models_train} train / {n_models_test} test "
-                f"ensemble models, train={n_train}, test={n_test}")
-
-    return {
-        "name": "OpInf",
-        "color": COLOR_OPINF,
-        "u_train": u_train_mean,
-        "u_test": u_test_mean,
-        "energy_train": np.mean(ens_energy_train, axis=0),
-        "energy_test": np.mean(ens_energy_test, axis=0),
-        "enstrophy_train": np.mean(ens_enstrophy_train, axis=0),
-        "enstrophy_test": np.mean(ens_enstrophy_test, axis=0),
-        "has_ensemble": True,
-        "ens_energy_train": ens_energy_train,
-        "ens_energy_test": ens_energy_test,
-        "ens_enstrophy_train": ens_enstrophy_train,
-        "ens_enstrophy_test": ens_enstrophy_test,
-    }
-
-
-def _reconstruct_dmd(run_dir: str, grid: dict, ref: dict, logger) -> dict:
-    """Load DMD predictions and reconstruct full states."""
-    Xhat_train = np.load(os.path.join(run_dir, "Xhat_train.npy"))  # (n_train, r)
-    Xhat_test = np.load(os.path.join(run_dir, "Xhat_test.npy"))    # (n_test, r)
-    pod = np.load(os.path.join(run_dir, "pod_basis.npz"))
-    Ur = pod["U_r"]
-    mean = pod["mean"]
-
-    Q_train = Ur @ Xhat_train.T + mean[:, None]  # (N, n_train)
-    Q_test = Ur @ Xhat_test.T + mean[:, None]     # (N, n_test)
-
-    u_train = Q_train.T  # (n_train, N)
-    u_test = Q_test.T    # (n_test, N)
-    dx = grid["dx"]
-
-    e_tr, p_tr = compute_ks_qoi_timeseries(u_train, dx)
-    e_te, p_te = compute_ks_qoi_timeseries(u_test, dx)
-
-    logger.info(f"  DMD: train={u_train.shape[0]}, test={u_test.shape[0]}")
-
-    return {
-        "name": "DMD",
-        "color": COLOR_DMD,
-        "u_train": u_train,
-        "u_test": u_test,
-        "energy_train": e_tr,
-        "energy_test": e_te,
-        "enstrophy_train": p_tr,
-        "enstrophy_test": p_te,
-        "has_ensemble": False,
-    }
-
-
-def _reconstruct_fno(run_dir: str, grid: dict, ref: dict, logger) -> dict:
-    """Load FNO full-state predictions."""
-    sp = np.load(os.path.join(run_dir, "state_predictions.npz"))
-    u_train = sp["train_predictions"][:, 0, :].astype(np.float64)  # (n_train, N)
-    u_test = sp["test_predictions"][:, 0, :].astype(np.float64)    # (n_test, N)
-    dx = grid["dx"]
-
-    e_tr, p_tr = compute_ks_qoi_timeseries(u_train, dx)
-    e_te, p_te = compute_ks_qoi_timeseries(u_test, dx)
-
-    logger.info(f"  FNO: train={u_train.shape[0]}, test={u_test.shape[0]}")
-
-    return {
-        "name": "FNO",
-        "color": COLOR_FNO,
-        "u_train": u_train,
-        "u_test": u_test,
-        "energy_train": e_tr,
-        "energy_test": e_te,
-        "enstrophy_train": p_tr,
-        "enstrophy_test": p_te,
-        "has_ensemble": False,
-    }
-
-
-def load_all_methods(args, grid: dict, ref: dict, logger) -> list:
-    """
-    Try to load each method; skip gracefully on failure.
-
-    Parameters
-    ----------
-    args : argparse.Namespace
-        CLI arguments with opinf_dir, dmd_dir, fno_dir.
-    grid : dict
-        KS grid parameters.
-    ref : dict
-        Reference data dictionary.
-    logger : logging.Logger
-
-    Returns
-    -------
-    list[dict]
-        Successfully loaded method dictionaries.
-    """
-    loaders = [
-        ("OpInf", args.opinf_dir, _reconstruct_opinf),
-        ("DMD",   args.dmd_dir,   _reconstruct_dmd),
-        ("FNO",   args.fno_dir,   _reconstruct_fno),
-    ]
-    methods = []
-    for name, run_dir, loader in loaders:
-        if not os.path.isdir(run_dir):
-            logger.warning(f"  {name} dir not found: {run_dir} — skipping")
-            continue
-        try:
-            m = loader(run_dir, grid, ref, logger)
-            methods.append(m)
-        except Exception as exc:
-            logger.warning(f"  {name} loading failed: {exc} — skipping")
-    return methods
 
 
 # =============================================================================
@@ -491,29 +248,17 @@ def plot_cross_method_power_spectra(
         Output directory.
     logger : logging.Logger
     """
-    N = grid["N"]
     dx = grid["dx"]
     u_ref = ref["u_test"]  # (n_test, N)
 
-    # Spatial wavenumbers
-    freqs = np.fft.rfftfreq(N, d=dx)  # cycles per unit length
-    k = 2 * np.pi * freqs             # angular wavenumber
-
-    def _spectrum(u):
-        """Time-averaged power spectral density, shape (n_freq,)."""
-        U_hat = np.fft.rfft(u, axis=1)
-        psd = np.mean(np.abs(U_hat) ** 2, axis=0)
-        return psd
-
-    psd_ref = _spectrum(u_ref)
+    k_ref, psd_ref = compute_ks_psd(u_ref, dx)
 
     fig, ax = plt.subplots(1, 1, figsize=(8, 5))
-    ax.loglog(k[1:], psd_ref[1:], color=COLOR_REF, linewidth=1.5,
+    ax.loglog(k_ref[1:], psd_ref[1:], color=COLOR_REF, linewidth=1.5,
               label="Reference DNS")
 
     for m in methods:
-        u_pred = m["u_test"]
-        psd = _spectrum(u_pred)
+        k, psd = compute_ks_psd(m["u_test"], dx)
         ax.loglog(k[1:], psd[1:], color=m["color"], linewidth=1.2,
                   label=m["name"], alpha=0.85)
 
@@ -701,16 +446,7 @@ def parse_args():
     p = argparse.ArgumentParser(
         description="KS cross-method comparison for IEEE paper."
     )
-    p.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR,
-                   help="Directory for saved figures.")
-    p.add_argument("--opinf-dir", default=DEFAULT_OPINF_DIR,
-                   help="OpInf run directory.")
-    p.add_argument("--dmd-dir", default=DEFAULT_DMD_DIR,
-                   help="DMD run directory.")
-    p.add_argument("--fno-dir", default=DEFAULT_FNO_DIR,
-                   help="FNO run directory.")
-    p.add_argument("--ks-data", default=KS_DATA_FILE,
-                   help="Path to KS HDF5 data file.")
+    add_common_args(p)
     return p.parse_args()
 
 

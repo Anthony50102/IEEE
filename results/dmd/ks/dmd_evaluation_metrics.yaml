@@ -1,0 +1,27 @@
+test:
+  summary:
+    mean_err_Gamma_c: 0.2637910957816719
+    mean_err_Gamma_n: 0.2017698772412764
+    std_err_Gamma_c: 0.14949150444582743
+    std_err_Gamma_n: 0.3896100618460724
+  trajectories:
+  - err_mean_Gamma_c: 0.2637910957816719
+    err_mean_Gamma_n: 0.2017698772412764
+    err_std_Gamma_c: 0.14949150444582743
+    err_std_Gamma_n: 0.3896100618460724
+    trajectory: 0
+    valid: true
+train:
+  summary:
+    mean_err_Gamma_c: 0.0022704150679635077
+    mean_err_Gamma_n: 0.00027503704757319034
+    std_err_Gamma_c: 0.00012277126792007762
+    std_err_Gamma_n: 0.036484771796270944
+  trajectories:
+  - err_mean_Gamma_c: 0.0022704150679635077
+    err_mean_Gamma_n: 0.00027503704757319034
+    err_std_Gamma_c: 0.00012277126792007762
+    err_std_Gamma_n: 0.036484771796270944
+    trajectory: 0
+    valid: true
+use_learned_output: true

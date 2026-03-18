@@ -1,0 +1,59 @@
+_saved_at: '2026-03-16T09:04:04.389921'
+_step: step_3
+run_name: dmd_ks_temporal_split
+run_dir: local_output/20260316_090304_dmd_ks_temporal_split
+pde: ks
+paths:
+  output_base: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/
+  data_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks
+  training_files:
+  - /home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks/ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+  test_files: []
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  k0: null
+  c1: null
+training_mode:
+  mode: temporal_split
+  train_start: 1250
+  train_end: 1800
+  test_start: 1800
+  test_end: 2000
+reduction:
+  method: linear
+  r: 20
+  target_energy: 0.95
+dmd:
+  rank: null
+  num_trials: 0
+  use_proj: true
+  eig_sort: real
+  eig_stable: true
+truncation:
+  enabled: false
+  method: time
+  snapshots: null
+  time: null
+preprocessing:
+  centering: true
+  scaling: false
+training:
+  training_end: 550
+  n_steps: 550
+output_model:
+  enabled: true
+  alpha_lin: 0.01
+  alpha_quad: 1.0e0
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: true
+  plot_state_snapshots: true
+  n_snapshot_samples: 5
+execution:
+  verbose: true
+  log_level: INFO
+  engine: h5netcdf

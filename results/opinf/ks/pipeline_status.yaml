@@ -1,0 +1,19 @@
+step_1:
+  mpi_ranks: 1
+  n_spatial: 200
+  r: 15
+  reduction_method: linear
+  status: completed
+  timestamp: '2026-03-16T09:07:29.333442'
+  total_time_seconds: 2.441385269165039
+step_2:
+  best_error: 0.04054611790364285
+  n_models: 1084
+  status: completed
+  sweep_time_seconds: 119.41436672210693
+  timestamp: '2026-03-16T09:09:37.223469'
+step_3:
+  status: completed
+  test_mean_err_Gamma_n: 0.0317343188260734
+  timestamp: '2026-03-16T09:10:10.324452'
+  train_mean_err_Gamma_n: 0.0420355256636521

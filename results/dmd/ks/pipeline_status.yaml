@@ -1,0 +1,19 @@
+step_1:
+  n_test_snapshots: 200
+  n_train_snapshots: 550
+  r: 20
+  status: completed
+  time_seconds: 1.0529932975769043
+  timestamp: '2026-03-16T09:03:05.495792'
+  training_mode: temporal_split
+step_2:
+  dmd_rank: 20
+  n_train_snapshots: 550
+  status: completed
+  time_seconds: 15.04249620437622
+  timestamp: '2026-03-16T09:03:56.272254'
+  use_learned_output: true
+step_3:
+  status: completed
+  time_seconds: 6.130979537963867
+  timestamp: '2026-03-16T09:04:10.523773'

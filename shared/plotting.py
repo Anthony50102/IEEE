@@ -1296,3 +1296,314 @@ def plot_ks_full_trajectory_qoi(
     plt.close(fig)
 
     logger.info(f"  Saved KS full trajectory QoI plot to {output_path}")
+
+
+# =============================================================================
+# KS PHYSICS-PRESERVATION CROSS-METHOD PLOTS
+# =============================================================================
+
+def plot_ks_cross_method_psd(
+    methods: list,
+    ref_u: np.ndarray,
+    grid: dict,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Log-log power spectral density comparison across methods.
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    grid : dict
+        KS grid parameters (``dx``, ``N``).
+    output_path : str
+        Full path for saved figure.
+    logger : logging.Logger
+    color_ref : str
+        Colour for reference line.
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_psd
+
+    k_ref, psd_ref = compute_ks_psd(ref_u, grid["dx"])
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.loglog(k_ref[1:], psd_ref[1:], color=color_ref, linewidth=1.5,
+              label="Reference DNS")
+
+    for m in methods:
+        k, psd = compute_ks_psd(m["u_test"], grid["dx"])
+        ax.loglog(k[1:], psd[1:], color=m["color"], linewidth=1.2,
+                  label=m["name"], alpha=0.85)
+
+    ax.set_xlabel(r"Wavenumber $k$")
+    ax.set_ylabel(r"Power Spectral Density $|\hat{u}|^2$")
+    ax.set_title("Time-Averaged Spatial Power Spectrum — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, which="both", alpha=0.2)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_pdf(
+    methods: list,
+    ref_u: np.ndarray,
+    output_path: str,
+    logger,
+    n_bins: int = 100,
+    color_ref: str = "black",
+):
+    """
+    Overlaid probability density functions of u(x,t).
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    output_path : str
+    logger : logging.Logger
+    n_bins : int
+        Number of histogram bins.
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_field_pdf
+
+    centres_ref, density_ref = compute_ks_field_pdf(ref_u, n_bins)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.plot(centres_ref, density_ref, color=color_ref, linewidth=1.5,
+            label="Reference DNS")
+
+    for m in methods:
+        centres, density = compute_ks_field_pdf(m["u_test"], n_bins)
+        ax.plot(centres, density, color=m["color"], linewidth=1.2,
+                label=m["name"], alpha=0.85)
+
+    ax.set_xlabel(r"$u$")
+    ax.set_ylabel("Probability Density")
+    ax.set_title("Field Value Distribution — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=9)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_autocorrelation(
+    methods: list,
+    ref_u: np.ndarray,
+    grid: dict,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Spatial autocorrelation C(Δx) comparison.
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    grid : dict
+        KS grid parameters.
+    output_path : str
+    logger : logging.Logger
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_spatial_autocorrelation
+
+    lags_ref, C_ref = compute_ks_spatial_autocorrelation(ref_u, grid["dx"])
+    half = len(C_ref) // 2
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.plot(lags_ref[:half], C_ref[:half], color=color_ref, linewidth=1.5,
+            label="Reference DNS")
+
+    for m in methods:
+        lags, C = compute_ks_spatial_autocorrelation(m["u_test"], grid["dx"])
+        ax.plot(lags[:half], C[:half], color=m["color"], linewidth=1.2,
+                label=m["name"], alpha=0.85)
+
+    ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel(r"Spatial Lag $\Delta x$")
+    ax.set_ylabel(r"Autocorrelation $C(\Delta x)$")
+    ax.set_title("Spatial Autocorrelation — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=9)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_energy_rate(
+    methods: list,
+    ref_u: np.ndarray,
+    grid: dict,
+    dt: float,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Energy rate balance dE/dt comparison (finite-difference vs PDE terms).
+
+    Top panel: dE/dt timeseries for each method.
+    Bottom panel: energy budget residual (how far the method violates the
+    KS energy equation).
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    grid : dict
+        KS grid parameters.
+    dt : float
+        Time step.
+    output_path : str
+    logger : logging.Logger
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_energy_rate
+
+    ref_rates = compute_ks_energy_rate(ref_u, grid["dx"], dt)
+    n_inner = len(ref_rates["dEdt_fd"])
+    t = np.arange(n_inner) * dt
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+    # --- dE/dt comparison ---
+    ax = axes[0]
+    ax.plot(t, ref_rates["dEdt_fd"], color=color_ref, linewidth=1.0,
+            label="Reference (FD)", alpha=0.8)
+    ax.plot(t, ref_rates["dEdt_pde"][1:-1], color=color_ref, linewidth=1.0,
+            linestyle="--", label="Reference (PDE)", alpha=0.6)
+
+    for m in methods:
+        rates = compute_ks_energy_rate(m["u_test"], grid["dx"], dt)
+        n_m = len(rates["dEdt_fd"])
+        t_m = np.arange(n_m) * dt
+        ax.plot(t_m, rates["dEdt_fd"], color=m["color"], linewidth=1.0,
+                label=f"{m['name']} (FD)", alpha=0.85)
+
+    ax.set_ylabel(r"$dE/dt$")
+    ax.set_title("Energy Rate — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
+
+    # --- Residual (energy budget violation) ---
+    ax = axes[1]
+    ax.plot(t, ref_rates["residual"], color=color_ref, linewidth=1.0,
+            label="Reference", alpha=0.8)
+
+    for m in methods:
+        rates = compute_ks_energy_rate(m["u_test"], grid["dx"], dt)
+        n_m = len(rates["residual"])
+        t_m = np.arange(n_m) * dt
+        ax.plot(t_m, rates["residual"], color=m["color"], linewidth=1.0,
+                label=m["name"], alpha=0.85)
+
+    ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel("Test Time")
+    ax.set_ylabel("Energy Budget Residual")
+    ax.legend(loc="upper right", fontsize=9)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_moments(
+    methods: list,
+    ref_u: np.ndarray,
+    dt: float,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Four-panel plot of spatial statistical moments vs time.
+
+    Panels: mean, variance, skewness, excess kurtosis.
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    dt : float
+        Time step.
+    output_path : str
+    logger : logging.Logger
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_statistical_moments
+
+    ref_moments = compute_ks_statistical_moments(ref_u)
+    n_time = ref_u.shape[0]
+    t = np.arange(n_time) * dt
+
+    labels = ["Mean", "Variance", "Skewness", "Excess Kurtosis"]
+    keys = ["mean", "variance", "skewness", "kurtosis"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+    axes = axes.ravel()
+
+    for i, (key, label) in enumerate(zip(keys, labels)):
+        ax = axes[i]
+        ax.plot(t, ref_moments[key], color=color_ref, linewidth=1.2,
+                label="Reference DNS")
+
+        for m in methods:
+            mom = compute_ks_statistical_moments(m["u_test"])
+            n_m = len(mom[key])
+            t_m = np.arange(n_m) * dt
+            ax.plot(t_m, mom[key], color=m["color"], linewidth=1.0,
+                    label=m["name"], alpha=0.85)
+
+        ax.set_ylabel(label)
+        if i >= 2:
+            ax.set_xlabel("Test Time")
+        ax.legend(loc="upper right", fontsize=8)
+
+    fig.suptitle("Spatial Statistical Moments — KS (Test Region)", fontsize=14)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
