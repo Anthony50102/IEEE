@@ -117,9 +117,144 @@ This is a scientific computing paper codebase. Prioritize:
 All pipelines must run on both:
 
 - **TACC Frontera** — via SLURM scripts in `scripts/` (Intel Cascade Lake, 56 cores/node, `ibrun` for MPI)
+- **TACC Vista** — via SLURM scripts in `scripts/` (Grace-Hopper H200 GPU nodes for FNO/DL work)
 - **Local machine** — via bash scripts in `scripts/` or `<method>/run_local.sh`
 
 The only difference should be the launch mechanism (SLURM vs bash). The Python code itself should not contain HPC-specific logic. MPI code should degrade gracefully when `mpi4py` is not available or running with 1 rank.
+
+---
+
+## HPC Quick Reference (TACC)
+
+### Connection
+
+| System | SSH | Use Case |
+|--------|-----|----------|
+| Frontera | `ssh $FRONTERA` (or `ssh anthony50102@frontera.tacc.utexas.edu`) | CPU work: DMD, OpInf, MPI jobs |
+| Vista | `ssh $VISTA` (or `ssh anthony50102@vista.tacc.utexas.edu`) | GPU work: FNO, PyTorch, DL training |
+
+ControlMaster sockets are configured locally — connections should not require a password.
+
+### User / Allocation
+
+- **Username:** `anthony50102`
+- **Allocation:** `PHY25003` (auto-selected, single project — `-A` flag usually not needed)
+
+### File System Paths
+
+| | Frontera | Vista |
+|-|----------|-------|
+| `$HOME` | `/home1/10407/anthony50102` | `/home1/10407/anthony50102` |
+| `$WORK` | `/work2/10407/anthony50102/frontera` | `/work/10407/anthony50102/vista` |
+| `$SCRATCH` | `/scratch2/10407/anthony50102` | `/scratch/10407/anthony50102` |
+
+- **Project repo on Frontera:** `$SCRATCH/IEEE/IEEE/` (contains `fno/`, `opinf/`, `scripts/`, etc.)
+- `$SCRATCH` is **purged after 10 days** of no access — keep active data there, archive to `$WORK`.
+- `$WORK` is shared across TACC systems via Stockyard (`$STOCKYARD`).
+
+### Queues
+
+**Frontera (CPU):**
+
+| Queue | Nodes | Max Time | Notes |
+|-------|-------|----------|-------|
+| `small` | 1–2 | 48 hrs | Serial/OpenMP, 1 SU/node-hr |
+| `normal` | 3–512 | 48 hrs | MPI jobs, 1 SU/node-hr |
+| `development` | 1–40 | 2 hrs | Testing, 1 SU/node-hr |
+| `flex` | 1–128 | 48 hrs | Preemptible after 1 hr, 0.8 SU/node-hr |
+
+**Vista (GPU):**
+
+| Queue | Nodes | Max Time | Notes |
+|-------|-------|----------|-------|
+| `gh` | 1–64 | 48 hrs | Grace-Hopper (1× H200 GPU/node), 1 SU/node-hr |
+| `gh-dev` | 1–8 | 2 hrs | GPU dev queue, 1 SU/node-hr |
+| `gg` | 1–32 | 48 hrs | Grace-Grace CPU-only (144 cores), 0.33 SU/node-hr |
+
+### Node Specs
+
+| | Frontera CLX | Vista GH (GPU) | Vista GG (CPU) |
+|-|-------------|----------------|----------------|
+| Cores | 56 (2×28) | 72 (1 socket) | 144 (2×72) |
+| RAM | 192 GB DDR4 | 116 GB LPDDR + 96 GB HBM3 | 237 GB LPDDR |
+| GPU | — | 1× NVIDIA H200 (96 GB HBM3) | — |
+
+### Module Setup
+
+**Frontera** (default modules are fine for CPU/MPI work):
+```bash
+module list  # intel/19.1.1, impi/19.0.9, python3/3.7.0
+```
+
+**Vista** (for PyTorch/FNO GPU work):
+```bash
+module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
+```
+
+### Python Environments
+
+- **Vista venvs** live in `$SCRATCH/venvs/`. Create with: `python3 -m venv $SCRATCH/venvs/<name>`
+- **Frontera** has Python 3.7.0 system-wide (old — use `pip install --user` or a venv for newer packages).
+- Install PyTorch on Vista: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu129`
+- Always install packages from a **compute node** (`idev`), not the login node.
+
+### SLURM Job Templates
+
+**Frontera — MPI job (OpInf/DMD):**
+```bash
+#!/bin/bash
+#SBATCH -J opinf-run
+#SBATCH -o opinf.o%j
+#SBATCH -e opinf.e%j
+#SBATCH -p normal
+#SBATCH -N 4
+#SBATCH -n 224             # 56 tasks/node × 4 nodes
+#SBATCH -t 02:00:00
+
+module list
+cd $SCRATCH/IEEE/IEEE
+ibrun python3 opinf/step_2_train.py --config opinf/config/example.yaml --run-dir $SCRATCH/IEEE/output
+```
+
+**Vista — single-GPU job (FNO):**
+```bash
+#!/bin/bash
+#SBATCH -J fno-train
+#SBATCH -o fno.o%j
+#SBATCH -e fno.e%j
+#SBATCH -p gh
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH -t 04:00:00
+
+module load gcc cuda python3
+source $SCRATCH/venvs/<your-env>/bin/activate
+cd $SCRATCH/IEEE/IEEE
+python3 fno/step_2_train.py --config fno/config/example.yaml --run-dir $SCRATCH/IEEE/output
+```
+
+### Key Commands
+
+```bash
+sbatch myjob.slurm          # submit batch job
+squeue -u anthony50102       # check your jobs
+scancel <jobid>              # cancel a job
+idev -p gh-dev -N 1 -n 1    # interactive GPU session on Vista
+idev -p development -N 1     # interactive CPU session on Frontera
+showq -u                     # alternative job status view
+qlimits                      # show current queue limits
+/usr/local/etc/taccinfo      # allocation balance + disk quotas
+ibrun ./myprogram            # MPI launcher (use instead of mpirun)
+```
+
+### Important Reminders
+
+- Use `ibrun` for MPI, **never** `mpirun` or `mpiexec`.
+- Do **not** run compute-intensive work on login nodes.
+- Do **not** run `ssh-keygen` on TACC systems.
+- `$SCRATCH` files are purged after 10 days of no access.
+- Min charge is 15 minutes per job regardless of actual runtime.
+- Do **not** use `#SBATCH --export`, `--mem`, or `--gpus-per-task` on TACC systems.
 
 ### 7. Data Format
 
