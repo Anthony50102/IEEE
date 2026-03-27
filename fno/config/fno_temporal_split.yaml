@@ -1,7 +1,9 @@
-run_name: "fno_temporal_split"  # Train on first n snapshots, predict rest
+run_name: "fno_hw2d_temporal_split"
+
+pde: "hw2d"
 
 paths:
-  output_base: "/work/10407/anthony50102/vista/"
+  output_base: "/scratch/10407/anthony50102/fno_output/"
   
   data_dir: "/work/10407/anthony50102/vista/"
   
@@ -18,16 +20,12 @@ physics:
   n_x: 512
   n_y: 512
 
-# Training mode configuration
+# Training mode configuration — matches DMD/OpInf splits
 training_mode: "temporal_split"
 train_start: 8000      # Train from snapshot 8000
-train_end: 16000       # Train to snapshot 16000  
+train_end: 16000       # Train to snapshot 16000 (8000 snapshots)
 test_start: 16000      # Test from snapshot 16000
-test_end: 20000  
-  #train_start: 8100      # Train from snapshot 8000
-  #train_end: 8200       # Train to snapshot 16000  
-  #test_start: 8300      # Test from snapshot 16000
-  #test_end: 8400
+test_end: 20000        # Test to snapshot 20000 (4000 snapshots)
 
 # FNO model configuration
 model:

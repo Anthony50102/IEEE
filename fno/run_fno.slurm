@@ -19,13 +19,13 @@
 #
 #=============================================================================
 
-#SBATCH -J fno_train
+#SBATCH -J fno_hw2d
 #SBATCH -o fno_%j.out
 #SBATCH -e fno_%j.err
 #SBATCH -p gh              # GPU partition (adjust for your system)
 #SBATCH -N 1
 #SBATCH -n 1
-#SBATCH -t 24:00:00         # 24 hours for long runs
+#SBATCH -t 48:00:00         # 48 hours max for full pipeline
 
 set -e
 
@@ -33,7 +33,7 @@ set -e
 # Configuration
 # =============================================================================
 
-STEP=${1:-1}
+STEP=${1:-all}
 CONFIG=${2:-fno/config/fno_temporal_split.yaml}
 RUN_DIR=${3:-}
 
@@ -41,17 +41,17 @@ RUN_DIR=${3:-}
 # Environment Setup
 # =============================================================================
 
-# Source startup script to configure virtual environment
-# Modify this path to your actual startup script location
-if [ -f "$WORK/single_node_startup.sh" ]; then
-    source $WORK/single_node_startup.sh
-elif [ -f "$HOME/single_node_startup.sh" ]; then
-    source $HOME/single_node_startup.sh
-elif [ -f "/home1/10407/anthony50102/single_node_startup.sh" ]; then
-    source /home1/10407/anthony50102/single_node_startup.sh
+# Load modules
+module load gcc/15.1.0 cuda python3/3.11.8
+
+# Activate persistent virtual environment
+VENV_PATH="$SCRATCH/venvs/fno_hw2d"
+if [ -d "$VENV_PATH" ]; then
+    source "$VENV_PATH/bin/activate"
+    echo "Activated venv: $VENV_PATH"
 else
-    # Fallback: load modules directly
-    echo "No startup script found"
+    echo "ERROR: Virtual environment not found at $VENV_PATH"
+    echo "Create it first: python3 -m venv $VENV_PATH && source $VENV_PATH/bin/activate && pip install torch torchvision --index-url https://download.pytorch.org/whl/cu129 && pip install neuraloperator scipy matplotlib h5py pyyaml xarray h5netcdf"
     exit 1
 fi
 
