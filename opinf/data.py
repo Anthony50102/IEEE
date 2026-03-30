@@ -81,33 +81,69 @@ def load_distributed_snapshots(
     """Load a portion of snapshots corresponding to this rank's spatial DOF.
     
     Dispatches based on pde: 'hw2d' loads density/phi, 'ks' loads u.
+    
+    Memory-efficient: uses h5py slicing to load only the spatial rows and
+    time steps each MPI rank actually needs, avoiding full-file loads.
     """
     if pde == "ks":
         return _load_distributed_snapshots_ks(file_path, start_idx, end_idx, max_snapshots)
     
-    with load_dataset(file_path, engine) as fh:
-        density = fh["density"].values
-        phi = fh["phi"].values
+    import h5py
     
-    if max_snapshots is not None and max_snapshots < density.shape[0]:
-        density = density[:max_snapshots]
-        phi = phi[:max_snapshots]
+    with h5py.File(file_path, 'r') as f:
+        # Determine dataset shape and time limit
+        dset = f["density"]
+        if dset.ndim == 2:
+            n_time_total = dset.shape[0]
+            grid_size = int(np.sqrt(dset.shape[1]))
+            n_y, n_x = grid_size, grid_size
+        else:
+            n_time_total, n_y, n_x = dset.shape
+        
+        n_t = min(max_snapshots, n_time_total) if max_snapshots is not None else n_time_total
+        n_per_field = n_y * n_x
+        n_local = end_idx - start_idx
+        
+        # Allocate output: (n_local_spatial, n_time)
+        Q_local = np.empty((n_local, n_t), dtype=np.float32)
+        
+        offset = 0
+        for field_idx, field_name in enumerate(["density", "phi"]):
+            field_global_start = field_idx * n_per_field
+            field_global_end = (field_idx + 1) * n_per_field
+            
+            # Intersection of this rank's range with this field
+            local_start = max(start_idx, field_global_start)
+            local_end = min(end_idx, field_global_end)
+            if local_start >= local_end:
+                continue
+            
+            n_points = local_end - local_start
+            field_local_start = local_start - field_global_start
+            field_local_end = local_end - field_global_start
+            
+            # Map flat indices to (y, x) rows
+            y_start = field_local_start // n_x
+            y_end = (field_local_end - 1) // n_x + 1
+            
+            ds = f[field_name]
+            if ds.ndim == 2:
+                # Flat layout: (n_time, n_y*n_x) — slice time then reshape
+                flat_start = y_start * n_x
+                flat_end = y_end * n_x
+                data = ds[:n_t, flat_start:flat_end]  # (n_t, n_loaded_flat)
+            else:
+                # Standard layout: (n_time, n_y, n_x)
+                data = ds[:n_t, y_start:y_end, :]  # (n_t, n_y_rows, n_x)
+                data = data.reshape(n_t, -1)  # (n_t, n_y_rows * n_x)
+            
+            # Select exact indices within the loaded rows
+            row_offset = field_local_start - y_start * n_x
+            Q_local[offset:offset + n_points, :] = data[:, row_offset:row_offset + n_points].T
+            offset += n_points
+            del data
     
-    n_time = density.shape[0]
-    
-    # Reshape if needed
-    if density.ndim == 2:
-        grid_size = int(np.sqrt(density.shape[1]))
-        density = density.reshape(n_time, grid_size, grid_size)
-        phi = phi.reshape(n_time, grid_size, grid_size)
-    
-    # Stack fields: (n_fields, n_time, n_y, n_x) -> (n_spatial, n_time)
-    Q_full = np.stack([density, phi], axis=0).transpose(0, 2, 3, 1)
-    n_field, n_y, n_x, n_time = Q_full.shape
-    Q_full = Q_full.reshape(n_field * n_y * n_x, n_time)
-    
-    # Return contiguous copy in native dtype (float32 or float64)
-    return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
+    return np.ascontiguousarray(Q_local)
 
 
 def _load_distributed_snapshots_ks(
