@@ -58,6 +58,9 @@ fi
 # Navigate to project directory
 cd $WORK/repos/IEEE
 
+# Reduce GPU memory fragmentation (critical for large batch sizes)
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 # =============================================================================
 # Job Info
 # =============================================================================

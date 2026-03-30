@@ -247,6 +247,10 @@ qlimits                      # show current queue limits
 ibrun ./myprogram            # MPI launcher (use instead of mpirun)
 ```
 
+### Git Policy
+
+**Do NOT commit, push, or pull on any repo (local or remote) without explicit user approval.** The user controls all git operations. You may stage files or show diffs, but never run `git commit`, `git push`, or `git pull` on your own.
+
 ### Important Reminders
 
 - Use `ibrun` for MPI, **never** `mpirun` or `mpiexec`.

@@ -120,12 +120,16 @@ def load_trajectory_slice(file_path: str, start: int, end: int, pde: str = "hw2d
         return np.stack([density, potential], axis=1)  # (T, 2, H, W)
 
 
-def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.ndarray]:
+def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, DataLoader, np.ndarray]:
     """
-    Create train and test data loaders.
+    Create train, validation, and test data loaders.
+    
+    The training window is split into train/val to enable early stopping
+    WITHOUT using test data (which would give FNO an unfair advantage
+    over DMD/OpInf).
     
     Returns:
-        train_loader, test_loader, test_states (for visualization)
+        train_loader, val_loader, test_loader, test_states (for visualization)
     """
     data_dir = get_config_value(cfg, 'paths', 'data_dir')
     train_file = get_config_value(cfg, 'paths', 'training_files')[0]
@@ -137,18 +141,27 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.n
     test_start = cfg.get('test_start', 400)
     test_end = cfg.get('test_end', 500)
     batch_size = get_config_value(cfg, 'training', 'batch_size', default=16)
+    val_fraction = get_config_value(cfg, 'training', 'val_fraction', default=0.2)
+    
+    # Split training window into train/val
+    n_train_total = train_end - train_start
+    n_val = int(n_train_total * val_fraction)
+    val_start = train_end - n_val  # Validation = last portion of training window
+    actual_train_end = val_start
     
     logger.info(f"Loading data from {file_path} (pde={pde})")
     
-    # Load train and test slices separately (memory efficient)
-    train_states = load_trajectory_slice(file_path, train_start, train_end, pde=pde)
+    # Load train, val, and test slices separately
+    train_states = load_trajectory_slice(file_path, train_start, actual_train_end, pde=pde)
+    val_states = load_trajectory_slice(file_path, val_start, train_end, pde=pde)
     test_states = load_trajectory_slice(file_path, test_start, test_end, pde=pde)
     
-    logger.info(f"  Train: [{train_start}, {train_end}) -> {train_states.shape}")
+    logger.info(f"  Train: [{train_start}, {actual_train_end}) -> {train_states.shape}")
+    logger.info(f"  Val:   [{val_start}, {train_end}) -> {val_states.shape}")
     logger.info(f"  Test:  [{test_start}, {test_end}) -> {test_states.shape}")
     
     # Memory estimate
-    mem_mb = (train_states.nbytes + test_states.nbytes) / 1e6
+    mem_mb = (train_states.nbytes + val_states.nbytes + test_states.nbytes) / 1e6
     logger.info(f"  Data memory: {mem_mb:.1f} MB")
     
     # Create data loaders
@@ -156,6 +169,14 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.n
         SingleStepDataset(train_states),
         batch_size=batch_size,
         shuffle=True,
+        num_workers=0,
+        pin_memory=torch.cuda.is_available(),
+    )
+    
+    val_loader = DataLoader(
+        SingleStepDataset(val_states),
+        batch_size=batch_size,
+        shuffle=False,
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
@@ -168,7 +189,7 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, np.n
         pin_memory=torch.cuda.is_available(),
     )
     
-    return train_loader, test_loader, test_states
+    return train_loader, val_loader, test_loader, test_states
 
 
 # =============================================================================
@@ -269,13 +290,13 @@ def load_checkpoint(path, model, optimizer=None, device='cpu'):
 # Visualization (for --test flag)
 # =============================================================================
 
-def generate_loss_plot(train_losses: list, test_mses: list, run_dir: str, logger):
+def generate_loss_plot(train_losses: list, test_mses: list, run_dir: str, logger, val_mses: list = None):
     """
     Generate and save training loss plot.
     
-    Creates a 2-panel figure showing:
+    Creates a multi-panel figure showing:
     1. Training loss over epochs
-    2. Test MSE at evaluation points
+    2. Validation and Test MSE at evaluation points
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -295,17 +316,20 @@ def generate_loss_plot(train_losses: list, test_mses: list, run_dir: str, logger
     ax.set_title('Training Loss')
     ax.grid(True, alpha=0.3)
     
-    # Test MSE
+    # Validation and Test MSE
     ax = axes[1]
+    if val_mses:
+        val_epochs, val_vals = zip(*val_mses)
+        ax.semilogy(val_epochs, val_vals, 'go-', markersize=4, linewidth=1, label='Validation')
+        ax.axhline(min(val_vals), color='g', linestyle='--', alpha=0.5, 
+                   label=f'Best val: {min(val_vals):.2e}')
     if test_mses:
         test_epochs, test_vals = zip(*test_mses)
-        ax.semilogy(test_epochs, test_vals, 'ro-', markersize=4, linewidth=1)
-        ax.axhline(min(test_vals), color='g', linestyle='--', alpha=0.7, 
-                   label=f'Best: {min(test_vals):.2e}')
-        ax.legend()
+        ax.semilogy(test_epochs, test_vals, 'ro-', markersize=4, linewidth=1, label='Test')
+    ax.legend()
     ax.set_xlabel('Epoch')
-    ax.set_ylabel('Test MSE')
-    ax.set_title('Test MSE')
+    ax.set_ylabel('MSE')
+    ax.set_title('Validation / Test MSE')
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -492,7 +516,7 @@ def main():
     
     try:
         # Load data
-        train_loader, test_loader, test_states = create_data_loaders(cfg, logger)
+        train_loader, val_loader, test_loader, test_states = create_data_loaders(cfg, logger)
         
         # Create model
         model = create_model(cfg, device)
@@ -505,8 +529,9 @@ def main():
         lr = train_cfg.get('learning_rate', 1e-3)
         weight_decay = train_cfg.get('weight_decay', 1e-4)
         grad_clip = train_cfg.get('grad_clip', 1.0)
-        eval_every = train_cfg.get('eval_every', 10)
+        eval_every = train_cfg.get('eval_every', 5)
         save_every = train_cfg.get('save_every', 20)
+        patience = train_cfg.get('early_stopping_patience', 10)
         
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -515,11 +540,13 @@ def main():
         
         # Training loop
         logger.info("Starting training...")
-        logger.info(f"  Epochs: {n_epochs}, LR: {lr}, Batch size: {train_loader.batch_size}")
-        logger.info(f"  Eval every {eval_every} epochs, save every {save_every} epochs")
+        logger.info(f"  Epochs: {n_epochs} (max), LR: {lr}, Batch size: {train_loader.batch_size}")
+        logger.info(f"  Eval every {eval_every} epochs, early stopping patience: {patience}")
         
-        best_mse = float('inf')
+        best_val_mse = float('inf')
+        patience_counter = 0
         train_losses = []
+        val_mses = []
         test_mses = []
         
         # Progress tracking
@@ -535,19 +562,34 @@ def main():
             
             # Evaluate periodically
             if epoch % eval_every == 0 or epoch == n_epochs:
+                val_mse = evaluate(model, val_loader, device)
+                val_mses.append((epoch, val_mse))
+                
+                # Also evaluate on test set for reporting (NOT for model selection)
                 test_mse = evaluate(model, test_loader, device)
                 test_mses.append((epoch, test_mse))
                 
-                # Save best model
-                if test_mse < best_mse:
-                    best_mse = test_mse
+                # Save best model based on VALIDATION loss only
+                if val_mse < best_val_mse:
+                    best_val_mse = val_mse
+                    patience_counter = 0
                     save_checkpoint(model, optimizer, epoch, 
                                     os.path.join(run_dir, "checkpoint_best.pt"),
-                                    cfg, {'train_loss': train_loss, 'test_mse': test_mse})
+                                    cfg, {'train_loss': train_loss, 'val_mse': val_mse,
+                                           'test_mse': test_mse})
+                else:
+                    patience_counter += 1
                 
                 logger.info(f"Epoch {epoch:4d}/{n_epochs} | "
-                            f"Train: {train_loss:.6f} | Test: {test_mse:.6f} | "
+                            f"Train: {train_loss:.6f} | Val: {val_mse:.6f} | "
+                            f"Test: {test_mse:.6f} | Patience: {patience_counter}/{patience} | "
                             f"Time: {time.time()-t_epoch:.1f}s")
+                
+                # Early stopping
+                if patience_counter >= patience:
+                    logger.info(f"Early stopping at epoch {epoch} "
+                                f"(val MSE not improved for {patience} eval cycles)")
+                    break
             else:
                 # Log progress periodically (not every epoch to avoid spam)
                 if epoch % log_every == 0:
@@ -561,18 +603,20 @@ def main():
                                 cfg, {'train_loss': train_loss})
         
         # Save final checkpoint
-        save_checkpoint(model, optimizer, n_epochs,
+        save_checkpoint(model, optimizer, epoch,
                         os.path.join(run_dir, "checkpoint_latest.pt"),
-                        cfg, {'train_loss': train_losses[-1], 'test_mse': best_mse})
+                        cfg, {'train_loss': train_losses[-1], 'best_val_mse': best_val_mse})
         
-        # Final evaluation
-        final_mse = evaluate(model, test_loader, device)
+        # Final evaluation on test set using BEST model (by val MSE)
+        load_checkpoint(os.path.join(run_dir, "checkpoint_best.pt"), model, device=device)
+        final_test_mse = evaluate(model, test_loader, device)
         
         # Save results
         np.savez(os.path.join(run_dir, "step1_results.npz"),
                  train_losses=np.array(train_losses),
+                 val_mses=np.array(val_mses),
                  test_mses=np.array(test_mses),
-                 final_mse=final_mse, best_mse=best_mse)
+                 final_test_mse=final_test_mse, best_val_mse=best_val_mse)
         
         t_elapsed = time.time() - t_start
         
@@ -581,12 +625,13 @@ def main():
         logger.info("=" * 60)
         logger.info(f"  Time: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
         logger.info(f"  Final train loss: {train_losses[-1]:.6f}")
-        logger.info(f"  Final test MSE: {final_mse:.6f}")
-        logger.info(f"  Best test MSE: {best_mse:.6f}")
+        logger.info(f"  Best val MSE: {best_val_mse:.6f}")
+        logger.info(f"  Test MSE (best val model): {final_test_mse:.6f}")
+        logger.info(f"  Stopped at epoch: {epoch}/{n_epochs}")
         
         # Generate loss plot
         logger.info("Generating training loss plot...")
-        generate_loss_plot(train_losses, test_mses, run_dir, logger)
+        generate_loss_plot(train_losses, test_mses, run_dir, logger, val_mses=val_mses)
         
         # Generate test figures if requested
         if args.test:

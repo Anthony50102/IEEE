@@ -27,42 +27,45 @@ train_end: 16000       # Train to snapshot 16000 (8000 snapshots)
 test_start: 16000      # Test from snapshot 16000
 test_end: 20000        # Test to snapshot 20000 (4000 snapshots)
 
-# FNO model configuration
+# FNO model configuration — scaled up for 2D turbulence
 model:
   n_modes: [64, 64]     # Fourier modes in each dimension
   in_channels: 2        # density + potential
   out_channels: 2       # predict next density + potential
-  hidden_channels: 128  # Width of the network
-  n_layers: 4           # Number of Fourier layers
+  hidden_channels: 256  # Width of the network (doubled from 128)
+  n_layers: 5           # Number of Fourier layers (matching KS)
 
-# Training configuration
+# Training configuration — KS-style training loop
 training:
-  batch_size: 1        # Pairs per mini-batch
-  n_epochs: 100         # Number of training epochs
-  learning_rate: 1.0e-3
-  weight_decay: 1.0e-4
-  grad_clip: 1.0        # Gradient clipping norm
-  noise_std: 0.01       # Input noise for rollout robustness (step 2)
-  gradient_checkpointing: true  # Save memory during rollout training
+  batch_size: 6         # Balanced: better gradients + fits in 97GB GPU
+  n_epochs: 200         # Max epochs (early stopping will cut this short)
+  learning_rate: 5.0e-4 # Lower LR for stability (matching KS)
+  weight_decay: 1.0e-4  # L2 regularization
+  grad_clip: 1.0
+  noise_std: 0.02       # Higher noise for robustness (matching KS)
+  gradient_checkpointing: true
+  
+  # Validation split from training data (NOT test data) for early stopping
+  val_fraction: 0.2     # Last 20% of training window → [14400, 16000)
+  early_stopping_patience: 10  # Stop after 10 eval cycles with no improvement
   
   # Learning rate scheduler
   scheduler:
-    type: "cosine"      # "cosine", "step", or "none"
+    type: "cosine"
     warmup_epochs: 5
   
   # Checkpointing
-  save_every: 20        # Save checkpoint every N epochs
-  eval_every: 10        # Evaluate on test set every N epochs
+  save_every: 20
+  eval_every: 5         # Evaluate more often for early stopping
 
-# Step 2: Curriculum for autoregressive rollout training
-# Format: [rollout_length, teacher_forcing_ratio, n_epochs]
-# Teacher forcing: high early (training wheels) → low late (self-correct)
+# Step 2: Curriculum — KS-style with 6 stages for longer rollout training
 curriculum:
   - [5,  0.8, 20]   # Stage 1: Short rollouts, 80% teacher forcing
   - [10, 0.6, 20]   # Stage 2: Medium rollouts, 60% teacher forcing
   - [20, 0.4, 20]   # Stage 3: Longer rollouts, 40% teacher forcing
   - [40, 0.2, 20]   # Stage 4: Long rollouts, 20% teacher forcing
-  - [80, 0.0, 30]   # Stage 5: Full autoregressive (no teacher forcing)
+  - [60, 0.1, 20]   # Stage 5: Very long rollouts, 10% teacher forcing
+  - [80, 0.0, 50]   # Stage 6: Full autoregressive (extended)
 
 # Logging
 log_level: "INFO"
