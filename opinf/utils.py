@@ -118,6 +118,12 @@ class OpInfConfig:
     
     # QoI computation method: "learned" (C,G,c operators) or "physics" (reconstruct & compute)
     qoi_method: str = "learned"
+    
+    # Closure model
+    closure_enabled: bool = False
+    closure_cubic: bool = True      # Include z_i^3 diagonal terms
+    closure_constant: bool = True   # Include constant bias in state equation
+    state_cubic: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
 def _build_reg_array(reg_config: dict) -> np.ndarray:
@@ -234,6 +240,14 @@ def load_config(config_path: str) -> OpInfConfig:
     
     cfg.qoi_method = evaluation.get("qoi_method", "learned")
     
+    # Closure
+    closure = raw.get("closure", {})
+    cfg.closure_enabled = closure.get("enabled", False)
+    cfg.closure_cubic = closure.get("cubic_diagonal", True)
+    cfg.closure_constant = closure.get("constant", True)
+    if cfg.closure_enabled and "state_cubic" in reg:
+        cfg.state_cubic = _build_reg_array(reg["state_cubic"])
+    
     return cfg
 
 
@@ -280,6 +294,12 @@ def save_config(cfg: OpInfConfig, output_path: str, step_name: str = None) -> st
             "state_quad": cfg.state_quad.tolist(),
             "output_lin": cfg.output_lin.tolist(),
             "output_quad": cfg.output_quad.tolist(),
+            "state_cubic": cfg.state_cubic.tolist() if len(cfg.state_cubic) > 0 else [],
+        },
+        "closure": {
+            "enabled": cfg.closure_enabled,
+            "cubic_diagonal": cfg.closure_cubic,
+            "constant": cfg.closure_constant,
         },
         "model_selection": {
             "threshold_mean": cfg.threshold_mean,

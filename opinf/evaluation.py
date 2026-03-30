@@ -24,9 +24,18 @@ def predict_trajectory(u0: np.ndarray, n_steps: int, model: dict,
     """Run prediction for a single trajectory with one model."""
     A, F = model['A'], model['F']
     C, G, c = model['C'], model['G'], model['c']
+    H = model.get('H', None)
+    c_state = model.get('c_state', None)
     
-    # State evolution
-    f = lambda x: A @ x + F @ get_quadratic_terms(x)
+    # State evolution with optional closure terms
+    def f(x):
+        result = A @ x + F @ get_quadratic_terms(x)
+        if H is not None:
+            result += H @ (x ** 3)
+        if c_state is not None:
+            result += c_state
+        return result
+    
     is_nan, Xhat_pred = solve_difference_model(u0, n_steps, f)
     
     if is_nan:

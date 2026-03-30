@@ -47,6 +47,23 @@ def get_quadratic_terms(X: np.ndarray) -> np.ndarray:
         raise ValueError(f"Invalid input shape: {X.shape}")
 
 
+def get_cubic_diagonal_terms(X: np.ndarray) -> np.ndarray:
+    """
+    Compute diagonal cubic terms: [x1^3, x2^3, ..., xr^3].
+    
+    Parameters
+    ----------
+    X : np.ndarray
+        Input vector (r,) or matrix (K, r).
+    
+    Returns
+    -------
+    np.ndarray
+        Cubic diagonal terms: (r,) for vector input or (K, r) for matrix input.
+    """
+    return X ** 3
+
+
 def solve_difference_model(
     x0: np.ndarray, 
     n_steps: int, 
@@ -94,6 +111,8 @@ def solve_opinf_operators(
     alpha_quad: float,
     r: int,
     include_constant: bool = False,
+    alpha_cubic: float = 0.0,
+    include_cubic: bool = False,
 ) -> dict:
     """
     Solve the regularized OpInf least squares problem.
@@ -103,7 +122,7 @@ def solve_opinf_operators(
     Parameters
     ----------
     D : np.ndarray
-        Data matrix of shape (K, d) where d = r + s (+ 1 if constant).
+        Data matrix of shape (K, d).
     Y : np.ndarray
         Target matrix of shape (K, r) for state or (K, n_out) for output.
     alpha_lin : float
@@ -114,6 +133,10 @@ def solve_opinf_operators(
         Number of POD modes.
     include_constant : bool
         Whether the data matrix includes a constant column.
+    alpha_cubic : float
+        Regularization for cubic diagonal terms (closure).
+    include_cubic : bool
+        Whether the data matrix includes cubic diagonal columns.
     
     Returns
     -------
@@ -121,14 +144,26 @@ def solve_opinf_operators(
         Dictionary with operator matrices.
     """
     s = r * (r + 1) // 2
-    d = r + s + (1 if include_constant else 0)
+    # Column layout: [linear(r) | quadratic(s) | cubic(r if enabled) | constant(1 if enabled)]
+    d = r + s
+    if include_cubic:
+        d += r
+    if include_constant:
+        d += 1
     
     # Build regularization matrix
     reg = np.zeros(d)
-    reg[:r] = alpha_lin
-    reg[r:r + s] = alpha_quad
+    col = 0
+    reg[col:col + r] = alpha_lin
+    col += r
+    reg[col:col + s] = alpha_quad
+    col += s
+    if include_cubic:
+        reg[col:col + r] = alpha_cubic
+        col += r
     if include_constant:
-        reg[r + s:] = alpha_lin
+        reg[col:col + 1] = alpha_lin
+        col += 1
     
     # Solve normal equations with Tikhonov regularization
     DtD = D.T @ D + np.diag(reg)
@@ -136,13 +171,19 @@ def solve_opinf_operators(
     O = np.linalg.solve(DtD, DtY).T
     
     # Extract operators
+    col = 0
     result = {
-        'A': O[:, :r],
-        'F': O[:, r:r + s],
+        'A': O[:, col:col + r],
     }
-    
+    col += r
+    result['F'] = O[:, col:col + s]
+    col += s
+    if include_cubic:
+        result['H'] = O[:, col:col + r]
+        col += r
     if include_constant:
-        result['c'] = O[:, r + s]
+        result['c'] = O[:, col]
+        col += 1
     
     return result
 
@@ -150,9 +191,12 @@ def solve_opinf_operators(
 def build_data_matrix(
     X: np.ndarray,
     include_constant: bool = False,
+    include_cubic: bool = False,
 ) -> np.ndarray:
     """
     Build the OpInf data matrix from reduced coordinates.
+    
+    Column layout: [linear | quadratic | cubic_diagonal (optional) | constant (optional)]
     
     Parameters
     ----------
@@ -160,16 +204,21 @@ def build_data_matrix(
         Reduced coordinates of shape (K, r).
     include_constant : bool
         Whether to append a column of ones.
+    include_cubic : bool
+        Whether to include cubic diagonal terms (z_i^3).
     
     Returns
     -------
     np.ndarray
-        Data matrix of shape (K, d) where d = r + s (+ 1 if constant).
+        Data matrix of shape (K, d).
     """
-    X2 = get_quadratic_terms(X)
+    parts = [X, get_quadratic_terms(X)]
+    
+    if include_cubic:
+        parts.append(get_cubic_diagonal_terms(X))
     
     if include_constant:
         K = X.shape[0]
-        return np.concatenate([X, X2, np.ones((K, 1))], axis=1)
-    else:
-        return np.concatenate([X, X2], axis=1)
+        parts.append(np.ones((K, 1)))
+    
+    return np.concatenate(parts, axis=1)

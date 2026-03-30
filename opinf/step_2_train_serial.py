@@ -34,7 +34,7 @@ from training import (
 def load_data_serial(paths: dict, logger) -> dict:
     """Load pre-computed data without MPI shared memory."""
     logger.info("Loading pre-computed data...")
-    learning = np.load(paths["learning_matrices"])
+    learning = np.load(paths["learning_matrices"], allow_pickle=True)
     gamma_ref = np.load(paths["gamma_ref"])
 
     data = {
@@ -51,25 +51,40 @@ def load_data_serial(paths: dict, logger) -> dict:
         'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
         'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
         'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
+        # Closure flags (may not exist in older runs)
+        'include_cubic': bool(learning['include_cubic']) if 'include_cubic' in learning else False,
+        'include_constant': bool(learning['include_constant']) if 'include_constant' in learning else False,
+        'closure_enabled': bool(learning['closure_enabled']) if 'closure_enabled' in learning else False,
     }
     learning.close()
     gamma_ref.close()
-    logger.info("Data loaded successfully")
+    logger.info(f"Data loaded successfully (closure={data['closure_enabled']})")
     return data
 
 
 def serial_hyperparameter_sweep(cfg, data: dict, logger) -> list:
     """Run hyperparameter sweep serially."""
-    param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
+    include_cubic = data.get('include_cubic', False)
+    if include_cubic and len(cfg.state_cubic) > 0:
+        param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad, cfg.state_cubic))
+    else:
+        param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
     n_total = len(param_grid)
-    logger.info(f"Serial sweep: {n_total:,} combinations")
+    logger.info(f"Serial sweep: {n_total:,} combinations (closure={include_cubic})")
 
     results = []
     n_nan = 0
 
-    for i, (asl, asq, aol, aoq) in enumerate(param_grid):
+    for i, params in enumerate(param_grid):
+        if len(params) == 5:
+            asl, asq, aol, aoq, asc = params
+        else:
+            asl, asq, aol, aoq = params
+            asc = 0.0
+
         result = evaluate_hyperparameters(
-            asl, asq, aol, aoq, data, cfg.r, cfg.n_steps, cfg.training_end
+            asl, asq, aol, aoq, data, cfg.r, cfg.n_steps, cfg.training_end,
+            alpha_state_cubic=asc,
         )
 
         if result['is_nan']:

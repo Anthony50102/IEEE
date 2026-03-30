@@ -36,15 +36,27 @@ def prepare_learning_matrices(Xhat_train, train_boundaries, cfg, rank, logger) -
     if rank != 0:
         return None
     
-    return _prepare_learning_matrices_impl(Xhat_train, train_boundaries, cfg.r, logger)
+    return _prepare_learning_matrices_impl(
+        Xhat_train, train_boundaries, cfg.r, logger,
+        closure_enabled=getattr(cfg, 'closure_enabled', False),
+        closure_cubic=getattr(cfg, 'closure_cubic', True),
+        closure_constant=getattr(cfg, 'closure_constant', True),
+    )
 
 
 def prepare_learning_matrices_serial(Xhat_train, train_boundaries, cfg, logger) -> dict:
     """Prepare matrices for ROM training (serial version)."""
-    return _prepare_learning_matrices_impl(Xhat_train, train_boundaries, cfg.r, logger)
+    return _prepare_learning_matrices_impl(
+        Xhat_train, train_boundaries, cfg.r, logger,
+        closure_enabled=getattr(cfg, 'closure_enabled', False),
+        closure_cubic=getattr(cfg, 'closure_cubic', True),
+        closure_constant=getattr(cfg, 'closure_constant', True),
+    )
 
 
-def _prepare_learning_matrices_impl(Xhat_train, train_boundaries, r, logger) -> dict:
+def _prepare_learning_matrices_impl(Xhat_train, train_boundaries, r, logger,
+                                     closure_enabled=False, closure_cubic=True,
+                                     closure_constant=True) -> dict:
     """Implementation of learning matrix preparation."""
     logger.info("Preparing learning matrices...")
     
@@ -61,13 +73,25 @@ def _prepare_learning_matrices_impl(Xhat_train, train_boundaries, r, logger) -> 
     X_state = np.vstack(X_state_list)
     Y_state = np.vstack(Y_state_list)
     
+    # Build state data matrix: [linear | quadratic | cubic_diag? | constant?]
+    include_cubic = closure_enabled and closure_cubic
+    include_constant = closure_enabled and closure_constant
+    
     X_state2 = get_quadratic_terms(X_state)
-    D_state = np.concatenate([X_state, X_state2], axis=1)
+    parts = [X_state, X_state2]
+    if include_cubic:
+        from core import get_cubic_diagonal_terms
+        parts.append(get_cubic_diagonal_terms(X_state))
+    if include_constant:
+        parts.append(np.ones((X_state.shape[0], 1)))
+    
+    D_state = np.concatenate(parts, axis=1)
     D_state_2 = D_state.T @ D_state
     
     logger.info(f"  State pairs: {X_state.shape[0]}")
+    logger.info(f"  D_state columns: {D_state.shape[1]} (closure={closure_enabled})")
     
-    # OUTPUT LEARNING: Use all timesteps
+    # OUTPUT LEARNING: Use all timesteps (unchanged)
     X_out = Xhat_train
     K = X_out.shape[0]
     
@@ -89,6 +113,9 @@ def _prepare_learning_matrices_impl(Xhat_train, train_boundaries, r, logger) -> 
         'D_state': D_state, 'D_state_2': D_state_2,
         'D_out': D_out, 'D_out_2': D_out_2,
         'mean_Xhat': mean_Xhat, 'scaling_Xhat': scaling_Xhat,
+        'closure_enabled': closure_enabled,
+        'include_cubic': include_cubic,
+        'include_constant': include_constant,
     }
 
 
@@ -100,35 +127,70 @@ def evaluate_hyperparameters(
     alpha_state_lin: float, alpha_state_quad: float,
     alpha_out_lin: float, alpha_out_quad: float,
     data: dict, r: int, n_steps: int, training_end: int,
+    alpha_state_cubic: float = 0.0,
 ) -> dict:
     """
     Evaluate a single hyperparameter combination.
     
     Trains the ROM with given regularization and evaluates on training data.
     """
+    include_cubic = data.get('include_cubic', False)
+    include_constant = data.get('include_constant', False)
+    
     s = r * (r + 1) // 2
     d_state = r + s
+    if include_cubic:
+        d_state += r
+    if include_constant:
+        d_state += 1
     d_out = r + s + 1
     
-    # Solve state operator learning
+    # Build regularization vector for state operator
     reg_state = np.zeros(d_state)
-    reg_state[:r] = alpha_state_lin
-    reg_state[r:] = alpha_state_quad
+    col = 0
+    reg_state[col:col + r] = alpha_state_lin
+    col += r
+    reg_state[col:col + s] = alpha_state_quad
+    col += s
+    if include_cubic:
+        reg_state[col:col + r] = alpha_state_cubic
+        col += r
+    if include_constant:
+        reg_state[col:col + 1] = alpha_state_lin
+        col += 1
     
     DtD_state = data['D_state_2'] + np.diag(reg_state)
     O = np.linalg.solve(DtD_state, data['D_state'].T @ data['Y_state']).T
-    A, F = O[:, :r], O[:, r:]
+    
+    # Extract operators
+    col = 0
+    A = O[:, col:col + r]
+    col += r
+    F = O[:, col:col + s]
+    col += s
+    H = O[:, col:col + r] if include_cubic else None
+    if include_cubic:
+        col += r
+    c_state = O[:, col] if include_constant else None
     del DtD_state
     
-    # Integrate model
-    f = lambda x: A @ x + F @ get_quadratic_terms(x)
+    # Build state transition function with closure terms
+    def f(x):
+        result = A @ x + F @ get_quadratic_terms(x)
+        if H is not None:
+            from core import get_cubic_diagonal_terms
+            result += H @ get_cubic_diagonal_terms(x)
+        if c_state is not None:
+            result += c_state
+        return result
+    
     u0 = data['X_state'][0, :]
     is_nan, Xhat_pred = solve_difference_model(u0, n_steps, f)
     
     if is_nan:
         return {'is_nan': True, 'alpha_state_lin': alpha_state_lin,
                 'alpha_state_quad': alpha_state_quad, 'alpha_out_lin': alpha_out_lin,
-                'alpha_out_quad': alpha_out_quad}
+                'alpha_out_quad': alpha_out_quad, 'alpha_state_cubic': alpha_state_cubic}
     
     X_OpInf = Xhat_pred.T
     del Xhat_pred
@@ -170,6 +232,7 @@ def evaluate_hyperparameters(
         'mean_err_Gamma_c': mean_err_c, 'std_err_Gamma_c': std_err_c,
         'alpha_state_lin': alpha_state_lin, 'alpha_state_quad': alpha_state_quad,
         'alpha_out_lin': alpha_out_lin, 'alpha_out_quad': alpha_out_quad,
+        'alpha_state_cubic': alpha_state_cubic,
     }
 
 
@@ -178,8 +241,12 @@ def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm) -> list:
     rank = comm.Get_rank()
     size = comm.Get_size()
     
-    # Build parameter grid
-    param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
+    # Build parameter grid — include cubic if closure is enabled
+    include_cubic = data.get('include_cubic', False)
+    if include_cubic and len(cfg.state_cubic) > 0:
+        param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad, cfg.state_cubic))
+    else:
+        param_grid = list(product(cfg.state_lin, cfg.state_quad, cfg.output_lin, cfg.output_quad))
     n_total = len(param_grid)
     
     if rank == 0:
@@ -202,9 +269,16 @@ def parallel_hyperparameter_sweep(cfg, data: dict, logger, comm) -> list:
     local_results = []
     n_nan = 0
     
-    for i, (asl, asq, aol, aoq) in enumerate(my_params):
+    for i, params in enumerate(my_params):
+        if len(params) == 5:
+            asl, asq, aol, aoq, asc = params
+        else:
+            asl, asq, aol, aoq = params
+            asc = 0.0
+        
         result = evaluate_hyperparameters(
-            asl, asq, aol, aoq, data, cfg.r, cfg.n_steps, cfg.training_end
+            asl, asq, aol, aoq, data, cfg.r, cfg.n_steps, cfg.training_end,
+            alpha_state_cubic=asc,
         )
         
         if result['is_nan']:
@@ -288,20 +362,45 @@ def select_models(results: list, thresh_mean: float, thresh_std: float, logger) 
 
 def compute_operators(params: dict, data: dict, r: int) -> dict:
     """Compute operator matrices for a single hyperparameter set."""
+    include_cubic = data.get('include_cubic', False)
+    include_constant = data.get('include_constant', False)
+    
     s = r * (r + 1) // 2
     d_state = r + s
+    if include_cubic:
+        d_state += r
+    if include_constant:
+        d_state += 1
     d_out = r + s + 1
     
     # State operators
     reg_state = np.zeros(d_state)
-    reg_state[:r] = params['alpha_state_lin']
-    reg_state[r:] = params['alpha_state_quad']
+    col = 0
+    reg_state[col:col + r] = params['alpha_state_lin']
+    col += r
+    reg_state[col:col + s] = params['alpha_state_quad']
+    col += s
+    if include_cubic:
+        reg_state[col:col + r] = params.get('alpha_state_cubic', 0.0)
+        col += r
+    if include_constant:
+        reg_state[col:col + 1] = params['alpha_state_lin']
+        col += 1
     
     O = np.linalg.solve(
         data['D_state_2'] + np.diag(reg_state),
         data['D_state'].T @ data['Y_state']
     ).T
-    A, F = O[:, :r].copy(), O[:, r:].copy()
+    
+    col = 0
+    A = O[:, col:col + r].copy()
+    col += r
+    F = O[:, col:col + s].copy()
+    col += s
+    H = O[:, col:col + r].copy() if include_cubic else None
+    if include_cubic:
+        col += r
+    c_state = O[:, col].copy() if include_constant else None
     
     # Output operators
     reg_out = np.zeros(d_out)
@@ -315,7 +414,7 @@ def compute_operators(params: dict, data: dict, r: int) -> dict:
     ).T
     C, G, c = O_out[:, :r].copy(), O_out[:, r:r+s].copy(), O_out[:, r+s].copy()
     
-    return {
+    result = {
         'A': A, 'F': F, 'C': C, 'G': G, 'c': c,
         'alpha_state_lin': params['alpha_state_lin'],
         'alpha_state_quad': params['alpha_state_quad'],
@@ -326,7 +425,15 @@ def compute_operators(params: dict, data: dict, r: int) -> dict:
         'std_err_Gamma_n': params['std_err_Gamma_n'],
         'mean_err_Gamma_c': params['mean_err_Gamma_c'],
         'std_err_Gamma_c': params['std_err_Gamma_c'],
+        'closure_enabled': include_cubic or include_constant,
     }
+    if H is not None:
+        result['H'] = H
+        result['alpha_state_cubic'] = params.get('alpha_state_cubic', 0.0)
+    if c_state is not None:
+        result['c_state'] = c_state
+    
+    return result
 
 
 def recompute_operators_parallel(selected: list, data: dict, r: int, 
