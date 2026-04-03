@@ -485,6 +485,46 @@ def main():
             "test_mean_err_Gamma_n": test_metrics['ensemble']['mean_err_Gamma_n'],
         })
         
+        # Write machine-readable run summary
+        try:
+            from shared.metrics import RunSummary
+            summary = RunSummary(method="opinf", pde=cfg.pde, run_dir=args.run_dir,
+                                config_path=args.config, dt=cfg.dt)
+            
+            for split, pred, bounds, ref_files_list, offset in [
+                ("train", train_pred, train_bounds, cfg.training_files, train_offset),
+                ("test", test_pred, test_bounds,
+                 cfg.test_files if cfg.test_files else cfg.training_files, test_offset),
+            ]:
+                n_traj = len(bounds) - 1
+                for i in range(n_traj):
+                    pred_n = pred['Gamma_n'][i]
+                    pred_c = pred['Gamma_c'][i]
+                    if pred_n.size == 0:
+                        continue
+                    # Ensemble mean
+                    mean_pred_n = np.mean(pred_n, axis=0) if pred_n.ndim > 1 else pred_n
+                    mean_pred_c = np.mean(pred_c, axis=0) if pred_c.ndim > 1 else pred_c
+                    # Load reference
+                    traj_len = bounds[i + 1] - bounds[i]
+                    if cfg.pde == "ks":
+                        import h5py
+                        with h5py.File(ref_files_list[i], 'r') as fh:
+                            ref_n = np.array(fh['energy'][offset:offset + traj_len])
+                            ref_c = np.array(fh['enstrophy'][offset:offset + traj_len])
+                    else:
+                        from shared.data_io import load_dataset as _load
+                        fh = _load(ref_files_list[i], cfg.engine)
+                        ref_n = fh["gamma_n"].values[offset:offset + traj_len]
+                        ref_c = fh["gamma_c"].values[offset:offset + traj_len]
+                    summary.add_qoi_metrics(mean_pred_n, ref_n, mean_pred_c, ref_c,
+                                            split=split, trajectory=i)
+            
+            summary_path = summary.save()
+            logger.info(f"Saved run summary to {summary_path}")
+        except Exception as e:
+            logger.warning(f"Run summary generation failed (non-fatal): {e}")
+        
         print_header("STEP 3 COMPLETE")
         logger.info("Step 3 completed successfully")
     

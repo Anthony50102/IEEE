@@ -836,6 +836,33 @@ def main():
         
         save_step_status(run_dir, "step_3", "completed", {"time_seconds": t_elapsed})
         
+        # Write machine-readable run summary
+        try:
+            from shared.metrics import RunSummary
+            summary = RunSummary(method="fno", pde=pde, run_dir=run_dir,
+                                config_path=args.config, dt=dt)
+            
+            for split, pred_n, pred_c, ref_n, ref_c in [
+                ("train", train_pred_gamma_n, train_pred_gamma_c,
+                 train_ref_gamma_n, train_ref_gamma_c),
+                ("test", test_pred_gamma_n, test_pred_gamma_c,
+                 test_ref_gamma_n, test_ref_gamma_c),
+            ]:
+                summary.add_qoi_metrics(pred_n, ref_n, pred_c, ref_c,
+                                        split=split, trajectory=0)
+            
+            # Add state-level metrics if available
+            for split, preds, refs in [
+                ("train", train_predictions, train_states[1:]),
+                ("test", test_predictions, test_states[1:]),
+            ]:
+                summary.add_state_metrics(preds, refs, split=split, trajectory=0)
+            
+            summary_path = summary.save()
+            logger.info(f"Saved run summary to {summary_path}")
+        except Exception as e:
+            logger.warning(f"Run summary generation failed (non-fatal): {e}")
+        
         # Print summary
         logger.info("=" * 60)
         logger.info("  STEP 3 COMPLETE")
