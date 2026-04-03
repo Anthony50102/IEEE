@@ -206,8 +206,11 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Storage files
-# *h5
+# Large data files (HW2D simulations are too big for git)
+*.h5
+# Allow small test/KS data files
+!data/ks/*.h5
+!data/test/*.h5
 
 # Output files
 *.err
