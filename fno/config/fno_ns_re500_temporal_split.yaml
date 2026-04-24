@@ -1,0 +1,51 @@
+run_name: "fno_ns_re500"
+pde: "ns"
+paths:
+  output_base: "/scratch/10407/anthony50102/IEEE/output/"
+  data_dir: "/scratch/10407/anthony50102/IEEE/data/ns"
+  training_files:
+    - "ns2d_re500_64x64_steps10000_seed42.h5"
+  test_files: []
+physics:
+  dt: 0.01
+  n_fields: 1
+  n_x: 64
+  n_y: 64
+  Re: 500.0
+  Lx: 6.283185307179586   # 2*pi
+  Ly: 6.283185307179586
+training_mode: "temporal_split"
+train_start: 0
+train_end: 150
+test_start: 150
+test_end: 1001
+model:
+  type: "fno"
+  n_modes: [32, 32]
+  in_channels: 1
+  out_channels: 1
+  hidden_channels: 64
+  n_layers: 4
+training:
+  batch_size: 16
+  n_epochs: 200
+  learning_rate: 5.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  noise_std: 0.02
+  gradient_checkpointing: false
+  loss: "h1"
+  normalize: true
+  val_fraction: 0.2
+  early_stopping_patience: 15
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  save_every: 20
+  eval_every: 5
+curriculum:
+  - [5,  0.8, 30]
+  - [10, 0.5, 30]
+  - [20, 0.2, 30]
+  - [40, 0.0, 50]
+log_level: "INFO"
