@@ -27,7 +27,8 @@ import torch.nn as nn
 # Reuse functions from step_1 and step_2
 from step_1_train import (
     load_config, get_config_value, create_model, setup_logging,
-    load_checkpoint, load_trajectory_slice,
+    load_checkpoint, load_normalizer_from_checkpoint, load_trajectory_slice,
+    ChannelNormalizer,
 )
 
 # Parent directory for shared imports
@@ -36,8 +37,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from shared.physics import (
     compute_gamma_n, compute_gamma_c, get_hw2d_grid_params,
     compute_ks_qoi_timeseries, get_ks_grid_params,
+    compute_ns_qoi_timeseries, get_ns_grid_params,
 )
-from shared.plotting import plot_gamma_timeseries, plot_qoi_timeseries, generate_state_diagnostic_plots, plot_ks_full_trajectory_reconstruction, plot_ks_full_trajectory_qoi
+from shared.plotting import (
+    plot_gamma_timeseries, plot_qoi_timeseries, generate_state_diagnostic_plots,
+    plot_ks_full_trajectory_reconstruction, plot_ks_full_trajectory_qoi,
+    plot_ns_vorticity_snapshots, plot_ns_full_trajectory_reconstruction,
+    plot_ns_full_trajectory_state_error,
+)
 
 
 from typing import Optional
@@ -94,6 +101,13 @@ def load_reference_data(file_path: str, start: int, end: int, engine: str = "h5p
                 'energy': np.array(f['energy'][start:end]),     # (T,)
                 'enstrophy': np.array(f['enstrophy'][start:end]),  # (T,)
             }
+    elif pde == "ns":
+        with h5py.File(file_path, 'r') as f:
+            data = {
+                'omega': np.array(f['omega'][start:end]),       # (T, H, W)
+                'energy': np.array(f['energy'][start:end]),     # (T,)
+                'enstrophy': np.array(f['enstrophy'][start:end]),  # (T,)
+            }
     else:
         with h5py.File(file_path, 'r') as f:
             data = {
@@ -115,6 +129,8 @@ def compute_fno_rollout(
     initial_state: np.ndarray,
     n_steps: int,
     device: str,
+    normalizer=None,
+    clamp_range: float = 6.0,
 ) -> np.ndarray:
     """
     Compute full autoregressive rollout from FNO model.
@@ -124,28 +140,52 @@ def compute_fno_rollout(
     model : nn.Module
         Trained FNO model.
     initial_state : np.ndarray, shape (2, H, W)
-        Initial state [density, potential].
+        Initial state [density, potential] in RAW (physical) space.
     n_steps : int
         Number of prediction steps.
     device : str
         'cuda' or 'cpu'.
+    normalizer : ChannelNormalizer, optional
+        If provided, normalize input and un-normalize output.
+    clamp_range : float
+        Clamp predictions to [-clamp_range, +clamp_range] in normalized space.
+        Prevents catastrophic divergence. Set to 0 to disable.
     
     Returns
     -------
     predictions : np.ndarray, shape (n_steps, 2, H, W)
-        Predicted states at each timestep.
+        Predicted states at each timestep in RAW (physical) space.
     """
     model.eval()
     
     predictions = []
+    n_clipped = 0
+    n_total = 0
     x = torch.from_numpy(initial_state[np.newaxis]).float().to(device)
+    
+    # Normalize initial state — all subsequent predictions stay in normalized space
+    if normalizer is not None:
+        x = normalizer.encode(x)
     
     for _ in range(n_steps):
         y_pred = model(x)
-        predictions.append(y_pred[0].cpu().numpy())
-        x = y_pred
+        # Clamp in normalized space to prevent blowup
+        if clamp_range > 0:
+            n_total += y_pred.numel()
+            n_clipped += (y_pred.abs() > clamp_range).sum().item()
+            y_pred = torch.clamp(y_pred, -clamp_range, clamp_range)
+        # Un-normalize for output, keep normalized for next step
+        if normalizer is not None:
+            predictions.append(normalizer.decode(y_pred)[0].cpu().numpy())
+        else:
+            predictions.append(y_pred[0].cpu().numpy())
+        x = y_pred  # Stay in normalized space for next step
     
-    return np.array(predictions)  # (n_steps, 2, H, W)
+    if n_total > 0 and n_clipped > 0:
+        clip_frac = n_clipped / n_total
+        print(f"  [rollout] Clipping fraction: {clip_frac:.4%} ({n_clipped}/{n_total} values)")
+    
+    return np.array(predictions)  # (n_steps, 2, H, W) in RAW space
 
 
 def compute_gamma_from_predictions(
@@ -153,6 +193,8 @@ def compute_gamma_from_predictions(
     dx: float,
     c1: float = 1.0,
     pde: str = "hw2d",
+    ns_Lx: float = None,
+    ns_Ly: float = None,
 ) -> tuple:
     """
     Compute QoIs from FNO predicted states.
@@ -162,23 +204,29 @@ def compute_gamma_from_predictions(
     predictions : np.ndarray
         For HW2D: shape (n_steps, 2, H, W) with [density, potential].
         For KS: shape (n_steps, 1, N) with [u].
+        For NS: shape (n_steps, 1, H, W) with [vorticity].
     dx : float
         Grid spacing.
     c1 : float
         Adiabaticity parameter (HW2D only).
     pde : str
-        PDE type: "hw2d" or "ks".
+        PDE type: "hw2d", "ks", or "ns".
+    ns_Lx, ns_Ly : float, optional
+        Domain lengths for NS energy computation.
     
     Returns
     -------
     qoi_1 : np.ndarray, shape (n_steps,)
-        Gamma_n (HW2D) or Energy (KS).
+        Gamma_n (HW2D) or Energy (KS/NS).
     qoi_2 : np.ndarray, shape (n_steps,)
-        Gamma_c (HW2D) or Enstrophy (KS).
+        Gamma_c (HW2D) or Enstrophy (KS/NS).
     """
     if pde == "ks":
         u = predictions[:, 0, :]  # (n_steps, N)
         return compute_ks_qoi_timeseries(u, dx)
+    elif pde == "ns":
+        omega = predictions[:, 0, :, :]  # (n_steps, H, W)
+        return compute_ns_qoi_timeseries(omega, Lx=ns_Lx, Ly=ns_Ly)
     else:
         n_steps = len(predictions)
         gamma_n = np.zeros(n_steps)
@@ -311,14 +359,14 @@ def generate_gamma_plots(
     pde: str = "hw2d",
 ):
     """Generate QoI comparison plot using shared plotting function."""
-    if pde == "ks":
+    if pde in ("ks", "ns"):
         plot_qoi_timeseries(
             pred_1=pred_gamma_n, pred_2=pred_gamma_c,
             ref_1=ref_gamma_n, ref_2=ref_gamma_c,
             dt=dt, output_path=output_path, logger=logger,
             title_prefix=title_prefix, method_name="FNO",
             label_1="Energy", label_2="Enstrophy",
-            symbol_1="E", symbol_2="P",
+            symbol_1="E", symbol_2="Z",
         )
     else:
         plot_gamma_timeseries(
@@ -338,25 +386,46 @@ def generate_state_snapshots(
     n_snapshots: int = 5,
     prefix: str = "",
     pde: str = "hw2d",
+    t_start: float = 0.0,
 ):
     """
     Generate state comparison snapshots.
     
     Creates comparison figures for fields at selected timesteps.
-    Handles both 2D HW2D and 1D KS data.
+    Handles 2D HW2D (2-channel), 2D NS (1-channel), and 1D KS data.
     """
     import matplotlib
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
+    from step_1_train import _plot_single_field_2d
     
     n_steps = len(predictions)
     snapshot_indices = np.linspace(0, n_steps - 1, n_snapshots, dtype=int)
     
     os.makedirs(output_dir, exist_ok=True)
+    
+    if pde == "ns":
+        # Use shared vorticity snapshot grid (3 rows x n_snapshots cols)
+        pred_omega = predictions[:, 0, :, :]  # (T, H, W)
+        ref_omega = reference[:, 0, :, :]
+        times = t_start + np.arange(n_steps) * dt
+        snapshot_path = os.path.join(output_dir, f'{prefix}snapshots.png')
+        plot_ns_vorticity_snapshots(
+            pred_omega=pred_omega,
+            ref_omega=ref_omega,
+            times=times,
+            output_path=snapshot_path,
+            logger=logger,
+            n_snapshots=n_snapshots,
+            title_prefix=prefix.replace("_", " ").title(),
+            method_name="FNO",
+        )
+        return
+    
     is_1d = (pde == "ks")
     
     for snap_idx, t_idx in enumerate(snapshot_indices):
-        t_val = t_idx * dt
+        t_val = t_start + t_idx * dt
         
         if is_1d:
             # KS: 1D line plots
@@ -454,8 +523,8 @@ def generate_rollout_error_plot(
     ref_flat = reference.reshape(n_steps, -1)
     rel_l2 = np.linalg.norm(pred_flat - ref_flat, axis=1) / np.linalg.norm(ref_flat, axis=1)
     
-    if is_1d:
-        # KS: simpler — single field
+    if is_1d or pde == "ns":
+        # KS or NS: single field
         fig, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
         
         ax = axes[0]
@@ -552,10 +621,18 @@ def main():
         k0 = physics_cfg.get('k0', 0.15)
         
         # Compute grid spacing based on PDE type
+        ns_Lx, ns_Ly = None, None
         if pde == "ks":
             ks_L = physics_cfg.get('L', 100.0)
             ks_N = physics_cfg.get('N', 200)
             grid_params = get_ks_grid_params(L=ks_L, N=ks_N)
+            dx = grid_params['dx']
+        elif pde == "ns":
+            n_x = physics_cfg.get('n_x', 64)
+            n_y = physics_cfg.get('n_y', 64)
+            ns_Lx = physics_cfg.get('Lx', 2.0 * np.pi)
+            ns_Ly = physics_cfg.get('Ly', ns_Lx)
+            grid_params = get_ns_grid_params(Lx=ns_Lx, Ly=ns_Ly, nx=n_x, ny=n_y)
             dx = grid_params['dx']
         else:
             n_x = physics_cfg.get('n_x', 512)
@@ -587,12 +664,17 @@ def main():
         
         if os.path.exists(rollout_ckpt):
             epoch, metrics = load_checkpoint(rollout_ckpt, model, device=device)
+            normalizer = load_normalizer_from_checkpoint(rollout_ckpt, device=device)
             logger.info(f"Loaded rollout checkpoint from epoch {epoch}")
         elif os.path.exists(best_ckpt):
             epoch, metrics = load_checkpoint(best_ckpt, model, device=device)
+            normalizer = load_normalizer_from_checkpoint(best_ckpt, device=device)
             logger.info(f"Loaded single-step checkpoint from epoch {epoch}")
         else:
             raise FileNotFoundError("No model checkpoint found!")
+        
+        if normalizer is not None:
+            logger.info(f"Normalizer: mean={normalizer.mean}, std={normalizer.std}")
         
         # Create output directories
         figures_dir = os.path.join(run_dir, "figures")
@@ -607,16 +689,16 @@ def main():
         
         n_train_steps = len(train_states) - 1  # Predict from first state
         train_predictions = compute_fno_rollout(
-            model, train_states[0], n_train_steps, device
+            model, train_states[0], n_train_steps, device, normalizer=normalizer
         )
         
         # Compute QoIs from predictions
         train_pred_gamma_n, train_pred_gamma_c = compute_gamma_from_predictions(
-            train_predictions, dx, c1, pde=pde
+            train_predictions, dx, c1, pde=pde, ns_Lx=ns_Lx, ns_Ly=ns_Ly
         )
         
         # Reference QoIs (skip first timestep to align with predictions)
-        if pde == "ks":
+        if pde in ("ks", "ns"):
             train_ref_gamma_n = train_ref['energy'][1:]
             train_ref_gamma_c = train_ref['enstrophy'][1:]
         else:
@@ -661,7 +743,8 @@ def main():
         
         generate_state_snapshots(
             train_predictions, train_states[1:],
-            dt, train_fig_dir, logger, n_snapshots=5, prefix="train_", pde=pde
+            dt, train_fig_dir, logger, n_snapshots=5, prefix="train_", pde=pde,
+            t_start=train_start * dt,
         )
         
         # =====================================================================
@@ -671,16 +754,16 @@ def main():
         
         n_test_steps = len(test_states) - 1
         test_predictions = compute_fno_rollout(
-            model, test_states[0], n_test_steps, device
+            model, test_states[0], n_test_steps, device, normalizer=normalizer
         )
         
         # Compute QoIs from predictions
         test_pred_gamma_n, test_pred_gamma_c = compute_gamma_from_predictions(
-            test_predictions, dx, c1, pde=pde
+            test_predictions, dx, c1, pde=pde, ns_Lx=ns_Lx, ns_Ly=ns_Ly
         )
         
         # Reference QoIs
-        if pde == "ks":
+        if pde in ("ks", "ns"):
             test_ref_gamma_n = test_ref['energy'][1:]
             test_ref_gamma_c = test_ref['enstrophy'][1:]
         else:
@@ -725,35 +808,39 @@ def main():
         
         generate_state_snapshots(
             test_predictions, test_states[1:],
-            dt, test_fig_dir, logger, n_snapshots=5, prefix="test_", pde=pde
+            dt, test_fig_dir, logger, n_snapshots=5, prefix="test_", pde=pde,
+            t_start=test_start * dt,
         )
         
         # =====================================================================
-        # FULL TRAJECTORY PLOTS (KS only)
+        # FULL TRAJECTORY PLOTS (KS and NS)
         # =====================================================================
         if pde == "ks":
-            logger.info("Generating full-trajectory KS plots...")
+            logger.info("Generating full-trajectory KS plots (continuous rollout)...")
             
-            # Assemble full trajectory: concatenate train + test predictions
-            full_pred_u = np.concatenate([
-                train_predictions[:, 0, :],   # (n_train-1, N)
-                test_predictions[:, 0, :],     # (n_test-1, N)
-            ], axis=0)
+            # Do a SINGLE continuous rollout from t=0 through the entire domain
+            n_total_steps = (len(train_states) - 1) + (len(test_states) - 1)
+            continuous_predictions = compute_fno_rollout(
+                model, train_states[0], n_total_steps, device, normalizer=normalizer
+            )
+            
+            full_pred_u = continuous_predictions[:, 0, :]   # (n_total, N)
             full_ref_u = np.concatenate([
                 train_states[1:, 0, :],        # (n_train-1, N)
                 test_states[1:, 0, :],          # (n_test-1, N)
             ], axis=0)
             
-            # Concatenate QoI arrays
-            full_pred_energy = np.concatenate([train_pred_gamma_n, test_pred_gamma_n])
-            full_pred_enstrophy = np.concatenate([train_pred_gamma_c, test_pred_gamma_c])
+            # Compute QoI from continuous rollout
+            full_pred_energy, full_pred_enstrophy = compute_gamma_from_predictions(
+                continuous_predictions, dx, c1, pde=pde, ns_Lx=ns_Lx, ns_Ly=ns_Ly
+            )
             full_ref_energy = np.concatenate([train_ref_gamma_n, test_ref_gamma_n])
             full_ref_enstrophy = np.concatenate([train_ref_gamma_c, test_ref_gamma_c])
             
             # Consistent limits from reference data
             ref_vmin = float(full_ref_u.min())
             ref_vmax = float(full_ref_u.max())
-            train_n_steps = len(train_predictions)
+            train_n_steps = len(train_states) - 1
             t_start_val = train_start * dt
             
             energy_range = full_ref_energy.max() - full_ref_energy.min()
@@ -794,9 +881,66 @@ def main():
                 t_start=t_start_val,
             )
         
-        # =====================================================================
-        # SAVE RESULTS
-        # =====================================================================
+        elif pde == "ns":
+            logger.info("Generating full-trajectory NS plots (continuous rollout)...")
+            
+            # Do a SINGLE continuous rollout from t=0 through the entire domain
+            # (train + test) so there's no artificial reset at the boundary.
+            n_total_steps = (len(train_states) - 1) + (len(test_states) - 1)
+            continuous_predictions = compute_fno_rollout(
+                model, train_states[0], n_total_steps, device, normalizer=normalizer
+            )
+            
+            full_pred_omega = continuous_predictions[:, 0, :, :]
+            full_ref_omega = np.concatenate([
+                train_states[1:, 0, :, :],
+                test_states[1:, 0, :, :],
+            ], axis=0)
+            
+            train_n_steps = len(train_states) - 1
+            t_start_val = train_start * dt
+            
+            # Full trajectory reconstruction (centreline space-time)
+            plot_ns_full_trajectory_reconstruction(
+                pred_omega=full_pred_omega,
+                ref_omega=full_ref_omega,
+                dt=dt,
+                output_path=os.path.join(figures_dir, "ns_full_trajectory_reconstruction.png"),
+                logger=logger,
+                method_name="FNO",
+            )
+
+            # Full trajectory relative L2 state error vs time
+            plot_ns_full_trajectory_state_error(
+                pred_omega=full_pred_omega,
+                ref_omega=full_ref_omega,
+                dt=dt,
+                train_n_steps=train_n_steps,
+                output_path=os.path.join(figures_dir, "ns_full_trajectory_state_error.png"),
+                logger=logger,
+                method_name="FNO",
+                t_start=t_start_val,
+            )
+            
+            # Compute QoI from continuous rollout
+            full_pred_energy, full_pred_enstrophy = compute_gamma_from_predictions(
+                continuous_predictions, dx, c1, pde=pde, ns_Lx=ns_Lx, ns_Ly=ns_Ly
+            )
+            full_ref_energy = np.concatenate([train_ref_gamma_n, test_ref_gamma_n])
+            full_ref_enstrophy = np.concatenate([train_ref_gamma_c, test_ref_gamma_c])
+            
+            plot_ks_full_trajectory_qoi(
+                pred_qoi_1=full_pred_energy,
+                pred_qoi_2=full_pred_enstrophy,
+                ref_qoi_1=full_ref_energy,
+                ref_qoi_2=full_ref_enstrophy,
+                dt=dt,
+                train_n_steps=train_n_steps,
+                output_path=os.path.join(figures_dir, "ns_full_trajectory_qoi.png"),
+                logger=logger,
+                method_name="FNO",
+                t_start=t_start_val,
+            )
         
         # Save metrics to YAML
         metrics_path = os.path.join(run_dir, "metrics.yaml")
@@ -869,8 +1013,8 @@ def main():
         logger.info("=" * 60)
         logger.info(f"Runtime: {t_elapsed:.1f}s ({t_elapsed/60:.1f} min)")
         logger.info("TEST SUMMARY:")
-        qoi_1 = "Energy" if pde == "ks" else "Γn"
-        qoi_2 = "Enstrophy" if pde == "ks" else "Γc"
+        qoi_1 = "Energy" if pde in ("ks", "ns") else "Γn"
+        qoi_2 = "Enstrophy" if pde in ("ks", "ns") else "Γc"
         logger.info(f"  {qoi_1} mean error: {test_gamma_metrics['err_mean_Gamma_n']:.4f}")
         logger.info(f"  {qoi_1} std error:  {test_gamma_metrics['err_std_Gamma_n']:.4f}")
         logger.info(f"  {qoi_2} mean error: {test_gamma_metrics['err_mean_Gamma_c']:.4f}")

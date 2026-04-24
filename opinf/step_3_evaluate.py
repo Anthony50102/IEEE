@@ -29,7 +29,7 @@ from utils import (
     check_step_completed, get_output_paths, print_header,
 )
 from data import load_ensemble, load_preprocessing_info
-from evaluation import compute_ensemble_predictions, compute_metrics, recompute_qoi_from_physics
+from evaluation import compute_ensemble_predictions, compute_metrics, recompute_qoi_from_physics, predict_trajectory
 from shared.plotting import (
     plot_gamma_timeseries, plot_qoi_timeseries,
     generate_state_diagnostic_plots,
@@ -49,6 +49,7 @@ def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndar
     """
     os.makedirs(output_dir, exist_ok=True)
     n_traj = len(predictions['Gamma_n'])
+    t_start = start_offset * dt
     
     for i in range(n_traj):
         n_steps = boundaries[i + 1] - boundaries[i]
@@ -60,6 +61,11 @@ def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndar
         if pred_n.size == 0 or pred_c.size == 0:
             logger.warning(f"  Trajectory {i+1}: no valid predictions, skipping plot")
             continue
+        
+        # Use actual prediction length (may be shorter than boundary span)
+        actual_steps = pred_n.shape[-1]
+        if actual_steps < n_steps:
+            n_steps = actual_steps
         
         if pde == "ks":
             import h5py
@@ -75,7 +81,25 @@ def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndar
                 label_1="Energy", label_2="Enstrophy",
                 symbol_1=r"$E$", symbol_2=r"$P$",
                 title_prefix=f'Trajectory {i+1}: ',
-                method_name="OpInf"
+                method_name="OpInf",
+                t_start=t_start,
+            )
+        elif pde == "ns":
+            import h5py
+            with h5py.File(ref_files[i], 'r') as f:
+                ref_n = np.array(f['energy'][start_offset:start_offset + n_steps])
+                ref_c = np.array(f['enstrophy'][start_offset:start_offset + n_steps])
+            
+            output_path = os.path.join(output_dir, f'traj_{i+1}_qoi.png')
+            plot_qoi_timeseries(
+                pred_1=pred_n, pred_2=pred_c,
+                ref_1=ref_n, ref_2=ref_c,
+                dt=dt, output_path=output_path, logger=logger,
+                label_1="Energy", label_2="Enstrophy",
+                symbol_1=r"$E$", symbol_2=r"$Z$",
+                title_prefix=f'Trajectory {i+1}: ',
+                method_name="OpInf",
+                t_start=t_start,
             )
         else:
             fh = load_dataset(ref_files[i], engine)
@@ -88,7 +112,8 @@ def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndar
                 ref_n=ref_n, ref_c=ref_c,
                 dt=dt, output_path=output_path, logger=logger,
                 title_prefix=f'Trajectory {i+1}: ',
-                method_name="OpInf"
+                method_name="OpInf",
+                t_start=t_start,
             )
     
     logger.info(f"Plots saved to {output_dir}")
@@ -149,7 +174,7 @@ def main():
         
         train_pred = compute_ensemble_predictions(
             models, train_ICs, train_bounds, mean_Xhat, scaling_Xhat, logger, "training",
-            max_ensemble=cfg.max_models
+            max_ensemble=cfg.max_models, max_steps=cfg.n_steps
         )
         test_pred = compute_ensemble_predictions(
             models, test_ICs, test_bounds, mean_Xhat, scaling_Xhat, logger, "test",
@@ -177,11 +202,19 @@ def main():
             
             train_pred = recompute_qoi_from_physics(
                 train_pred, _pod_basis, _temporal_mean,
-                pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N, logger=logger
+                pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N,
+                ns_Lx=getattr(cfg, 'ns_Lx', 2*np.pi),
+                ns_Ly=getattr(cfg, 'ns_Ly', None),
+                ns_ny=cfg.n_y, ns_nx=cfg.n_x,
+                logger=logger
             )
             test_pred = recompute_qoi_from_physics(
                 test_pred, _pod_basis, _temporal_mean,
-                pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N, logger=logger
+                pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N,
+                ns_Lx=getattr(cfg, 'ns_Lx', 2*np.pi),
+                ns_Ly=getattr(cfg, 'ns_Ly', None),
+                ns_ny=cfg.n_y, ns_nx=cfg.n_x,
+                logger=logger
             )
             logger.info("QoI recomputation complete.")
         
@@ -342,11 +375,10 @@ def main():
             else:
                 logger.warning("No valid test predictions for state diagnostics")
         
-        # =================================================================
-        # FULL TRAJECTORY PLOTS (KS only)
+        # FULL TRAJECTORY PLOTS (KS only — continuous rollout)
         # =================================================================
         if cfg.pde == "ks" and cfg.training_mode == "temporal_split":
-            logger.info("Generating full-trajectory KS plots...")
+            logger.info("Generating full-trajectory KS plots (continuous rollout)...")
             
             try:
                 # Load POD basis if not already loaded
@@ -366,26 +398,32 @@ def main():
                     )
                     import h5py
                     
-                    # Get ensemble mean reduced states for first trajectory
-                    n_train = train_bounds[1] - train_bounds[0]
+                    # Single continuous rollout from train IC through entire domain
+                    n_train_full = train_bounds[1] - train_bounds[0]
                     n_test = test_bounds[1] - test_bounds[0]
+                    n_total = n_train_full + n_test
+                    train_ic = train_ICs[0]
                     
-                    X_train = train_pred['X_OpInf'][0]
-                    X_test = test_pred['X_OpInf'][0]
+                    # Run continuous rollout for each model in ensemble
+                    continuous_X = []
+                    continuous_Gn = []
+                    continuous_Gc = []
+                    for score, mdl in models[:cfg.max_models or len(models)]:
+                        result = predict_trajectory(train_ic, n_total, mdl, mean_Xhat, scaling_Xhat)
+                        if not result['is_nan']:
+                            continuous_X.append(result['X_OpInf'])
+                            continuous_Gn.append(result['Gamma_n'])
+                            continuous_Gc.append(result['Gamma_c'])
                     
-                    if X_train.size > 0 and X_test.size > 0:
-                        # Ensemble mean → shape after mean: (n_steps, r) or (r, n_steps)
-                        X_hat_train = np.mean(X_train, axis=0)
-                        X_hat_test = np.mean(X_test, axis=0)
+                    if continuous_X:
+                        # Ensemble mean
+                        X_hat_full = np.mean(continuous_X, axis=0)
+                        if X_hat_full.shape[0] != pod_basis.shape[1]:
+                            X_hat_full = X_hat_full.T
                         
-                        # Ensure (r, n_time) format
-                        if X_hat_train.shape[0] != pod_basis.shape[1]:
-                            X_hat_train = X_hat_train.T
-                        if X_hat_test.shape[0] != pod_basis.shape[1]:
-                            X_hat_test = X_hat_test.T
+                        n_train = n_train_full
+                        n_test_actual = n_test
                         
-                        # Concatenate reduced states and reconstruct
-                        X_hat_full = np.concatenate([X_hat_train, X_hat_test], axis=1)
                         Q_full = reconstruct_full_state(X_hat_full, pod_basis, temporal_mean)
                         pred_u = Q_full.T  # (n_total, N)
                         
@@ -393,24 +431,19 @@ def main():
                         ref_file = cfg.training_files[0]
                         with h5py.File(ref_file, 'r') as f:
                             ref_u_train = np.array(f['u'][cfg.train_start:cfg.train_start + n_train])
-                            ref_u_test = np.array(f['u'][cfg.test_start:cfg.test_start + n_test])
+                            ref_u_test = np.array(f['u'][cfg.test_start:cfg.test_start + n_test_actual])
                         ref_u = np.concatenate([ref_u_train, ref_u_test], axis=0)
                         
-                        # QoI: ensemble mean
-                        pred_energy_train = np.mean(train_pred['Gamma_n'][0], axis=0)
-                        pred_enstrophy_train = np.mean(train_pred['Gamma_c'][0], axis=0)
-                        pred_energy_test = np.mean(test_pred['Gamma_n'][0], axis=0)
-                        pred_enstrophy_test = np.mean(test_pred['Gamma_c'][0], axis=0)
-                        
-                        full_pred_energy = np.concatenate([pred_energy_train, pred_energy_test])
-                        full_pred_enstrophy = np.concatenate([pred_enstrophy_train, pred_enstrophy_test])
+                        # QoI from continuous rollout ensemble mean
+                        full_pred_energy = np.mean(continuous_Gn, axis=0)
+                        full_pred_enstrophy = np.mean(continuous_Gc, axis=0)
                         
                         # Load reference QoIs
                         with h5py.File(ref_file, 'r') as f:
                             ref_energy_train = np.array(f['energy'][cfg.train_start:cfg.train_start + n_train])
                             ref_enstrophy_train = np.array(f['enstrophy'][cfg.train_start:cfg.train_start + n_train])
-                            ref_energy_test = np.array(f['energy'][cfg.test_start:cfg.test_start + n_test])
-                            ref_enstrophy_test = np.array(f['enstrophy'][cfg.test_start:cfg.test_start + n_test])
+                            ref_energy_test = np.array(f['energy'][cfg.test_start:cfg.test_start + n_test_actual])
+                            ref_enstrophy_test = np.array(f['enstrophy'][cfg.test_start:cfg.test_start + n_test_actual])
                         full_ref_energy = np.concatenate([ref_energy_train, ref_energy_test])
                         full_ref_enstrophy = np.concatenate([ref_enstrophy_train, ref_enstrophy_test])
                         
@@ -428,7 +461,7 @@ def main():
                         energy_ylim = (float(full_ref_energy.min() - energy_pad),
                                        float(full_ref_energy.max() + energy_pad))
                         enstrophy_ylim = (float(full_ref_enstrophy.min() - enstrophy_pad),
-                                          float(full_ref_enstrophy.max() + enstrophy_pad))
+                                           float(full_ref_enstrophy.max() + enstrophy_pad))
                         
                         ft_dir = os.path.join(paths["figures_dir"], "full_trajectory")
                         os.makedirs(ft_dir, exist_ok=True)
@@ -465,6 +498,125 @@ def main():
                     logger.warning("POD basis not available for full trajectory reconstruction")
             except Exception as e:
                 logger.warning(f"Full trajectory plot failed (non-fatal): {e}")
+        
+        # FULL TRAJECTORY PLOTS (NS — continuous rollout)
+        # =================================================================
+        if cfg.pde == "ns" and cfg.training_mode == "temporal_split":
+            logger.info("Generating full-trajectory NS plots (continuous rollout)...")
+            
+            try:
+                # Load POD basis if not already loaded
+                if pod_basis is None and os.path.exists(paths["pod_basis"]):
+                    pod_basis = np.load(paths["pod_basis"])
+                    logger.info(f"Loaded POD basis for full trajectory: {pod_basis.shape}")
+                if temporal_mean is None:
+                    ics_data = np.load(paths["initial_conditions"])
+                    if 'train_temporal_mean' in ics_data:
+                        temporal_mean = ics_data['train_temporal_mean']
+                
+                if pod_basis is not None:
+                    from shared.data_io import reconstruct_full_state
+                    from shared.plotting import (
+                        plot_ns_full_trajectory_reconstruction,
+                        plot_ks_full_trajectory_qoi,
+                        plot_ns_full_trajectory_state_error,
+                    )
+                    from shared.physics import compute_ns_qoi_timeseries
+                    from shared.evaluation_io import (
+                        load_full_trajectory_reference, compute_qoi_ylims,
+                    )
+                    import h5py
+                    
+                    # Use config-based spans (not capped forecast length)
+                    n_test = test_bounds[1] - test_bounds[0]
+                    ref_file = cfg.training_files[0]
+                    ref_data = load_full_trajectory_reference(
+                        ref_file, cfg.train_start, cfg.test_start, n_test,
+                        pde="ns",
+                    )
+                    n_total = ref_data['n_total']
+                    train_n_steps = ref_data['train_n_steps']
+                    train_ic = train_ICs[0]
+                    
+                    # Run continuous rollout for each model in ensemble
+                    continuous_X = []
+                    for score, mdl in models[:cfg.max_models or len(models)]:
+                        result = predict_trajectory(train_ic, n_total, mdl, mean_Xhat, scaling_Xhat)
+                        if not result['is_nan']:
+                            continuous_X.append(result['X_OpInf'])
+                    
+                    if continuous_X:
+                        X_hat_full = np.mean(continuous_X, axis=0)
+                        if X_hat_full.shape[0] != pod_basis.shape[1]:
+                            X_hat_full = X_hat_full.T
+                        
+                        Q_full = reconstruct_full_state(X_hat_full, pod_basis, temporal_mean)
+                        pred_u = Q_full.T  # (n_total, ny*nx)
+                        
+                        preproc = np.load(paths['preprocessing_info'])
+                        n_y = int(preproc.get('n_y', cfg.n_y))
+                        n_x = int(preproc.get('n_x', cfg.n_x))
+                        
+                        pred_omega_3d = pred_u.reshape(-1, n_y, n_x)
+                        ref_omega_3d = ref_data['ref_state']
+                        if ref_omega_3d.ndim == 2:
+                            ref_omega_3d = ref_omega_3d.reshape(-1, n_y, n_x)
+                        
+                        full_pred_energy, full_pred_enstrophy = compute_ns_qoi_timeseries(
+                            pred_omega_3d, Lx=cfg.ns_Lx, Ly=cfg.ns_Ly
+                        )
+                        
+                        full_ref_energy = ref_data['ref_energy']
+                        full_ref_enstrophy = ref_data['ref_enstrophy']
+                        t_start_val = cfg.train_start * cfg.dt
+                        energy_ylim, enstrophy_ylim = compute_qoi_ylims(
+                            full_ref_energy, full_ref_enstrophy
+                        )
+                        
+                        ft_dir = os.path.join(paths['figures_dir'], 'full_trajectory')
+                        os.makedirs(ft_dir, exist_ok=True)
+                        
+                        plot_ns_full_trajectory_reconstruction(
+                            pred_omega=pred_omega_3d,
+                            ref_omega=ref_omega_3d,
+                            dt=cfg.dt,
+                            output_path=os.path.join(ft_dir, "ns_full_trajectory_reconstruction.png"),
+                            logger=logger,
+                            method_name="OpInf",
+                            Lx=cfg.ns_Lx,
+                        )
+
+                        plot_ns_full_trajectory_state_error(
+                            pred_omega=pred_omega_3d,
+                            ref_omega=ref_omega_3d,
+                            dt=cfg.dt,
+                            train_n_steps=train_n_steps,
+                            output_path=os.path.join(ft_dir, "ns_full_trajectory_state_error.png"),
+                            logger=logger,
+                            method_name="OpInf",
+                            t_start=t_start_val,
+                        )
+                        
+                        plot_ks_full_trajectory_qoi(
+                            pred_qoi_1=full_pred_energy,
+                            pred_qoi_2=full_pred_enstrophy,
+                            ref_qoi_1=full_ref_energy,
+                            ref_qoi_2=full_ref_enstrophy,
+                            dt=cfg.dt,
+                            train_n_steps=train_n_steps,
+                            output_path=os.path.join(ft_dir, "ns_full_trajectory_qoi.png"),
+                            logger=logger,
+                            method_name="OpInf",
+                            ylim_1=energy_ylim,
+                            ylim_2=enstrophy_ylim,
+                            t_start=t_start_val,
+                        )
+                    else:
+                        logger.warning("No valid continuous predictions for NS full trajectory plot")
+                else:
+                    logger.warning("POD basis not available for NS full trajectory reconstruction")
+            except Exception as e:
+                logger.warning(f"NS full trajectory plot failed (non-fatal): {e}")
         
         # Print summary
         print_header("EVALUATION SUMMARY")
@@ -505,9 +657,12 @@ def main():
                     # Ensemble mean
                     mean_pred_n = np.mean(pred_n, axis=0) if pred_n.ndim > 1 else pred_n
                     mean_pred_c = np.mean(pred_c, axis=0) if pred_c.ndim > 1 else pred_c
-                    # Load reference
+                    # Use actual prediction length
                     traj_len = bounds[i + 1] - bounds[i]
-                    if cfg.pde == "ks":
+                    actual_len = len(mean_pred_n)
+                    if actual_len < traj_len:
+                        traj_len = actual_len
+                    if cfg.pde == "ks" or cfg.pde == "ns":
                         import h5py
                         with h5py.File(ref_files_list[i], 'r') as fh:
                             ref_n = np.array(fh['energy'][offset:offset + traj_len])
