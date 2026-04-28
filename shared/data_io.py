@@ -524,3 +524,151 @@ def load_ks_reference_states(
         u = np.array(f['u'][ref_offset:ref_offset + n_steps])  # (n_steps, N)
     N = u.shape[1]
     return u.T, N
+
+
+# =============================================================================
+# 2D NAVIER-STOKES DATA LOADING (ω-ψ FORMULATION)
+# =============================================================================
+
+def get_ns_file_metadata(file_path: str) -> dict:
+    """
+    Get metadata from 2D NS simulation file without loading full data.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+
+    Returns
+    -------
+    dict
+        Dictionary with n_time, ny, nx, n_spatial, n_fields, dt, dt_save,
+        Re, Lx, Ly, dx, dy.
+    """
+    with h5py.File(file_path, 'r') as f:
+        n_time, ny, nx = f['omega'].shape
+        dt = float(f.attrs.get('dt', 1e-3))
+        dt_save = float(f.attrs.get('dt_save', dt))
+        Re = float(f.attrs.get('Re', 100.0))
+        Lx = float(f.attrs.get('Lx', 2 * np.pi))
+        Ly = float(f.attrs.get('Ly', Lx))
+        dx = float(f.attrs.get('dx', Lx / nx))
+        dy = float(f.attrs.get('dy', Ly / ny))
+
+    return {
+        'n_time': n_time,
+        'ny': ny,
+        'nx': nx,
+        'n_spatial': ny * nx,   # Single field (omega)
+        'n_fields': 1,
+        'dt': dt,
+        'dt_save': dt_save,
+        'Re': Re,
+        'Lx': Lx,
+        'Ly': Ly,
+        'dx': dx,
+        'dy': dy,
+    }
+
+
+def load_ns_timeseries(
+    file_path: str,
+    max_timesteps: Optional[int] = None,
+    start_timestep: int = 0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load full time series from 2D NS simulation.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+    max_timesteps : int, optional
+        Maximum number of timesteps to load (None = all).
+    start_timestep : int
+        Starting timestep index.
+
+    Returns
+    -------
+    tuple
+        (omega, psi, energy, enstrophy)
+        - omega: shape (n_time, ny, nx)
+        - psi: shape (n_time, ny, nx)
+        - energy: shape (n_time,)
+        - enstrophy: shape (n_time,)
+    """
+    with h5py.File(file_path, 'r') as f:
+        end_idx = start_timestep + max_timesteps if max_timesteps else None
+        omega = np.array(f['omega'][start_timestep:end_idx])
+        psi = np.array(f['psi'][start_timestep:end_idx])
+        energy = np.array(f['energy'][start_timestep:end_idx])
+        enstrophy = np.array(f['enstrophy'][start_timestep:end_idx])
+
+    return omega, psi, energy, enstrophy
+
+
+def load_ns_stacked_state_matrix(
+    file_path: str,
+    max_timesteps: Optional[int] = None,
+    start_timestep: int = 0,
+) -> np.ndarray:
+    """
+    Load NS data as state matrix Q with shape (ny*nx, n_time).
+
+    Uses vorticity (omega) as the single state field, matching the
+    KS pattern where each column is a flattened state vector.
+
+    Parameters
+    ----------
+    file_path : str
+        Path to HDF5 file.
+    max_timesteps : int, optional
+        Maximum number of timesteps.
+    start_timestep : int
+        Starting timestep index.
+
+    Returns
+    -------
+    np.ndarray
+        Q matrix with shape (ny*nx, n_time).
+    """
+    with h5py.File(file_path, 'r') as f:
+        end_idx = start_timestep + max_timesteps if max_timesteps else None
+        omega = np.array(f['omega'][start_timestep:end_idx])  # (n_time, ny, nx)
+
+    n_time = omega.shape[0]
+    return omega.reshape(n_time, -1).T  # (ny*nx, n_time)
+
+
+def load_ns_reference_states(
+    ref_file: str,
+    n_steps: int,
+    ref_offset: int = 0,
+) -> Tuple[np.ndarray, int, int]:
+    """
+    Load reference NS states from simulation file.
+
+    Returns states in shape (ny*nx, n_steps) using vorticity field.
+
+    Parameters
+    ----------
+    ref_file : str
+        Path to HDF5 simulation file.
+    n_steps : int
+        Number of timesteps to load.
+    ref_offset : int
+        Starting offset into the file.
+
+    Returns
+    -------
+    Q : np.ndarray, shape (ny*nx, n_steps)
+        State matrix (flattened vorticity).
+    ny : int
+        Grid size in y.
+    nx : int
+        Grid size in x.
+    """
+    with h5py.File(ref_file, 'r') as f:
+        omega = np.array(f['omega'][ref_offset:ref_offset + n_steps])  # (n_steps, ny, nx)
+    n_time, ny, nx = omega.shape
+    return omega.reshape(n_time, -1).T, ny, nx

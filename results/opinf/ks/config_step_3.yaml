@@ -1,0 +1,98 @@
+_saved_at: '2026-03-18T13:28:41.851999'
+_step: step_3
+run_name: opinf_ks_temporal_split
+run_dir: local_output/20260318_132154_opinf_ks_temporal_split
+pde: ks
+paths:
+  output_base: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/
+  data_dir: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks
+  training_files:
+  - /home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks/ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+  test_files: []
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+training_mode:
+  mode: temporal_split
+  train_start: 1250
+  train_end: 1800
+  test_start: 1800
+  test_end: 2000
+reduction:
+  method: linear
+  r: 50
+  target_energy: 0.99
+  n_vectors_to_check: 200
+  reg_magnitude: 1.0e-06
+truncation:
+  enabled: false
+  method: time
+  snapshots: null
+  time: null
+preprocessing:
+  centering: true
+  scaling: false
+training:
+  training_end: 550
+  n_steps: 550
+regularization:
+  state_lin:
+  - 0.1
+  - 0.599484250318941
+  - 3.5938136638046276
+  - 21.544346900318843
+  - 129.1549665014884
+  - 774.263682681127
+  - 4641.588833612782
+  - 27825.59402207126
+  - 166810.0537200059
+  - 1000000.0
+  state_quad:
+  - 10.0
+  - 100.0
+  - 1000.0
+  - 10000.0
+  - 100000.0
+  - 1000000.0
+  - 10000000.0
+  - 100000000.0
+  - 1000000000.0
+  - 10000000000.0
+  output_lin:
+  - 0.0001
+  - 0.00046415888336127773
+  - 0.002154434690031882
+  - 0.01
+  - 0.046415888336127774
+  - 0.21544346900318823
+  - 1.0
+  - 4.641588833612772
+  - 21.54434690031882
+  - 100.0
+  output_quad:
+  - 0.01
+  - 0.046415888336127774
+  - 0.21544346900318834
+  - 1.0
+  - 4.6415888336127775
+  - 21.54434690031882
+  - 100.0
+  - 464.1588833612773
+  - 2154.4346900318824
+  - 10000.0
+model_selection:
+  threshold_mean: 0.5
+  threshold_std: 0.5
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: true
+  plot_state_snapshots: true
+  n_snapshot_samples: 5
+  qoi_method: physics
+execution:
+  verbose: true
+  log_level: INFO
+  engine: h5netcdf

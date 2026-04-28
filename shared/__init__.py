@@ -37,6 +37,8 @@ from .physics import (
 from .plotting import (
     plot_ks_full_trajectory_reconstruction,
     plot_ks_full_trajectory_qoi,
+    plot_ns_full_trajectory_reconstruction,
+    plot_ns_full_trajectory_state_error,
 )
 
 # NOTE: mpi_utils not imported here to avoid MPI initialization on import.

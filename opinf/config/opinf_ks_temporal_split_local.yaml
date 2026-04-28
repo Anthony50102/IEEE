@@ -3,9 +3,9 @@ run_name: "opinf_ks_temporal_split"  # OpInf on Kuramoto-Sivashinsky, temporal s
 pde: "ks"
 
 paths:
-  output_base: "/home/anthonypoole/repos/not_work/IEEE/local_output/"
+  output_base: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/local_output/"
   
-  data_dir: "/home/anthonypoole/repos/not_work/IEEE/data/ks"
+  data_dir: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/data/ks"
   
   # Single trajectory for temporal split mode
   training_files: 
@@ -71,7 +71,7 @@ regularization:
 model_selection:
   method: "threshold"
   threshold_mean: 0.5
-  threshold_std: 0.15
+  threshold_std: 0.50
 
 evaluation:
   save_predictions: true
@@ -79,6 +79,7 @@ evaluation:
   plot_state_error: true
   plot_state_snapshots: true
   n_snapshot_samples: 5
+  qoi_method: "physics"
 
 execution:
   verbose: true

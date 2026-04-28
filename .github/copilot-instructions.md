@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repo benchmarks **reduced-order models (ROMs)** and **deep-learning surrogates** for PDE forecasting, targeting an IEEE publication. The primary benchmark PDE is **Hasegawa-Wakatani 2D** (HW2D) plasma turbulence. **Kuramoto-Sivashinsky** (KS) is a planned second benchmark.
+This repo benchmarks **reduced-order models (ROMs)** and **deep-learning surrogates** for PDE forecasting, targeting an IEEE publication. The primary benchmark PDE is **Hasegawa-Wakatani 2D** (HW2D) plasma turbulence. **Kuramoto-Sivashinsky** (KS) is a second benchmark.
 
 Methods currently implemented:
 
@@ -12,28 +12,29 @@ Methods currently implemented:
 | Operator Inference (OpInf) | `opinf/` | ROM — discrete-time quadratic | custom (NumPy/SciPy + MPI) |
 | Fourier Neural Operator (FNO) | `fno/` | DL surrogate | `neuralop` + PyTorch |
 
-Planned future methods: DeepONet, generative PDE solvers.
+Possible future methods: DeepONet, generative PDE solvers.
 
 The quantity of interest for **all** methods is prediction of transport coefficients **Γ_n** (particle flux) and **Γ_c** (conductive flux). Every method must produce comparable Gamma predictions and use the same plotting utilities for paper-quality figures.
 
+The first evaluation of the methods is there ability to forecast from a single intial condition. The secondary would be to forecast a unseen intial condition. The Last would be to forcast a whole different parametric variation that hasn't been seen. Currrently we are still trying to get the single IC scenario to work
 ---
 
 ## Repository Structure
 
 ```
-    IEEE-CiSE-Special-Issue/ # Github clone of overleaf project for this paper
-../
-    IEEE/
-    ├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
-    ├── dmd/             # DMD pipeline (3-step)
-    ├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
-    ├── fno/             # FNO pipeline (3-step, PyTorch)
-    ├── analysis/        # Post-hoc comparison scripts
-    ├── data/
-    │   ├── hw2d/        # Hasegawa-Wakatani HDF5 simulations + generation notebook
-    │   └── ks/          # Kuramoto-Sivashinsky data + generation notebook
-    ├── scripts/         # SLURM job scripts (Frontera) + local bash runners
-    └── frontera_pip_constraints.txt
+../IEEE-CiSE-Special-Issue/   # GitHub clone of Overleaf project for this paper
+../IEEE/                        # This repo — code for the paper
+├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
+├── dmd/             # DMD pipeline (3-step)
+├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
+├── fno/             # FNO pipeline (3-step, PyTorch)
+├── analysis/        # Post-hoc comparison and diagnostic scripts
+├── data/            # Symlinks to actual data (see Data Layout below)
+│   ├── hw2d/        # → HW2D HDF5 simulations (symlink on HPC)
+│   └── ks/          # KS data + generation notebook (small, lives in repo)
+├── scripts/         # SLURM job scripts (Frontera/Vista) + local bash runners
+├── sweep_configs/   # Parameter sweep YAML files
+└── results/         # Curated results for paper figures
 ```
 
 ### The 3-Step Pipeline Pattern
@@ -117,6 +118,7 @@ This is a scientific computing paper codebase. Prioritize:
 All pipelines must run on both:
 
 - **TACC Frontera** — via SLURM scripts in `scripts/` (Intel Cascade Lake, 56 cores/node, `ibrun` for MPI)
+- **TACC Vista** — via SLURM scripts in `scripts/` (Grace-Hopper H200 GPU nodes for FNO/DL work)
 - **Local machine** — via bash scripts in `scripts/` or `<method>/run_local.sh`
 
 The only difference should be the launch mechanism (SLURM vs bash). The Python code itself should not contain HPC-specific logic. MPI code should degrade gracefully when `mpi4py` is not available or running with 1 rank.
@@ -134,6 +136,240 @@ The only difference should be the launch mechanism (SLURM vs bash). The Python c
 - Use `float32` for large-rank DMD to manage memory
 - FNO uses `float32` (PyTorch default)
 - When comparing across precisions, upcast to `float64` first
+
+---
+
+## Git Policy
+
+### No AI Co-Author Attribution
+
+**Do NOT include any Co-authored-by, AI attribution, or similar trailers in git commits.** Many journals prohibit AI co-authorship claims. When creating commits, use a plain commit message with no trailers.
+
+### Ask Before Git Operations
+
+**Do NOT commit, push, or pull on any repo (local or remote) without explicit user approval.** The user controls all git operations. You may stage files or show diffs, but never run `git commit`, `git push`, or `git pull` on your own.
+
+---
+
+## Local ↔ HPC Workflow
+
+### Overview
+
+The development workflow spans a local Mac (code editing, KS testing, AI copilot) and TACC HPC systems (MPI runs, large HW2D data, GPU training).
+
+```
+┌──────────────┐     git push      ┌──────────┐     git pull     ┌──────────────┐
+│  Local Mac   │  ──────────────►  │  GitHub   │  ──────────────► │   Frontera   │
+│  (edit code) │                   │  (origin) │                  │   (run jobs) │
+│              │  ◄──────────────  │           │  ◄────────────── │              │
+│  KS testing  │     git pull      │           │     git push     │  HW2D / MPI  │
+└──────────────┘                   └──────────┘                   └──────────────┘
+```
+
+### Workflow Steps
+
+1. **Edit code locally** — Use Copilot for code changes, test with KS data
+2. **Push to GitHub** — User controls when to push (or Copilot can push via SSH with permission)
+3. **Pull on Frontera** — `cd $WORK/repos/IEEE && git pull`
+4. **Run jobs** — Submit SLURM scripts from `scripts/`; output goes to `$SCRATCH/IEEE/output/`
+5. **Retrieve results** — Either push result YAML/plots to GitHub, or `scp` back to local
+
+### When Copilot Edits on HPC via SSH
+
+For quick fixes that don't warrant a full push/pull cycle, Copilot can edit files directly on Frontera via SSH. In this case:
+- Make changes on Frontera
+- Ask user whether to commit+push from Frontera back to GitHub
+- Pull locally afterward to stay in sync
+
+### Local Development
+
+- **Python**: 3.12 (miniconda3)
+- **KS pipeline** can run fully locally (small data, fast)
+- **HW2D** is HPC-only — data too large for local
+- Small test datasets (KS) live in `data/ks/` in the repo
+- Use `scripts/run_*_local.sh` or method-specific `run_local.sh` scripts
+
+---
+
+## HPC Quick Reference (TACC)
+
+### Connection
+
+| System | SSH | Use Case |
+|--------|-----|----------|
+| Frontera | `ssh $FRONTERA` | CPU work: DMD, OpInf, MPI jobs |
+| Vista | `ssh $VISTA` | GPU work: FNO, PyTorch, DL training |
+
+ControlMaster sockets are configured locally — connections should not require a password.
+
+### User / Allocation
+
+- **Username:** `anthony50102`
+- **Allocation:** `PHY25003` (auto-selected, single project — `-A` flag usually not needed)
+
+### File System Layout
+
+| Location | Path | Purpose | Persistence |
+|----------|------|---------|-------------|
+| `$HOME` | `/home1/10407/anthony50102` | Config, dotfiles | Permanent, small quota |
+| `$WORK` | `/work2/10407/anthony50102/frontera` | Repo, archived data | Permanent, shared via Stockyard |
+| `$SCRATCH` | `/scratch2/10407/anthony50102` | Working data, job output | **Purged after 10 days of no access** |
+
+### Data Layout
+
+```
+$WORK/
+├── repos/IEEE/              # Git repo (code only, no large data)
+│   ├── data/
+│   │   ├── hw2d/            # Notebooks only (h5 files gitignored)
+│   │   └── ks/              # Small KS data + notebook (lives in repo)
+│   └── ...
+└── data/                    # Archived data (canonical copy, persistent)
+    └── hw2d_sim/            # Raw HW2D simulation HDF5 files (372GB)
+
+$SCRATCH/
+└── IEEE/
+    ├── data/                # Working data (striped Lustre, fast I/O)
+    │   └── hw2d/            # Copied from $WORK/data/hw2d_sim/ via setup_data.sh
+    └── output/              # Job output directories (timestamped)
+```
+
+**Why this layout:**
+- **Lustre striping** on `$SCRATCH` enables fast parallel I/O for large HDF5 reads — `$WORK` does not support striping
+- `$WORK/data/` is the persistent archive; `$SCRATCH/IEEE/data/` is the fast working copy
+- If `$SCRATCH` gets purged, run `scripts/setup_data.sh` (or `sbatch scripts/setup_data.slurm` for full copy)
+- Job output goes to `$SCRATCH/IEEE/output/` — ephemeral by design; curate important results into `results/` in the repo
+
+**Data paths in configs:** YAML configs use `data_dir` with absolute paths. HPC configs point to `$SCRATCH/IEEE/data/hw2d/`, local configs point to local paths. There are separate `*_local.yaml` files for local runs. When creating new configs, follow this pattern:
+- HPC: `data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d/"`
+- Local: `data_dir: "<local path to data>"`
+
+### Queues
+
+**Frontera (CPU):**
+
+| Queue | Nodes | Max Time | Notes |
+|-------|-------|----------|-------|
+| `small` | 1–2 | 48 hrs | Serial/OpenMP, 1 SU/node-hr |
+| `normal` | 3–512 | 48 hrs | MPI jobs, 1 SU/node-hr |
+| `development` | 1–40 | 2 hrs | Testing, 1 SU/node-hr |
+| `flex` | 1–128 | 48 hrs | Preemptible after 1 hr, 0.8 SU/node-hr |
+
+**Vista (GPU):**
+
+| Queue | Nodes | Max Time | Notes |
+|-------|-------|----------|-------|
+| `gh` | 1–64 | 48 hrs | Grace-Hopper (1× H200 GPU/node), 1 SU/node-hr |
+| `gh-dev` | 1–8 | 2 hrs | GPU dev queue, 1 SU/node-hr |
+| `gg` | 1–32 | 48 hrs | Grace-Grace CPU-only (144 cores), 0.33 SU/node-hr |
+
+### Node Specs
+
+| | Frontera CLX | Vista GH (GPU) | Vista GG (CPU) |
+|-|-------------|----------------|----------------|
+| Cores | 56 (2×28) | 72 (1 socket) | 144 (2×72) |
+| RAM | 192 GB DDR4 | 116 GB LPDDR + 96 GB HBM3 | 237 GB LPDDR |
+| GPU | — | 1× NVIDIA H200 (96 GB HBM3) | — |
+
+### Module Setup
+
+**Frontera** (default modules are fine for CPU/MPI work):
+```bash
+module list  # intel/19.1.1, impi/19.0.9, python3/3.7.0
+```
+
+**Vista** (for PyTorch/FNO GPU work):
+```bash
+module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
+```
+
+### Python Environments
+
+**Frontera** — Use `python3/3.9.2` (NOT the default 3.7.0):
+```bash
+module load python3/3.9.2 phdf5/1.10.4
+export MPLBACKEND=Agg   # Required — prevents pygobject segfault
+```
+- System `python3/3.7.0` ships numpy 1.16.4 which is **too old** for `pydmd` (BOPDMD requires numpy ≥1.20 for `sliding_window_view`)
+- `python3/3.9.2` ships numpy 1.20.1, scipy, matplotlib, h5py pre-built for Frontera's architecture (Intel MKL-linked)
+- `phdf5/1.10.4` provides `libhdf5.so.103` which the system `h5py` is linked against — **without this module, h5py import fails**
+- Additional packages installed via `pip3 install --user`: `pydmd`, `xarray`, `scikit-learn`
+- The `MPLBACKEND=Agg` export is **mandatory** — without it, importing `h5py` + `matplotlib` together triggers a segfault in the system `pygobject` GTK backend
+- All SLURM scripts for Frontera must include these module loads and the `MPLBACKEND` export
+
+**Vista** (for PyTorch/FNO GPU work):
+```bash
+module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
+```
+- Vista venvs live in `$SCRATCH/venvs/`. Create with: `python3 -m venv $SCRATCH/venvs/<name>`
+- Install PyTorch on Vista: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu129`
+- Always install packages from a **compute node** (`idev`), not the login node
+
+**Common dependency issues on Frontera:**
+- If `h5py` fails with `libhdf5.so.103 not found` → need `module load phdf5/1.10.4`
+- If `pydmd` fails with `cannot import sliding_window_view` → wrong Python module loaded (3.7 instead of 3.9.2)
+- If segfault on import → missing `export MPLBACKEND=Agg`
+- If `--user` pip install overrides system numpy → `pip3 uninstall numpy` to fall back to system numpy (do NOT install numpy via pip on Frontera — use the module-provided one)
+
+### SLURM Job Templates
+
+**Frontera — MPI job (OpInf/DMD):**
+```bash
+#!/bin/bash
+#SBATCH -J opinf-run
+#SBATCH -o $SCRATCH/IEEE/output/opinf.o%j
+#SBATCH -e $SCRATCH/IEEE/output/opinf.e%j
+#SBATCH -p normal
+#SBATCH -N 4
+#SBATCH -n 224             # 56 tasks/node × 4 nodes
+#SBATCH -t 02:00:00
+
+module load python3/3.9.2 phdf5/1.10.4
+export MPLBACKEND=Agg
+cd $WORK/repos/IEEE
+ibrun python3 opinf/step_2_train.py --config opinf/config/example.yaml --run-dir $SCRATCH/IEEE/output
+```
+
+**Vista — single-GPU job (FNO):**
+```bash
+#!/bin/bash
+#SBATCH -J fno-train
+#SBATCH -o $SCRATCH/IEEE/output/fno.o%j
+#SBATCH -e $SCRATCH/IEEE/output/fno.e%j
+#SBATCH -p gh
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH -t 04:00:00
+
+module load gcc cuda python3
+source $SCRATCH/venvs/<your-env>/bin/activate
+cd $WORK/repos/IEEE
+python3 fno/step_2_train.py --config fno/config/example.yaml --run-dir $SCRATCH/IEEE/output
+```
+
+### Key Commands
+
+```bash
+sbatch myjob.slurm          # submit batch job
+squeue -u anthony50102       # check your jobs
+scancel <jobid>              # cancel a job
+idev -p gh-dev -N 1 -n 1    # interactive GPU session on Vista
+idev -p development -N 1     # interactive CPU session on Frontera
+showq -u                     # alternative job status view
+qlimits                      # show current queue limits
+/usr/local/etc/taccinfo      # allocation balance + disk quotas
+ibrun ./myprogram            # MPI launcher (use instead of mpirun)
+```
+
+### Important Reminders
+
+- Use `ibrun` for MPI, **never** `mpirun` or `mpiexec`
+- Do **not** run compute-intensive work on login nodes
+- Do **not** run `ssh-keygen` on TACC systems
+- `$SCRATCH` files are purged after 10 days of no access
+- Min charge is 15 minutes per job regardless of actual runtime
+- Do **not** use `#SBATCH --export`, `--mem`, or `--gpus-per-task` on TACC systems
+- SLURM `-o` and `-e` flags should write to `$SCRATCH/IEEE/output/`, not into the repo
 
 ---
 

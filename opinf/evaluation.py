@@ -23,10 +23,21 @@ def predict_trajectory(u0: np.ndarray, n_steps: int, model: dict,
                        mean_Xhat: np.ndarray, scaling_Xhat: float) -> dict:
     """Run prediction for a single trajectory with one model."""
     A, F = model['A'], model['F']
-    C, G, c = model['C'], model['G'], model['c']
+    C = model.get('C', None)
+    G = model.get('G', None)
+    c = model.get('c', None)
+    H = model.get('H', None)
+    c_state = model.get('c_state', None)
     
-    # State evolution
-    f = lambda x: A @ x + F @ get_quadratic_terms(x)
+    # State evolution with optional closure terms
+    def f(x):
+        result = A @ x + F @ get_quadratic_terms(x)
+        if H is not None:
+            result += H @ (x ** 3)
+        if c_state is not None:
+            result += c_state
+        return result
+    
     is_nan, Xhat_pred = solve_difference_model(u0, n_steps, f)
     
     if is_nan:
@@ -34,23 +45,36 @@ def predict_trajectory(u0: np.ndarray, n_steps: int, model: dict,
     
     X_OpInf = Xhat_pred.T
     
-    # Output computation
-    Xhat_scaled = (X_OpInf - mean_Xhat) / scaling_Xhat
-    Xhat_2 = get_quadratic_terms(Xhat_scaled)
-    Y_OpInf = C @ Xhat_scaled.T + G @ Xhat_2.T + c[:, np.newaxis]
+    # Output computation (only if output operators exist)
+    if C is not None and G is not None and c is not None:
+        Xhat_scaled = (X_OpInf - mean_Xhat) / scaling_Xhat
+        Xhat_2 = get_quadratic_terms(Xhat_scaled)
+        Y_OpInf = C @ Xhat_scaled.T + G @ Xhat_2.T + c[:, np.newaxis]
+        Gamma_n = Y_OpInf[0, :]
+        Gamma_c = Y_OpInf[1, :]
+    else:
+        # No output operators — QoI will be recomputed from physics
+        Gamma_n = np.zeros(X_OpInf.shape[0])
+        Gamma_c = np.zeros(X_OpInf.shape[0])
     
     return {
         'is_nan': False,
         'X_OpInf': X_OpInf,
-        'Gamma_n': Y_OpInf[0, :],
-        'Gamma_c': Y_OpInf[1, :],
+        'Gamma_n': Gamma_n,
+        'Gamma_c': Gamma_c,
     }
 
 
 def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.ndarray,
                                   mean_Xhat: np.ndarray, scaling_Xhat: float,
-                                  logger, name: str = "trajectory") -> dict:
-    """Compute ensemble predictions for multiple trajectories."""
+                                  logger, name: str = "trajectory",
+                                  max_ensemble: int = 0,
+                                  max_steps: int = 0) -> dict:
+    """Compute ensemble predictions for multiple trajectories.
+    
+    If max_ensemble > 0, only use the first max_ensemble non-divergent models.
+    If max_steps > 0, cap rollout length to max_steps (for consistency with sweep).
+    """
     n_traj = len(boundaries) - 1
     predictions = {'Gamma_n': [], 'Gamma_c': [], 'X_OpInf': []}
     
@@ -69,6 +93,8 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
     
     for traj_idx in range(n_traj):
         traj_len = boundaries[traj_idx + 1] - boundaries[traj_idx]
+        if max_steps > 0 and traj_len > max_steps:
+            traj_len = max_steps
         u0 = ICs[traj_idx, :]
         
         logger.info(f"  Trajectory {traj_idx + 1}/{n_traj} ({traj_len} steps)")
@@ -85,10 +111,100 @@ def compute_ensemble_predictions(models: list, ICs: np.ndarray, boundaries: np.n
             traj_Gamma_n.append(result['Gamma_n'])
             traj_Gamma_c.append(result['Gamma_c'])
             traj_X.append(result['X_OpInf'])
+            
+            if max_ensemble > 0 and len(traj_Gamma_n) >= max_ensemble:
+                logger.info(f"    Reached max_ensemble={max_ensemble} valid models")
+                break
         
         predictions['Gamma_n'].append(np.array(traj_Gamma_n))
         predictions['Gamma_c'].append(np.array(traj_Gamma_c))
         predictions['X_OpInf'].append(np.array(traj_X))
+    
+    return predictions
+
+
+def recompute_qoi_from_physics(predictions: dict, pod_basis: np.ndarray,
+                                temporal_mean: np.ndarray,
+                                pde: str, ks_L: float = 100.0, ks_N: int = 200,
+                                ns_Lx: float = 6.283185307179586,
+                                ns_Ly: float = None,
+                                ns_ny: int = 256, ns_nx: int = 256,
+                                logger=None) -> dict:
+    """
+    Replace learned-operator QoI with physics-based QoI.
+    
+    For each model in the ensemble, reconstruct the full state from the
+    reduced state using the POD basis, then compute energy/enstrophy
+    directly from the physics formulas.
+    
+    Parameters
+    ----------
+    predictions : dict
+        Output from compute_ensemble_predictions(). Must contain 'X_OpInf'.
+    pod_basis : np.ndarray, shape (n_spatial, r)
+        POD basis matrix.
+    temporal_mean : np.ndarray, shape (n_spatial,)
+        Temporal mean for de-centering.
+    pde : str
+        PDE type ("hw2d", "ks", or "ns").
+    ks_L : float
+        KS domain length.
+    ks_N : int
+        KS spatial grid points.
+    ns_Lx, ns_Ly : float
+        NS domain lengths.
+    ns_ny, ns_nx : int
+        NS grid dimensions.
+    logger : optional
+        Logger instance.
+    """
+    from shared.data_io import reconstruct_full_state
+    
+    if pde == "ks":
+        from shared.physics import compute_ks_qoi_from_state_vector
+        dx = ks_L / ks_N
+    elif pde == "ns":
+        from shared.physics import compute_ns_qoi_from_state_vector
+    else:
+        from shared.physics import compute_gamma_n, compute_gamma_c
+    
+    for traj_idx in range(len(predictions['X_OpInf'])):
+        X_ensemble = predictions['X_OpInf'][traj_idx]  # (n_models, n_steps, r)
+        
+        if X_ensemble.size == 0:
+            continue
+        
+        new_gamma_n = []
+        new_gamma_c = []
+        
+        n_models = X_ensemble.shape[0]
+        if logger:
+            logger.info(f"  Traj {traj_idx + 1}: recomputing QoI from physics for {n_models} models...")
+        
+        for model_idx in range(n_models):
+            X_model = X_ensemble[model_idx]  # (n_steps, r)
+            
+            # Reconstruct full state: X_model.T is (r, n_steps)
+            Q_full = reconstruct_full_state(X_model.T, pod_basis, temporal_mean)  # (N, n_steps)
+            
+            if pde == "ks":
+                energy, enstrophy = compute_ks_qoi_from_state_vector(Q_full, ks_N, dx)
+                new_gamma_n.append(energy)
+                new_gamma_c.append(enstrophy)
+            elif pde == "ns":
+                energy, enstrophy = compute_ns_qoi_from_state_vector(
+                    Q_full, ns_ny, ns_nx, ns_Lx, ns_Ly
+                )
+                new_gamma_n.append(energy)
+                new_gamma_c.append(enstrophy)
+            else:
+                raise NotImplementedError("Physics-based QoI for hw2d not yet implemented in OpInf")
+        
+        predictions['Gamma_n'][traj_idx] = np.array(new_gamma_n)
+        predictions['Gamma_c'][traj_idx] = np.array(new_gamma_c)
+    
+    if logger:
+        logger.info("  QoI recomputed from physics.")
     
     return predictions
 
@@ -117,8 +233,21 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
     for traj_idx in range(n_traj):
         traj_len = boundaries[traj_idx + 1] - boundaries[traj_idx]
         
+        # Use actual prediction length (may be capped by max_steps)
+        pred_n = predictions['Gamma_n'][traj_idx]
+        pred_c = predictions['Gamma_c'][traj_idx]
+        if pred_n.size > 0:
+            actual_len = pred_n.shape[-1]
+            if actual_len < traj_len:
+                traj_len = actual_len
+        
         # Load reference QoIs based on PDE type
         if pde == "ks":
+            import h5py
+            with h5py.File(ref_files[traj_idx], 'r') as f:
+                ref_n = np.array(f['energy'][start_offset:start_offset + traj_len])
+                ref_c = np.array(f['enstrophy'][start_offset:start_offset + traj_len])
+        elif pde == "ns":
             import h5py
             with h5py.File(ref_files[traj_idx], 'r') as f:
                 ref_n = np.array(f['energy'][start_offset:start_offset + traj_len])
@@ -127,10 +256,6 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
             fh = load_dataset(ref_files[traj_idx], engine)
             ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
             ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
-        
-        # Ensemble mean predictions
-        pred_n = predictions['Gamma_n'][traj_idx]
-        pred_c = predictions['Gamma_c'][traj_idx]
         
         # Handle case where all models produced NaN (empty predictions)
         if pred_n.size == 0 or pred_c.size == 0:

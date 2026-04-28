@@ -1,0 +1,48 @@
+test:
+  gamma_metrics:
+    err_mean_Gamma_c: 469.6626706939126
+    err_mean_Gamma_n: 656.3852768187082
+    err_std_Gamma_c: 811.6161127326784
+    err_std_Gamma_n: 1042.4872452337074
+    mse_Gamma_c: 82463.30771324185
+    mse_Gamma_n: 161863.15710929895
+    pred_mean_Gamma_c: 285.89700178897033
+    pred_mean_Gamma_n: -398.1184014565171
+    pred_std_Gamma_c: 32.76017234482488
+    pred_std_Gamma_n: 53.68879016067565
+    ref_mean_Gamma_c: 0.6074350476264954
+    ref_mean_Gamma_n: 0.6074570417404175
+    ref_std_Gamma_c: 0.0403144508600235
+    ref_std_Gamma_n: 0.051451314240694046
+  n_steps: 3999
+  state_metrics:
+    final_rel_l2_error: 6.172496318817139
+    max_rel_l2_error: 6.2161102294921875
+    mean_rel_l2_error: 5.906732082366943
+    mse_density: 156.6772003173828
+    mse_potential: 121.45182800292969
+    mse_total: 139.06451416015625
+train:
+  gamma_metrics:
+    err_mean_Gamma_c: 453.6210906707226
+    err_mean_Gamma_n: 632.4020749813307
+    err_std_Gamma_c: 602.9636828248128
+    err_std_Gamma_n: 756.1623006265245
+    mse_Gamma_c: 82934.98327704557
+    mse_Gamma_n: 163664.23635652676
+    pred_mean_Gamma_c: 287.6453877005492
+    pred_mean_Gamma_n: -402.1968145225887
+    pred_std_Gamma_c: 23.638864620422172
+    pred_std_Gamma_n: 37.27096076004822
+    ref_mean_Gamma_c: 0.632714569568634
+    ref_mean_Gamma_n: 0.6369900107383728
+    ref_std_Gamma_c: 0.03913954645395279
+    ref_std_Gamma_n: 0.04922453314065933
+  n_steps: 7999
+  state_metrics:
+    final_rel_l2_error: 5.88747501373291
+    max_rel_l2_error: 6.358862400054932
+    mean_rel_l2_error: 5.89078426361084
+    mse_density: 157.7578887939453
+    mse_potential: 122.37557220458984
+    mse_total: 140.0667266845703

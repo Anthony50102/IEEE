@@ -1,0 +1,88 @@
+run_name: "dmd_ns_re100"  # DMD on 2D Navier-Stokes, temporal split
+
+pde: "ns"
+
+paths:
+  output_base: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/local_output/"
+  
+  data_dir: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/data/ns"
+  
+  # Single trajectory for temporal split mode
+  training_files: 
+      - ns2d_re100_64x64_steps10000_seed42.h5
+
+  # test_files not used in temporal_split mode
+  test_files: []
+
+physics:
+  dt: 0.01            # dt_save from solver (dt=1e-3, save_every=10 in quick mode)
+  n_fields: 1         # vorticity only
+  n_x: 64
+  n_y: 64
+  Re: 100.0
+  Lx: 6.283185307179586   # 2*pi
+  Ly: 6.283185307179586   # 2*pi
+
+# Dimensionality reduction (for POD basis)
+reduction:
+  method: "linear"
+  r: 30
+  target_energy: 0.9999
+
+# DMD-specific settings
+dmd:
+  training_mode: "temporal_split"
+  train_start: 0          # Start from t=0
+  train_end: 200          # Fit on [0, 200) for validation sweep
+  val_start: 200          # Validate on [200, 250)
+  val_end: 250
+  test_start: 250         # Test from snapshot 250
+  test_end: 1001          # Test to snapshot 1001 (t=10)
+  
+  rank: null               # DMD rank (null = use POD r)
+  r_candidates: [4, 8, 12, 16, 20, 25, 30]
+  num_trials: 0            # Bagging trials (0 = no bagging)
+  use_proj: true
+  eig_sort: "real"
+  eig_stable: true         # Force eigenvalues to have non-positive real parts
+  k0: null                 # Not used for NS
+  c1: null                 # Not used for NS
+
+# Quadratic output model
+output_model:
+  enabled: false
+  alpha_lin: 1.0e-2
+  alpha_quad: 1.0e0
+  
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 200
+  n_steps: 200
+
+regularization:
+  state_lin: {min: 1.0e-4, max: 1.0e6, num: 1, scale: "linear"}
+  state_quad: {min: 1.0e5, max: 1.0e15, num: 1, scale: "linear"}
+  output_lin: {min: 1.0e-10, max: 1.0e1, num: 1, scale: "linear"}
+  output_quad: {min: 1.0e-12, max: 1.0e1, num: 1, scale: "linear"}
+
+model_selection:
+  method: "top_k"
+  num_top_models: 1
+  threshold_mean: 0.05
+  threshold_std: 0.4
+
+evaluation:
+  save_predictions: true   
+  generate_plots: true     
+  plot_state_error: true  
+  plot_state_snapshots: true  
+  n_snapshot_samples: 5    
+
+execution:
+  verbose: true

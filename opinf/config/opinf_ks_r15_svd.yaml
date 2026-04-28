@@ -1,0 +1,104 @@
+run_name: "opinf_ks_r15_svd"
+
+pde: "ks"
+
+paths:
+  output_base: "./local_output/"
+  data_dir: "./data/ks"
+  training_files: 
+      - ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+  test_files: []
+
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  L: 100.0
+  N: 200
+
+training_mode:
+  mode: "temporal_split"
+  train_start: 1250
+  train_end: 1800
+  test_start: 1800
+  test_end: 2000
+
+reduction:
+  method: "linear"
+  r: 15
+  target_energy: 0.9999
+
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 550
+  n_steps: 550
+
+# =============================================================================
+# SVD-INFORMED REGULARIZATION (r=15, KS)
+# =============================================================================
+# From SVD diagnosis of D_state at r=15:
+#
+#   Block       | cond     | σ_min²   | σ_max²   | Notes
+#   ------------|----------|----------|----------|------------------
+#   linear      | 8.6      | 538      | 3.9e4   | well-conditioned
+#   quadratic   | 4.0e9    | ~0       | 7.3e6   | extremely ill-conditioned
+#
+# At r=15: 549 training pairs × 135 columns (15 lin + 120 quad).
+# Well overdetermined (4:1 ratio), but quad block needs heavy reg.
+#
+# Following HW2D pattern: quad reg starts AT σ_max² and goes up.
+# =============================================================================
+
+regularization:
+  # Linear: well-conditioned, sweep around σ_min²=538
+  state_lin:
+    min: 1.0e-1
+    max: 1.0e6
+    num: 10
+    scale: "log"
+
+  # Quadratic: start at σ_max²=7.3e6, go 6 OOM above (HW2D pattern)
+  state_quad:
+    min: 1.0e6
+    max: 1.0e12
+    num: 10
+    scale: "log"
+
+  # Output: moderate ranges
+  output_lin:
+    min: 1.0e-4
+    max: 1.0e2
+    num: 10
+    scale: "log"
+
+  output_quad:
+    min: 1.0e-2
+    max: 1.0e4
+    num: 10
+    scale: "log"
+
+# Match original thresholds that DID produce models at r=15
+model_selection:
+  method: "threshold"
+  threshold_mean: 0.50
+  threshold_std: 0.50
+
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: true
+  plot_state_snapshots: true
+  n_snapshot_samples: 5
+  qoi_method: "physics"
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

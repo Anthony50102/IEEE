@@ -1,0 +1,9 @@
+# Override parent .gitignore rules so results artifacts can be committed.
+# The root .gitignore blocks *.png, *.np*, etc. globally — we undo that here.
+!*.png
+!*.npz
+!*.npy
+
+# Still exclude PyTorch checkpoints by default (too large for most cases).
+# Use Git LFS or --include-model in curate_best_run.py for FNO checkpoints.
+*.pt

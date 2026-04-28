@@ -3,13 +3,13 @@ run_name: "dmd_ks_temporal_split"  # DMD on Kuramoto-Sivashinsky, temporal split
 pde: "ks"
 
 paths:
-  output_base: "/home/anthonypoole/repos/not_work/IEEE/local_output/"
+  output_base: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/local_output/"
   
-  data_dir: "/home/anthonypoole/repos/not_work/IEEE/data/ks"
+  data_dir: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/data/ks"
   
   # Single trajectory for temporal split mode
   training_files: 
-      - ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+      - ks_sim_step0.1_L100_N200_steps4000.h5
 
   # test_files not used in temporal_split mode
   test_files: []
@@ -25,16 +25,16 @@ physics:
 # Dimensionality reduction (for POD basis)
 reduction:
   method: "linear"
-  r: 20
-  target_energy: 0.95
+  r: 32
+  target_energy: 0.99
 
 # DMD-specific settings
 dmd:
   training_mode: "temporal_split"
-  train_start: 1250        # Train from snapshot 1250 (chaotic regime)
-  train_end: 1800          # Train to snapshot 1800
-  test_start: 1800         # Test from snapshot 1800
-  test_end: 2000           # Test to snapshot 2000
+  train_start: 2000        # Train from snapshot 2000 (chaotic regime)
+  train_end: 3500          # Train to snapshot 3500
+  test_start: 3500         # Test from snapshot 3500
+  test_end: 4000           # Test to snapshot 4000
   
   rank: null               # DMD rank (null = use POD r)
   num_trials: 0            # Bagging trials (0 = no bagging)
@@ -46,7 +46,7 @@ dmd:
 
 # Quadratic output model (OpInf-style, for fair comparison)
 output_model:
-  enabled: true
+  enabled: false
   alpha_lin: 1.0e-2
   alpha_quad: 1.0e0
   
@@ -58,8 +58,8 @@ preprocessing:
   scaling: false
 
 training:
-  training_end: 550
-  n_steps: 550
+  training_end: 500
+  n_steps: 500
 
 regularization:
   state_lin: {min: 1.0e-4, max: 1.0e6, num: 1, scale: "linear"}

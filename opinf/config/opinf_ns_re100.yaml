@@ -1,0 +1,93 @@
+run_name: "opinf_ns_re100"  # OpInf on 2D Navier-Stokes, temporal split
+
+pde: "ns"
+
+paths:
+  output_base: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/local_output/"
+  
+  data_dir: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/data/ns"
+  
+  # Single trajectory for temporal split mode
+  training_files: 
+      - ns2d_re100_64x64_steps10000_seed42.h5
+
+  # test_files not used in temporal_split mode
+  test_files: []
+
+physics:
+  dt: 0.01            # dt_save from solver (dt=1e-3, save_every=10 in quick mode)
+  n_fields: 1         # vorticity only
+  n_x: 64
+  n_y: 64
+  Re: 100.0
+  Lx: 6.283185307179586   # 2*pi
+  Ly: 6.283185307179586   # 2*pi
+
+# Training mode configuration
+training_mode:
+  mode: "temporal_split"
+  train_start: 0          # Start from t=0
+  train_end: 200          # Fit on [0, 200) for validation sweep
+  val_start: 200          # Validate on [200, 250)
+  val_end: 250
+  test_start: 250         # Test from snapshot 250
+  test_end: 1001          # Test to snapshot 1001 (t=10)
+
+reduction:
+  method: "linear"
+  r: 30
+  target_energy: 0.9999
+  r_candidates: [4, 8, 12, 16, 20, 25, 30]
+
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 200
+  n_steps: 200
+
+regularization:
+  state_lin:
+    min: 1.0e-2
+    max: 1.0e6
+    num: 10
+    scale: "log"
+  state_quad:
+    min: 1.0e0
+    max: 1.0e10
+    num: 10
+    scale: "log"
+  output_lin:
+    min: 1.0e-4
+    max: 1.0e2
+    num: 1
+    scale: "linear"
+  output_quad:
+    min: 1.0e-2
+    max: 1.0e4
+    num: 1
+    scale: "linear"
+
+model_selection:
+  method: "threshold"
+  threshold_mean: 100.0     # Very permissive — rely on test rollout to rank
+  threshold_std: 100.0
+  max_models: 1             # Pick the single best model
+
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: true
+  plot_state_snapshots: true
+  n_snapshot_samples: 5
+  qoi_method: "physics"
+  sweep_qoi_method: "physics_energy"
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

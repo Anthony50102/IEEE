@@ -112,9 +112,12 @@ def load_dmd_config(config_path: str) -> DMDConfig:
     cfg.training_mode = dmd_section.get("training_mode", "multi_trajectory")
     cfg.train_start = dmd_section.get("train_start", 0)
     cfg.train_end = dmd_section.get("train_end", 8000)
+    cfg.val_start = dmd_section.get("val_start", 0)
+    cfg.val_end = dmd_section.get("val_end", 0)
     cfg.test_start = dmd_section.get("test_start", 8000)
     cfg.test_end = dmd_section.get("test_end", 16000)
     cfg.dmd_rank = dmd_section.get("rank", None)
+    cfg.r_candidates = dmd_section.get("r_candidates", [])
     cfg.num_trials = dmd_section.get("num_trials", 0)
     cfg.use_proj = dmd_section.get("use_proj", True)
     cfg.eig_sort = dmd_section.get("eig_sort", "real")
@@ -280,7 +283,7 @@ def get_dmd_output_paths(run_dir: str) -> dict:
         # Step 3 outputs (forecasts)
         "dmd_forecasts_dir": os.path.join(run_dir, "dmd_forecasts"),
         "dmd_predictions": os.path.join(run_dir, "dmd_predictions.npz"),
-        "dmd_metrics": os.path.join(run_dir, "dmd_evaluation_metrics.yaml"),
+        "dmd_metrics": os.path.join(run_dir, "evaluation_metrics.yaml"),
         "figures_dir": os.path.join(run_dir, "figures"),
     })
     
@@ -305,6 +308,9 @@ def print_dmd_config_summary(cfg: DMDConfig):
     print(f"  Use projection: {cfg.use_proj}")
     if cfg.pde == "ks":
         print(f"  Physics (KS): L={cfg.ks_L}, N={cfg.ks_N}, dx={cfg.ks_L/cfg.ks_N:.4f}")
+    elif cfg.pde == "ns":
+        print(f"  Physics (NS): Re={cfg.ns_Re}, Lx={cfg.ns_Lx:.4f}, "
+              f"nx={cfg.n_x}, ny={cfg.n_y}")
     else:
         print(f"  Physics: k0={cfg.k0}, c1={cfg.c1} (dx={2*np.pi/cfg.k0:.4f})")
     print(f"  Truncation: {'enabled' if cfg.truncation_enabled else 'disabled'}")
@@ -820,6 +826,8 @@ def compute_qoi_from_state(
     c1: float = 1.0,
     ks_L: float = 100.0,
     ks_N: int = 200,
+    ns_Lx: float = 6.283185307179586,
+    ns_Ly: float = None,
 ) -> tuple:
     """
     Compute QoIs from full state vector, dispatching by PDE type.
@@ -829,9 +837,9 @@ def compute_qoi_from_state(
     Q : np.ndarray, shape (n_spatial, n_time) or (n_spatial,)
         Full state vector.
     pde : str
-        PDE type: "hw2d" or "ks".
+        PDE type: "hw2d", "ks", or "ns".
     n_fields : int
-        Number of fields (2 for HW2D, 1 for KS).
+        Number of fields (2 for HW2D, 1 for KS/NS).
     n_y : int
         Grid points in y (1 for KS).
     n_x : int
@@ -844,16 +852,22 @@ def compute_qoi_from_state(
         Domain length for KS.
     ks_N : int
         Number of spatial points for KS.
+    ns_Lx, ns_Ly : float
+        Domain lengths for NS.
 
     Returns
     -------
     tuple
-        (qoi_1, qoi_2) — (Gamma_n, Gamma_c) for HW2D; (energy, enstrophy) for KS.
+        (qoi_1, qoi_2) — (Gamma_n, Gamma_c) for HW2D;
+        (energy, enstrophy) for KS/NS.
     """
     if pde == "ks":
         from shared.physics import compute_ks_qoi_from_state_vector
         dx = ks_L / ks_N
         return compute_ks_qoi_from_state_vector(Q, ks_N, dx)
+    elif pde == "ns":
+        from shared.physics import compute_ns_qoi_from_state_vector
+        return compute_ns_qoi_from_state_vector(Q, n_y, n_x, ns_Lx, ns_Ly)
     else:
         return compute_gamma_from_state(Q, n_fields, n_y, n_x, k0, c1)
 

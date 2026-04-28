@@ -1,0 +1,6 @@
+source_run: 20260318_132154_opinf_ks_temporal_split
+source_path: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/20260318_132154_opinf_ks_temporal_split
+method: opinf
+pde: ks
+files_copied: 13
+total_size_mb: 3.9

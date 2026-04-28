@@ -48,6 +48,9 @@ def load_trajectory(file_path: str, cfg, logger) -> tuple:
     if pde == "ks":
         return _load_trajectory_ks(file_path, cfg, logger)
     
+    if pde == "ns":
+        return _load_trajectory_ns(file_path, cfg, logger)
+    
     fh = loader(file_path, engine=cfg.engine)
     
     # Load fields
@@ -107,9 +110,33 @@ def _load_trajectory_ks(file_path: str, cfg, logger) -> tuple:
     return Q, 1, N
 
 
-# =============================================================================
-# POD COMPUTATION
-# =============================================================================
+def _load_trajectory_ns(file_path: str, cfg, logger) -> tuple:
+    """
+    Load a 2D NS trajectory.
+    
+    State vector is [omega_flat], shape (ny*nx, n_time).
+    Returns n_y, n_x from the HDF5 file.
+    """
+    import h5py
+    with h5py.File(file_path, 'r') as f:
+        omega = np.array(f['omega'][:])  # (n_time, ny, nx)
+    
+    n_time_orig, ny, nx = omega.shape
+    
+    # Apply truncation if enabled
+    if cfg.truncation_enabled:
+        if cfg.truncation_method == "time":
+            n_time = int(cfg.truncation_time / cfg.dt)
+        else:
+            n_time = cfg.truncation_snapshots
+        n_time = min(n_time, n_time_orig)
+        omega = omega[:n_time]
+    
+    n_time = omega.shape[0]
+    logger.info(f"    NS Shape: ({n_time}, {ny}, {nx})")
+    
+    Q = omega.reshape(n_time, -1).T  # (ny*nx, n_time)
+    return Q, ny, nx
 
 def compute_pod_basis(Q: np.ndarray, r: int, logger) -> tuple:
     """

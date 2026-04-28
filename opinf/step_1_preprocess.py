@@ -104,7 +104,11 @@ def main():
         # =====================================================================
         if cfg.centering_enabled:
             Q_train_centered, train_mean = center_data_distributed(Q_train_local, comm, rank, logger)
-            Q_test_centered, test_mean = center_data_distributed(Q_test_local, comm, rank, logger)
+            # Center test data using TRAINING mean for coordinate consistency
+            Q_test_centered = Q_test_local - train_mean[:, np.newaxis]
+            test_mean = train_mean
+            if rank == 0:
+                logger.info("  Test data centered using training temporal mean")
         else:
             Q_train_centered, Q_test_centered = Q_train_local, Q_test_local
             train_mean = test_mean = np.zeros(n_local)
@@ -176,6 +180,9 @@ def main():
                 Q_train_centered, comm, rank, size, logger, cfg.target_energy
             )
             r_actual = min(cfg.r, r_energy)
+            # When validation rank sweep is enabled, keep full r_max for step 2 to sweep
+            if len(getattr(cfg, 'r_candidates', [])) > 0:
+                r_actual = cfg.r
             selected_modes = np.arange(r_actual)  # Linear POD uses first r modes
             
             if rank == 0:

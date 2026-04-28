@@ -97,7 +97,8 @@ def plot_pod_energy(eigs, r, output_dir, logger, filename="pod_energy.png"):
 def plot_gamma_timeseries(pred_n: np.ndarray, pred_c: np.ndarray,
                           ref_n: np.ndarray, ref_c: np.ndarray,
                           dt: float, output_path: str, logger,
-                          title_prefix: str = "", method_name: str = "ROM"):
+                          title_prefix: str = "", method_name: str = "ROM",
+                          t_start: float = 0.0):
     """
     Generate a Gamma comparison plot (reference vs prediction).
     
@@ -130,7 +131,7 @@ def plot_gamma_timeseries(pred_n: np.ndarray, pred_c: np.ndarray,
         return
     
     n_steps = len(ref_n)
-    t = np.arange(n_steps) * dt
+    t = t_start + np.arange(n_steps) * dt
     
     # Check if ensemble (2D) or single prediction (1D)
     is_ensemble = pred_n.ndim == 2
@@ -367,6 +368,7 @@ def plot_state_error_timeseries(
     n_x: Optional[int] = None,
     title_prefix: str = "",
     method_name: str = "ROM",
+    t_start: float = 0.0,
 ):
     """
     Plot relative L2 error of state predictions over time.
@@ -401,7 +403,7 @@ def plot_state_error_timeseries(
         return
     
     n_spatial, n_time = pred_states.shape
-    t = np.arange(n_time) * dt
+    t = t_start + np.arange(n_time) * dt
     
     # Compute relative L2 error at each timestep
     diff = pred_states - ref_states
@@ -476,6 +478,7 @@ def plot_state_snapshots(
     n_snapshots: int = 5,
     title_prefix: str = "",
     method_name: str = "ROM",
+    t_start: float = 0.0,
 ):
     """
     Plot 2D field comparisons at selected timesteps.
@@ -533,7 +536,7 @@ def plot_state_snapshots(
         axes = axes[np.newaxis, :]
     
     for row, idx in enumerate(snapshot_indices):
-        t_val = idx * dt
+        t_val = t_start + idx * dt
         
         # Extract and reshape fields
         ref_n = ref_states[:spatial_per_field, idx].reshape(n_y, n_x)
@@ -688,6 +691,7 @@ def generate_state_diagnostic_plots(
     
     os.makedirs(output_dir, exist_ok=True)
     n_traj = len(boundaries) - 1
+    t_start_val = ref_offset * dt
     
     logger.info(f"Generating state diagnostic plots for {n_traj} {prefix.strip('_') or 'trajectory'}(ies)...")
     logger.info(f"  Using {reduction_method} reconstruction")
@@ -705,9 +709,20 @@ def generate_state_diagnostic_plots(
         
         n_steps = boundaries[i + 1] - boundaries[i]
         
+        # Use actual prediction length (may be shorter than boundary span)
+        actual_n = min(X_hat.shape[0], X_hat.shape[1])  # the time dimension
+        time_dim = X_hat.shape[0] if X_hat.shape[0] > X_hat.shape[1] else X_hat.shape[1]
+        if time_dim < n_steps:
+            n_steps = time_dim
+        
         # Load reference states (PDE-specific)
         if pde == "ks":
             ref_Q, ref_N = load_ks_reference_states(
+                ref_files[i], n_steps, ref_offset
+            )
+        elif pde == "ns":
+            from shared.data_io import load_ns_reference_states
+            ref_Q, ref_ny, ref_nx = load_ns_reference_states(
                 ref_files[i], n_steps, ref_offset
             )
         else:
@@ -738,7 +753,8 @@ def generate_state_diagnostic_plots(
                     output_path=error_path,
                     logger=logger,
                     title_prefix=title_prefix,
-                    method_name=method_name
+                    method_name=method_name,
+                    t_start=t_start_val,
                 )
             else:
                 plot_state_error_timeseries(
@@ -750,7 +766,8 @@ def generate_state_diagnostic_plots(
                     n_y=n_y,
                     n_x=n_x,
                     title_prefix=title_prefix,
-                    method_name=method_name
+                    method_name=method_name,
+                    t_start=t_start_val,
                 )
         
         # Snapshot comparisons
@@ -768,7 +785,24 @@ def generate_state_diagnostic_plots(
                     logger=logger,
                     n_snapshots=n_snapshots,
                     title_prefix=title_prefix,
-                    method_name=method_name
+                    method_name=method_name,
+                    t_start=t_start_val,
+                )
+            elif pde == "ns":
+                # Reshape flattened states to (n_time, ny, nx) for NS plotting
+                n_t = pred_Q.shape[1]
+                pred_omega_3d = pred_Q.T.reshape(n_t, n_y, n_x)
+                ref_omega_3d = ref_Q.T.reshape(n_t, n_y, n_x)
+                times = t_start_val + np.arange(n_t) * dt
+                plot_ns_vorticity_snapshots(
+                    pred_omega=pred_omega_3d,
+                    ref_omega=ref_omega_3d,
+                    times=times,
+                    output_path=snapshot_path,
+                    logger=logger,
+                    n_snapshots=n_snapshots,
+                    title_prefix=title_prefix,
+                    method_name=method_name,
                 )
             else:
                 plot_state_snapshots(
@@ -781,7 +815,8 @@ def generate_state_diagnostic_plots(
                     logger=logger,
                     n_snapshots=n_snapshots,
                     title_prefix=title_prefix,
-                    method_name=method_name
+                    method_name=method_name,
+                    t_start=t_start_val,
                 )
     
     logger.info(f"State diagnostic plots saved to {output_dir}")
@@ -805,6 +840,7 @@ def plot_qoi_timeseries(
     symbol_2: str = r"$P$",
     title_prefix: str = "",
     method_name: str = "ROM",
+    t_start: float = 0.0,
 ):
     """
     Generate a generic QoI comparison plot (reference vs prediction).
@@ -838,7 +874,7 @@ def plot_qoi_timeseries(
         return
 
     n_steps = len(ref_1)
-    t = np.arange(n_steps) * dt
+    t = t_start + np.arange(n_steps) * dt
 
     is_ensemble = pred_1.ndim == 2
 
@@ -909,6 +945,7 @@ def plot_ks_state_snapshots(
     n_snapshots: int = 5,
     title_prefix: str = "",
     method_name: str = "ROM",
+    t_start: float = 0.0,
 ):
     """
     Plot 1D KS field comparisons at selected timesteps.
@@ -948,7 +985,7 @@ def plot_ks_state_snapshots(
 
     n_spatial, n_time = pred_states.shape
     L = N * dx
-    t_max = n_time * dt
+    t_max = t_start + n_time * dt
     x = np.linspace(0, L, N, endpoint=False)
 
     if snapshot_indices is None:
@@ -964,19 +1001,20 @@ def plot_ks_state_snapshots(
     vmax = max(ref_states.max(), pred_states.max())
 
     # Top row: space-time heatmaps
-    extent = (0, t_max, 0, L)
+    extent = (t_start, t_max, 0, L)
 
     im0 = axes[0, 0].imshow(ref_states, cmap='RdBu', aspect='auto', origin='lower',
-                              extent=extent, vmin=vmin, vmax=vmax)
+                              extent=extent, vmin=vmin, vmax=vmax, interpolation='nearest')
     axes[0, 0].set_title('Reference u(x,t)')
     axes[0, 0].set_ylabel('x')
 
     im1 = axes[0, 1].imshow(pred_states, cmap='RdBu', aspect='auto', origin='lower',
-                              extent=extent, vmin=vmin, vmax=vmax)
+                              extent=extent, vmin=vmin, vmax=vmax, interpolation='nearest')
     axes[0, 1].set_title(f'{method_name} u(x,t)')
 
     err = np.abs(pred_states - ref_states)
-    im2 = axes[0, 2].imshow(err, cmap='hot', aspect='auto', origin='lower', extent=extent)
+    im2 = axes[0, 2].imshow(err, cmap='hot', aspect='auto', origin='lower', extent=extent,
+                              interpolation='nearest')
     axes[0, 2].set_title('|Error|')
     fig.colorbar(im2, ax=axes[0, 2], fraction=0.046, pad=0.04)
 
@@ -985,7 +1023,7 @@ def plot_ks_state_snapshots(
 
     # Line plots at selected timesteps
     for row, idx in enumerate(snapshot_indices, start=1):
-        t_val = idx * dt
+        t_val = t_start + idx * dt
         ref_line = ref_states[:, idx]
         pred_line = pred_states[:, idx]
 
@@ -1022,6 +1060,7 @@ def plot_ks_state_error_timeseries(
     logger,
     title_prefix: str = "",
     method_name: str = "ROM",
+    t_start: float = 0.0,
 ):
     """
     Plot relative L2 error of KS state predictions over time.
@@ -1048,7 +1087,7 @@ def plot_ks_state_error_timeseries(
         return
 
     n_spatial, n_time = pred_states.shape
-    t = np.arange(n_time) * dt
+    t = t_start + np.arange(n_time) * dt
 
     diff = pred_states - ref_states
     ref_norms = np.linalg.norm(ref_states, axis=0)
@@ -1296,3 +1335,646 @@ def plot_ks_full_trajectory_qoi(
     plt.close(fig)
 
     logger.info(f"  Saved KS full trajectory QoI plot to {output_path}")
+
+
+# =============================================================================
+# KS PHYSICS-PRESERVATION CROSS-METHOD PLOTS
+# =============================================================================
+
+def plot_ks_cross_method_psd(
+    methods: list,
+    ref_u: np.ndarray,
+    grid: dict,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Log-log power spectral density comparison across methods.
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    grid : dict
+        KS grid parameters (``dx``, ``N``).
+    output_path : str
+        Full path for saved figure.
+    logger : logging.Logger
+    color_ref : str
+        Colour for reference line.
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_psd
+
+    k_ref, psd_ref = compute_ks_psd(ref_u, grid["dx"])
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.loglog(k_ref[1:], psd_ref[1:], color=color_ref, linewidth=1.5,
+              label="Reference DNS")
+
+    for m in methods:
+        k, psd = compute_ks_psd(m["u_test"], grid["dx"])
+        ax.loglog(k[1:], psd[1:], color=m["color"], linewidth=1.2,
+                  label=m["name"], alpha=0.85)
+
+    ax.set_xlabel(r"Wavenumber $k$")
+    ax.set_ylabel(r"Power Spectral Density $|\hat{u}|^2$")
+    ax.set_title("Time-Averaged Spatial Power Spectrum — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=9)
+    ax.grid(True, which="both", alpha=0.2)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_pdf(
+    methods: list,
+    ref_u: np.ndarray,
+    output_path: str,
+    logger,
+    n_bins: int = 100,
+    color_ref: str = "black",
+):
+    """
+    Overlaid probability density functions of u(x,t).
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    output_path : str
+    logger : logging.Logger
+    n_bins : int
+        Number of histogram bins.
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_field_pdf
+
+    centres_ref, density_ref = compute_ks_field_pdf(ref_u, n_bins)
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.plot(centres_ref, density_ref, color=color_ref, linewidth=1.5,
+            label="Reference DNS")
+
+    for m in methods:
+        centres, density = compute_ks_field_pdf(m["u_test"], n_bins)
+        ax.plot(centres, density, color=m["color"], linewidth=1.2,
+                label=m["name"], alpha=0.85)
+
+    ax.set_xlabel(r"$u$")
+    ax.set_ylabel("Probability Density")
+    ax.set_title("Field Value Distribution — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=9)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_autocorrelation(
+    methods: list,
+    ref_u: np.ndarray,
+    grid: dict,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Spatial autocorrelation C(Δx) comparison.
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    grid : dict
+        KS grid parameters.
+    output_path : str
+    logger : logging.Logger
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_spatial_autocorrelation
+
+    lags_ref, C_ref = compute_ks_spatial_autocorrelation(ref_u, grid["dx"])
+    half = len(C_ref) // 2
+
+    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+    ax.plot(lags_ref[:half], C_ref[:half], color=color_ref, linewidth=1.5,
+            label="Reference DNS")
+
+    for m in methods:
+        lags, C = compute_ks_spatial_autocorrelation(m["u_test"], grid["dx"])
+        ax.plot(lags[:half], C[:half], color=m["color"], linewidth=1.2,
+                label=m["name"], alpha=0.85)
+
+    ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel(r"Spatial Lag $\Delta x$")
+    ax.set_ylabel(r"Autocorrelation $C(\Delta x)$")
+    ax.set_title("Spatial Autocorrelation — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=9)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_energy_rate(
+    methods: list,
+    ref_u: np.ndarray,
+    grid: dict,
+    dt: float,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Energy rate balance dE/dt comparison (finite-difference vs PDE terms).
+
+    Top panel: dE/dt timeseries for each method.
+    Bottom panel: energy budget residual (how far the method violates the
+    KS energy equation).
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    grid : dict
+        KS grid parameters.
+    dt : float
+        Time step.
+    output_path : str
+    logger : logging.Logger
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_energy_rate
+
+    ref_rates = compute_ks_energy_rate(ref_u, grid["dx"], dt)
+    n_inner = len(ref_rates["dEdt_fd"])
+    t = np.arange(n_inner) * dt
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
+
+    # --- dE/dt comparison ---
+    ax = axes[0]
+    ax.plot(t, ref_rates["dEdt_fd"], color=color_ref, linewidth=1.0,
+            label="Reference (FD)", alpha=0.8)
+    ax.plot(t, ref_rates["dEdt_pde"][1:-1], color=color_ref, linewidth=1.0,
+            linestyle="--", label="Reference (PDE)", alpha=0.6)
+
+    for m in methods:
+        rates = compute_ks_energy_rate(m["u_test"], grid["dx"], dt)
+        n_m = len(rates["dEdt_fd"])
+        t_m = np.arange(n_m) * dt
+        ax.plot(t_m, rates["dEdt_fd"], color=m["color"], linewidth=1.0,
+                label=f"{m['name']} (FD)", alpha=0.85)
+
+    ax.set_ylabel(r"$dE/dt$")
+    ax.set_title("Energy Rate — KS (Test Region)")
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
+
+    # --- Residual (energy budget violation) ---
+    ax = axes[1]
+    ax.plot(t, ref_rates["residual"], color=color_ref, linewidth=1.0,
+            label="Reference", alpha=0.8)
+
+    for m in methods:
+        rates = compute_ks_energy_rate(m["u_test"], grid["dx"], dt)
+        n_m = len(rates["residual"])
+        t_m = np.arange(n_m) * dt
+        ax.plot(t_m, rates["residual"], color=m["color"], linewidth=1.0,
+                label=m["name"], alpha=0.85)
+
+    ax.axhline(0, color="gray", linestyle="--", linewidth=0.8, alpha=0.5)
+    ax.set_xlabel("Test Time")
+    ax.set_ylabel("Energy Budget Residual")
+    ax.legend(loc="upper right", fontsize=9)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ks_cross_method_moments(
+    methods: list,
+    ref_u: np.ndarray,
+    dt: float,
+    output_path: str,
+    logger,
+    color_ref: str = "black",
+):
+    """
+    Four-panel plot of spatial statistical moments vs time.
+
+    Panels: mean, variance, skewness, excess kurtosis.
+
+    Parameters
+    ----------
+    methods : list[dict]
+        Method dicts with keys ``name``, ``color``, ``u_test``.
+    ref_u : np.ndarray, shape (n_time, N)
+        Reference field (test region).
+    dt : float
+        Time step.
+    output_path : str
+    logger : logging.Logger
+    color_ref : str
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    from shared.physics import compute_ks_statistical_moments
+
+    ref_moments = compute_ks_statistical_moments(ref_u)
+    n_time = ref_u.shape[0]
+    t = np.arange(n_time) * dt
+
+    labels = ["Mean", "Variance", "Skewness", "Excess Kurtosis"]
+    keys = ["mean", "variance", "skewness", "kurtosis"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True)
+    axes = axes.ravel()
+
+    for i, (key, label) in enumerate(zip(keys, labels)):
+        ax = axes[i]
+        ax.plot(t, ref_moments[key], color=color_ref, linewidth=1.2,
+                label="Reference DNS")
+
+        for m in methods:
+            mom = compute_ks_statistical_moments(m["u_test"])
+            n_m = len(mom[key])
+            t_m = np.arange(n_m) * dt
+            ax.plot(t_m, mom[key], color=m["color"], linewidth=1.0,
+                    label=m["name"], alpha=0.85)
+
+        ax.set_ylabel(label)
+        if i >= 2:
+            ax.set_xlabel("Test Time")
+        ax.legend(loc="upper right", fontsize=8)
+
+    fig.suptitle("Spatial Statistical Moments — KS (Test Region)", fontsize=14)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+# =============================================================================
+# 2D NAVIER-STOKES PLOTTING
+# =============================================================================
+
+def plot_ns_vorticity_snapshots(
+    pred_omega: np.ndarray,
+    ref_omega: np.ndarray,
+    times: np.ndarray,
+    output_path: str,
+    logger,
+    n_snapshots: int = 4,
+    title_prefix: str = "",
+    method_name: str = "ROM",
+    vmin: float = None,
+    vmax: float = None,
+):
+    """
+    Plot vorticity field comparison: reference vs prediction vs error.
+
+    Creates a 3-row × n_snapshots grid showing reference, predicted,
+    and absolute error fields at selected timesteps.
+
+    Parameters
+    ----------
+    pred_omega : np.ndarray, shape (n_time, ny, nx)
+        Predicted vorticity fields.
+    ref_omega : np.ndarray, shape (n_time, ny, nx)
+        Reference vorticity fields.
+    times : np.ndarray, shape (n_time,)
+        Time values for labelling.
+    output_path : str
+        Output file path.
+    logger
+        Logger instance.
+    n_snapshots : int
+        Number of time snapshots to show.
+    title_prefix : str
+        Prefix for the figure title.
+    method_name : str
+        Name of the ROM method.
+    vmin, vmax : float, optional
+        Colorbar limits (auto-determined if None).
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    n_time = min(pred_omega.shape[0], ref_omega.shape[0])
+    indices = np.linspace(0, n_time - 1, n_snapshots, dtype=int)
+
+    if vmin is None:
+        vmin = min(ref_omega[indices].min(), pred_omega[indices].min())
+    if vmax is None:
+        vmax = max(ref_omega[indices].max(), pred_omega[indices].max())
+    vlim = max(abs(vmin), abs(vmax))
+
+    fig, axes = plt.subplots(3, n_snapshots, figsize=(4 * n_snapshots, 10))
+
+    for j, idx in enumerate(indices):
+        t_val = times[idx] if idx < len(times) else idx
+
+        # Reference
+        im = axes[0, j].imshow(
+            ref_omega[idx], cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+            origin="lower", aspect="equal",
+        )
+        axes[0, j].set_title(f"t = {t_val:.2f}", fontsize=10)
+        if j == 0:
+            axes[0, j].set_ylabel("Reference", fontsize=11)
+        axes[0, j].set_xticks([])
+        axes[0, j].set_yticks([])
+
+        # Prediction
+        axes[1, j].imshow(
+            pred_omega[idx], cmap="RdBu_r", vmin=-vlim, vmax=vlim,
+            origin="lower", aspect="equal",
+        )
+        if j == 0:
+            axes[1, j].set_ylabel(method_name, fontsize=11)
+        axes[1, j].set_xticks([])
+        axes[1, j].set_yticks([])
+
+        # Error
+        error = np.abs(pred_omega[idx] - ref_omega[idx])
+        err_max = error.max()
+        axes[2, j].imshow(
+            error, cmap="hot", vmin=0, vmax=err_max,
+            origin="lower", aspect="equal",
+        )
+        if j == 0:
+            axes[2, j].set_ylabel("|Error|", fontsize=11)
+        axes[2, j].set_xticks([])
+        axes[2, j].set_yticks([])
+
+    title = f"{title_prefix}Vorticity: Reference vs {method_name}" if title_prefix else \
+            f"Vorticity: Reference vs {method_name}"
+    fig.suptitle(title, fontsize=14, y=1.02)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    fig.tight_layout(rect=[0, 0, 0.92, 1.0])
+
+    # Shared colorbar for vorticity (rows 0-1) placed to the right
+    cbar_ax = fig.add_axes([0.93, 0.36, 0.015, 0.58])
+    fig.colorbar(im, cax=cbar_ax, label=r"$\omega$")
+
+    plt.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ns_energy_spectrum(
+    pred_omega: np.ndarray,
+    ref_omega: np.ndarray,
+    Lx: float,
+    output_path: str,
+    logger,
+    method_name: str = "ROM",
+    Ly: float = None,
+):
+    """
+    Plot time-averaged kinetic energy spectrum E(k) for reference and prediction.
+
+    Parameters
+    ----------
+    pred_omega : np.ndarray, shape (n_time, ny, nx)
+        Predicted vorticity fields.
+    ref_omega : np.ndarray, shape (n_time, ny, nx)
+        Reference vorticity fields.
+    Lx : float
+        Domain length in x.
+    output_path : str
+        Output file path.
+    logger
+        Logger instance.
+    method_name : str
+        Name of the ROM method.
+    Ly : float, optional
+        Domain length in y (defaults to Lx).
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    from shared.physics import compute_ns_energy_spectrum as _compute_spectrum
+
+    k_ref, E_ref = _compute_spectrum(ref_omega, Lx, Ly)
+    k_pred, E_pred = _compute_spectrum(pred_omega, Lx, Ly)
+
+    fig, ax = plt.subplots(1, 1, figsize=(7, 5))
+    ax.loglog(k_ref, E_ref, 'k-', linewidth=1.5, label="Reference DNS")
+    ax.loglog(k_pred, E_pred, 'r--', linewidth=1.2, label=method_name, alpha=0.85)
+
+    # -3 slope reference line (2D enstrophy cascade)
+    k_ref_range = k_ref[(k_ref > 2) & (k_ref < k_ref.max() / 2)]
+    if len(k_ref_range) > 0:
+        E_ref_mid = E_ref[np.argmin(np.abs(k_ref - k_ref_range[0]))]
+        slope_line = E_ref_mid * (k_ref_range / k_ref_range[0]) ** (-3)
+        ax.loglog(k_ref_range, slope_line, 'b:', linewidth=1.0,
+                  alpha=0.5, label=r"$k^{-3}$")
+
+    ax.set_xlabel(r"Wavenumber $k$")
+    ax.set_ylabel(r"$E(k)$")
+    ax.set_title("Kinetic Energy Spectrum")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ns_full_trajectory_reconstruction(
+    pred_omega: np.ndarray,
+    ref_omega: np.ndarray,
+    dt: float,
+    output_path: str,
+    logger,
+    method_name: str = "ROM",
+    Lx: float = 2 * np.pi,
+):
+    """
+    Space-time vorticity comparison using a 1D slice through the domain.
+
+    Shows reference, prediction, and error as space-time heat maps
+    taken along the y = ny//2 horizontal centreline.
+
+    Parameters
+    ----------
+    pred_omega : np.ndarray, shape (n_time, ny, nx)
+        Predicted vorticity.
+    ref_omega : np.ndarray, shape (n_time, ny, nx)
+        Reference vorticity.
+    dt : float
+        Time step between saved snapshots.
+    output_path : str
+        Output file path.
+    logger
+        Logger instance.
+    method_name : str
+        Name of the ROM method.
+    Lx : float
+        Domain length.
+    """
+    if not HAS_MATPLOTLIB:
+        return
+
+    n_time = min(pred_omega.shape[0], ref_omega.shape[0])
+    ny, nx_grid = ref_omega.shape[1], ref_omega.shape[2]
+    mid_y = ny // 2
+
+    ref_slice = ref_omega[:n_time, mid_y, :]    # (n_time, nx)
+    pred_slice = pred_omega[:n_time, mid_y, :]
+    err_slice = np.abs(pred_slice - ref_slice)
+
+    t_vals = np.arange(n_time) * dt
+    x_vals = np.linspace(0, Lx, nx_grid, endpoint=False)
+
+    vlim = max(np.abs(ref_slice).max(), np.abs(pred_slice).max())
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5), sharey=True)
+
+    for ax, data, title, cmap, v_lo, v_hi in [
+        (axes[0], ref_slice.T, "Reference DNS", "RdBu_r", -vlim, vlim),
+        (axes[1], pred_slice.T, method_name, "RdBu_r", -vlim, vlim),
+        (axes[2], err_slice.T, "|Error|", "hot", 0, err_slice.max()),
+    ]:
+        im = ax.pcolormesh(t_vals, x_vals, data, cmap=cmap, vmin=v_lo, vmax=v_hi,
+                           shading="auto")
+        ax.set_title(title, fontsize=12)
+        ax.set_xlabel("Time")
+        fig.colorbar(im, ax=ax)
+
+    axes[0].set_ylabel("x")
+    fig.suptitle(f"Vorticity (y = L/2 slice): {method_name}", fontsize=14)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150)
+    plt.close(fig)
+    logger.info(f"  Saved {output_path}")
+
+
+def plot_ns_full_trajectory_state_error(
+    pred_omega: np.ndarray,
+    ref_omega: np.ndarray,
+    dt: float,
+    train_n_steps: int,
+    output_path: str,
+    logger,
+    method_name: str = "ROM",
+    t_start: float = 0.0,
+):
+    """
+    Relative L2 state error vs time over the full (train+test) trajectory.
+
+    Single-panel semilogy plot of ||pred - ref||_2 / ||ref||_2 per timestep,
+    computed over the whole vorticity field (all spatial points). A vertical
+    dashed line marks the train/test boundary.
+
+    Parameters
+    ----------
+    pred_omega : np.ndarray, shape (n_time, ny, nx) or (n_time, N)
+        Predicted vorticity for the full continuous rollout.
+    ref_omega : np.ndarray, shape (n_time, ny, nx) or (n_time, N)
+        Reference vorticity for the same span.
+    dt : float
+        Time step between snapshots.
+    train_n_steps : int
+        Number of training timesteps (used to place the boundary line).
+    output_path : str
+        Output file path.
+    logger
+        Logger instance.
+    method_name : str
+        Name of the ROM method (for title / legend).
+    t_start : float
+        Time offset of the first snapshot (absolute wall time).
+    """
+    if not HAS_MATPLOTLIB:
+        if logger is not None:
+            logger.warning("matplotlib not available, skipping NS full trajectory state error plot")
+        return
+
+    n_time = min(pred_omega.shape[0], ref_omega.shape[0])
+    pred = pred_omega[:n_time].reshape(n_time, -1)
+    ref = ref_omega[:n_time].reshape(n_time, -1)
+
+    diff = pred - ref
+    ref_norms = np.linalg.norm(ref, axis=1)
+    ref_norms = np.where(ref_norms < 1e-12, 1e-12, ref_norms)
+    l2_error = np.linalg.norm(diff, axis=1) / ref_norms
+
+    t = t_start + np.arange(n_time) * dt
+    t_boundary = t_start + train_n_steps * dt
+
+    fig, ax = plt.subplots(1, 1, figsize=(12, 4))
+    ax.semilogy(t, l2_error, 'b-', linewidth=1.2, label=method_name)
+    ax.axvline(t_boundary, color='k', linestyle='--', linewidth=1.2,
+               label='train/test boundary')
+    ax.set_xlabel('Time', fontsize=12)
+    ax.set_ylabel('Relative L2 Error', fontsize=12)
+    ax.set_title(f'NS Full Trajectory State Error: {method_name}', fontsize=14)
+    ax.legend(loc='lower right')
+    ax.grid(True, alpha=0.3)
+
+    if train_n_steps < n_time:
+        train_mean = float(np.mean(l2_error[:train_n_steps])) if train_n_steps > 0 else float('nan')
+        test_mean = float(np.mean(l2_error[train_n_steps:]))
+        ax.text(
+            0.02, 0.95,
+            f'Train mean: {train_mean:.2e}\nTest mean:  {test_mean:.2e}',
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+        )
+    else:
+        mean_err = float(np.mean(l2_error))
+        ax.text(
+            0.02, 0.95, f'Mean: {mean_err:.2e}',
+            transform=ax.transAxes, fontsize=10, verticalalignment='top',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5),
+        )
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    if logger is not None:
+        logger.info(f"  Saved NS full trajectory state error plot to {output_path}")

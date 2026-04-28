@@ -1,0 +1,6 @@
+source_run: 20260318_130434_dmd_ks_temporal_split
+source_path: /home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/20260318_130434_dmd_ks_temporal_split
+method: dmd
+pde: ks
+files_copied: 16
+total_size_mb: 4.0

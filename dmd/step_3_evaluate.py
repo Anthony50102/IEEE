@@ -110,7 +110,9 @@ def compute_amplitudes_from_ic(x0: np.ndarray, modes_reduced: np.ndarray) -> np.
 
 def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: dict, 
                         k0: float, c1: float, use_learned_output: bool = False,
-                        pde: str = "hw2d", ks_L: float = 100.0, ks_N: int = 200) -> dict:
+                        pde: str = "hw2d", ks_L: float = 100.0, ks_N: int = 200,
+                        ns_Lx: float = None, ns_Ly: float = None,
+                        use_trained_amplitudes: bool = False) -> dict:
     """
     Forecast a single trajectory.
     
@@ -129,19 +131,30 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
     use_learned_output : bool
         If True, use learned C, G, c operators instead of physics-based Gamma.
     pde : str
-        PDE type: "hw2d" or "ks".
+        PDE type: "hw2d", "ks", or "ns".
     ks_L : float
         KS domain length.
     ks_N : int
         KS number of spatial points.
+    ns_Lx, ns_Ly : float
+        NS domain lengths.
+    use_trained_amplitudes : bool
+        If True, use the BOPDMD-optimized amplitudes stored in model['amplitudes']
+        instead of recomputing from the IC. This should be used when forecasting
+        from the training IC, since BOPDMD jointly optimizes eigenvalues and
+        amplitudes — recomputing amplitudes via least-squares can produce
+        wildly different (and worse) results.
     """
     r = model['dmd_rank']
     
     # x0 is in reduced space, truncate to DMD rank
     x0_r = x0[:r]
     
-    # Compute amplitudes for this IC
-    amplitudes = compute_amplitudes_from_ic(x0_r, model['modes_reduced'])
+    # Use BOPDMD-trained amplitudes when available and requested
+    if use_trained_amplitudes and 'amplitudes' in model:
+        amplitudes = model['amplitudes']
+    else:
+        amplitudes = compute_amplitudes_from_ic(x0_r, model['modes_reduced'])
     
     # Time vector
     t = np.arange(n_steps) * model['dt']
@@ -166,10 +179,11 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
         U_r_truncated = pod_basis['U_r'][:, :r]
         Q_full = reconstruct_full_state(X_hat, U_r_truncated, mean_data)
         
-        n_fields = 1 if pde == "ks" else 2
+        n_fields = 1 if pde in ("ks", "ns") else 2
         qoi_1, qoi_2 = compute_qoi_from_state(
             Q_full, pde, n_fields, pod_basis['n_y'], pod_basis['n_x'],
             k0=k0, c1=c1, ks_L=ks_L, ks_N=ks_N,
+            ns_Lx=ns_Lx, ns_Ly=ns_Ly,
         )
         result['Gamma_n'] = qoi_1
         result['Gamma_c'] = qoi_2
@@ -180,7 +194,10 @@ def forecast_trajectory(model: dict, x0: np.ndarray, n_steps: int, pod_basis: di
 def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
                       pod_basis, k0: float, c1: float, logger, name: str,
                       use_learned_output: bool = False,
-                      pde: str = "hw2d", ks_L: float = 100.0, ks_N: int = 200) -> dict:
+                      pde: str = "hw2d", ks_L: float = 100.0, ks_N: int = 200,
+                      ns_Lx: float = None, ns_Ly: float = None,
+                      max_steps: int = None,
+                      use_trained_amplitudes: bool = False) -> dict:
     """Compute forecasts for all trajectories."""
     n_traj = len(boundaries) - 1
     forecasts = {'X_hat': [], 'Gamma_n': [], 'Gamma_c': [], 'is_nan': []}
@@ -199,14 +216,22 @@ def compute_forecasts(model: dict, ICs: np.ndarray, boundaries: np.ndarray,
     logger.info(f"Computing {n_traj} {name} forecast(s)...")
     if use_learned_output:
         logger.info("  Using learned output model for Gamma")
+    if use_trained_amplitudes:
+        logger.info("  Using BOPDMD-trained amplitudes")
     
     for i in range(n_traj):
         n_steps = boundaries[i + 1] - boundaries[i]
+        if max_steps is not None and max_steps < n_steps:
+            n_steps = max_steps
         x0 = ICs[i, :]
         
+        # Only use trained amplitudes for trajectory 0 (which matches the training data)
+        use_ta = use_trained_amplitudes and (i == 0)
         result = forecast_trajectory(model, x0, n_steps, pod_basis, k0, c1,
                                       use_learned_output=use_learned_output,
-                                      pde=pde, ks_L=ks_L, ks_N=ks_N)
+                                      pde=pde, ks_L=ks_L, ks_N=ks_N,
+                                      ns_Lx=ns_Lx, ns_Ly=ns_Ly,
+                                      use_trained_amplitudes=use_ta)
         
         forecasts['is_nan'].append(result['is_nan'])
         if result['is_nan']:
@@ -243,11 +268,12 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
     logger.info(f"Computing {name} metrics...")
     
     # Use generic labels internally
-    label_1 = "Energy" if pde == "ks" else "Gamma_n"
-    label_2 = "Enstrophy" if pde == "ks" else "Gamma_c"
+    label_1 = "Energy" if pde in ("ks", "ns") else "Gamma_n"
+    label_2 = "Enstrophy" if pde in ("ks", "ns") else "Gamma_c"
     
     metrics = {'trajectories': [], 'summary': {}}
     all_errs = {'mean_n': [], 'std_n': [], 'mean_c': [], 'std_c': []}
+    all_mse = {'n': [], 'c': []}
     
     n_traj = len(boundaries) - 1
     
@@ -256,9 +282,14 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             metrics['trajectories'].append({'valid': False})
             continue
         
-        # Load reference
+        # Load reference — use actual prediction length
         n_steps = boundaries[i + 1] - boundaries[i]
-        if pde == "ks":
+        pred_n = forecasts['Gamma_n'][i]
+        pred_c = forecasts['Gamma_c'][i]
+        actual_len = len(pred_n)
+        if actual_len < n_steps:
+            n_steps = actual_len
+        if pde in ("ks", "ns"):
             import h5py
             with h5py.File(ref_files[i], 'r') as fh:
                 ref_n = np.array(fh['energy'][ref_offset:ref_offset + n_steps])
@@ -268,8 +299,8 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
             ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
         
-        pred_n = forecasts['Gamma_n'][i]
-        pred_c = forecasts['Gamma_c'][i]
+        pred_n = pred_n[:n_steps]
+        pred_c = pred_c[:n_steps]
         
         # Stats and errors
         ref_mean_n, ref_std_n = np.mean(ref_n), np.std(ref_n, ddof=1)
@@ -282,10 +313,18 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
         err_mean_c = np.abs(ref_mean_c - pred_mean_c) / np.abs(ref_mean_c)
         err_std_c = np.abs(ref_std_c - pred_std_c) / ref_std_c
         
+        # Pointwise MSE/RMSE
+        mse_n = float(np.mean((pred_n - ref_n) ** 2))
+        mse_c = float(np.mean((pred_c - ref_c) ** 2))
+        rmse_n = float(np.sqrt(mse_n))
+        rmse_c = float(np.sqrt(mse_c))
+        
         all_errs['mean_n'].append(err_mean_n)
         all_errs['std_n'].append(err_std_n)
         all_errs['mean_c'].append(err_mean_c)
         all_errs['std_c'].append(err_std_c)
+        all_mse['n'].append(mse_n)
+        all_mse['c'].append(mse_c)
         
         metrics['trajectories'].append({
             'valid': True,
@@ -294,6 +333,10 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             'err_std_Gamma_n': float(err_std_n),
             'err_mean_Gamma_c': float(err_mean_c),
             'err_std_Gamma_c': float(err_std_c),
+            'mse_Gamma_n': mse_n,
+            'rmse_Gamma_n': rmse_n,
+            'mse_Gamma_c': mse_c,
+            'rmse_Gamma_c': rmse_c,
         })
         
         logger.info(f"  Traj {i+1}: Γn=[{err_mean_n:.4f}, {err_std_n:.4f}], "
@@ -305,6 +348,8 @@ def compute_metrics(forecasts: dict, ref_files: list, boundaries: np.ndarray,
             'std_err_Gamma_n': float(np.mean(all_errs['std_n'])),
             'mean_err_Gamma_c': float(np.mean(all_errs['mean_c'])),
             'std_err_Gamma_c': float(np.mean(all_errs['std_c'])),
+            'mean_mse_Gamma_n': float(np.mean(all_mse['n'])),
+            'mean_mse_Gamma_c': float(np.mean(all_mse['c'])),
         }
     
     return metrics
@@ -326,14 +371,20 @@ def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarra
     """
     os.makedirs(output_dir, exist_ok=True)
     n_traj = len(boundaries) - 1
+    t_start = ref_offset * dt
     
     for i in range(n_traj):
         if forecasts['is_nan'][i] or forecasts['Gamma_n'][i] is None:
             continue
         
-        # Load reference
+        # Load reference — use actual prediction length
         n_steps = boundaries[i + 1] - boundaries[i]
-        if pde == "ks":
+        pred_n = forecasts['Gamma_n'][i]
+        pred_c = forecasts['Gamma_c'][i]
+        actual_len = len(pred_n)
+        if actual_len < n_steps:
+            n_steps = actual_len
+        if pde in ("ks", "ns"):
             import h5py
             with h5py.File(ref_files[i], 'r') as fh:
                 ref_n = np.array(fh['energy'][ref_offset:ref_offset + n_steps])
@@ -343,12 +394,11 @@ def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarra
             ref_n = fh["gamma_n"].data[ref_offset:ref_offset + n_steps]
             ref_c = fh["gamma_c"].data[ref_offset:ref_offset + n_steps]
         
-        pred_n = forecasts['Gamma_n'][i]
-        pred_c = forecasts['Gamma_c'][i]
-        
-        # Use shared plotting function — dispatch by PDE type
-        output_path = os.path.join(output_dir, f'{prefix}traj_{i+1}_gamma.png')
-        if pde == "ks":
+        pred_n = pred_n[:n_steps]
+        pred_c = pred_c[:n_steps]
+        suffix = "qoi" if pde in ("ks", "ns") else "gamma"
+        output_path = os.path.join(output_dir, f'{prefix}traj_{i+1}_{suffix}.png')
+        if pde in ("ks", "ns"):
             plot_qoi_timeseries(
                 pred_1=pred_n, pred_2=pred_c,
                 ref_1=ref_n, ref_2=ref_c,
@@ -357,6 +407,7 @@ def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarra
                 method_name="DMD",
                 label_1="Energy", label_2="Enstrophy",
                 symbol_1="E", symbol_2="P",
+                t_start=t_start,
             )
         else:
             plot_gamma_comparison(
@@ -364,7 +415,8 @@ def generate_gamma_plots(forecasts: dict, ref_files: list, boundaries: np.ndarra
                 ref_n=ref_n, ref_c=ref_c,
                 dt=dt, output_path=output_path, logger=logger,
                 title_prefix=f'{prefix.replace("_", " ").title()}Trajectory {i+1}: ',
-                method_name="DMD"
+                method_name="DMD",
+                t_start=t_start,
             )
     
     logger.info(f"Plots saved to {output_dir}")
@@ -409,15 +461,20 @@ def main():
         
         logger.info(f"  Use learned output: {use_learned_output}")
         
-        # Compute forecasts
+        # Compute forecasts (cap training at n_steps; test uses full window)
+        train_max = getattr(cfg, 'n_steps', None)
         train_pred = compute_forecasts(model, train_ICs, train_bounds, pod_basis,
                                         cfg.k0, cfg.c1, logger, "training",
                                         use_learned_output=use_learned_output,
-                                        pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N)
+                                        pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N,
+                                        ns_Lx=cfg.ns_Lx, ns_Ly=cfg.ns_Ly,
+                                        max_steps=train_max,
+                                        use_trained_amplitudes=True)
         test_pred = compute_forecasts(model, test_ICs, test_bounds, pod_basis,
                                        cfg.k0, cfg.c1, logger, "test",
                                        use_learned_output=use_learned_output,
-                                       pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N)
+                                       pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N,
+                                       ns_Lx=cfg.ns_Lx, ns_Ly=cfg.ns_Ly)
         
         # Determine reference files and offsets for metrics
         if cfg.training_mode == "temporal_split":
@@ -468,25 +525,28 @@ def main():
         
         # Generate plots
         if cfg.generate_plots:
-            figures_dir = os.path.join(args.run_dir, "figures")
-            logger.info("Generating Gamma comparison plots...")
+            from shared.evaluation_io import get_figure_dirs
+            fig_dirs = get_figure_dirs(args.run_dir)
+            logger.info("Generating QoI comparison plots...")
             
             generate_gamma_plots(
                 train_pred, train_ref_files, train_bounds,
-                cfg.engine, cfg.dt, figures_dir, logger,
+                cfg.engine, cfg.dt, fig_dirs["train"], logger,
                 prefix="train_", ref_offset=train_ref_offset,
                 pde=cfg.pde
             )
             generate_gamma_plots(
                 test_pred, test_ref_files, test_bounds,
-                cfg.engine, cfg.dt, figures_dir, logger,
+                cfg.engine, cfg.dt, fig_dirs["test"], logger,
                 prefix="test_", ref_offset=test_ref_offset,
                 pde=cfg.pde
             )
         
         # Generate state diagnostic plots (optional)
         if cfg.plot_state_error or cfg.plot_state_snapshots:
-            figures_dir = os.path.join(args.run_dir, "figures")
+            if 'fig_dirs' not in dir():
+                from shared.evaluation_io import get_figure_dirs
+                fig_dirs = get_figure_dirs(args.run_dir)
             
             # Extract POD basis info for shared function
             U_r = pod_basis['U_r'][:, :model['dmd_rank']] if pod_basis else None
@@ -494,7 +554,7 @@ def main():
             n_y = pod_basis['n_y'] if pod_basis else cfg.n_y
             n_x = pod_basis['n_x'] if pod_basis else cfg.n_x
             
-            ks_dx = cfg.ks_L / cfg.ks_N if cfg.pde == "ks" else None
+            ks_dx = cfg.ks_L / cfg.ks_N if cfg.pde in ("ks", "ns") else None
             generate_state_diagnostic_plots(
                 reduced_states=train_pred['X_hat'],
                 ref_files=train_ref_files,
@@ -503,7 +563,7 @@ def main():
                 temporal_mean=mean,
                 n_y=n_y, n_x=n_x,
                 engine=cfg.engine, dt=cfg.dt,
-                output_dir=figures_dir, logger=logger,
+                output_dir=fig_dirs["train"], logger=logger,
                 method_name="DMD",
                 prefix="train_",
                 ref_offset=train_ref_offset,
@@ -522,7 +582,7 @@ def main():
                 temporal_mean=mean,
                 n_y=n_y, n_x=n_x,
                 engine=cfg.engine, dt=cfg.dt,
-                output_dir=figures_dir, logger=logger,
+                output_dir=fig_dirs["test"], logger=logger,
                 method_name="DMD",
                 prefix="test_",
                 ref_offset=test_ref_offset,
@@ -535,10 +595,10 @@ def main():
             )
         
         # =================================================================
-        # FULL TRAJECTORY PLOTS (KS only)
+        # FULL TRAJECTORY PLOTS (KS / NS)
         # =================================================================
-        if cfg.pde == "ks" and cfg.training_mode == "temporal_split":
-            logger.info("Generating full-trajectory KS plots...")
+        if cfg.pde in ("ks", "ns") and cfg.training_mode == "temporal_split":
+            logger.info(f"Generating full-trajectory {cfg.pde.upper()} plots...")
             
             try:
                 # Load POD basis if not already loaded
@@ -555,88 +615,116 @@ def main():
                         }
                 
                 if _pod is not None and not train_pred['is_nan'][0] and not test_pred['is_nan'][0]:
-                    import h5py
+                    from shared.evaluation_io import (
+                        load_full_trajectory_reference, compute_qoi_ylims,
+                        get_figure_dirs,
+                    )
                     
                     dmd_rank = model['dmd_rank']
                     U_r = _pod['U_r'][:, :dmd_rank]
                     mean = _pod.get('mean')
                     
-                    # Reconstruct full states from reduced predictions
-                    X_hat_train = train_pred['X_hat'][0]  # (r, n_train)
-                    X_hat_test = test_pred['X_hat'][0]     # (r, n_test)
-                    
-                    X_hat_full = np.concatenate([X_hat_train, X_hat_test], axis=1)
-                    Q_full = reconstruct_full_state(X_hat_full, U_r, mean)
-                    pred_u = Q_full.T  # (n_total, N)
-                    
-                    # Load reference states
-                    n_train = train_bounds[1] - train_bounds[0]
-                    n_test = test_bounds[1] - test_bounds[0]
+                    # Load continuous reference spanning train+val+test
+                    n_test = test_pred['X_hat'][0].shape[1]
                     ref_file = train_ref_files[0]
-                    with h5py.File(ref_file, 'r') as f:
-                        ref_u_train = np.array(f['u'][train_ref_offset:train_ref_offset + n_train])
-                        ref_u_test = np.array(f['u'][test_ref_offset:test_ref_offset + n_test])
-                    ref_u = np.concatenate([ref_u_train, ref_u_test], axis=0)
+                    ref_data = load_full_trajectory_reference(
+                        ref_file, train_ref_offset, test_ref_offset, n_test,
+                        pde=cfg.pde,
+                    )
+                    n_total = ref_data['n_total']
+                    train_n_steps = ref_data['train_n_steps']
                     
-                    # Concatenate QoI arrays (DMD: no ensemble, direct 1D arrays)
-                    full_pred_energy = np.concatenate([train_pred['Gamma_n'][0], test_pred['Gamma_n'][0]])
-                    full_pred_enstrophy = np.concatenate([train_pred['Gamma_c'][0], test_pred['Gamma_c'][0]])
-                    
-                    # Load reference QoIs
-                    with h5py.File(ref_file, 'r') as f:
-                        ref_energy_train = np.array(f['energy'][train_ref_offset:train_ref_offset + n_train])
-                        ref_enstrophy_train = np.array(f['enstrophy'][train_ref_offset:train_ref_offset + n_train])
-                        ref_energy_test = np.array(f['energy'][test_ref_offset:test_ref_offset + n_test])
-                        ref_enstrophy_test = np.array(f['enstrophy'][test_ref_offset:test_ref_offset + n_test])
-                    full_ref_energy = np.concatenate([ref_energy_train, ref_energy_test])
-                    full_ref_enstrophy = np.concatenate([ref_enstrophy_train, ref_enstrophy_test])
-                    
-                    # Consistent limits from reference
-                    ref_vmin = float(ref_u.min())
-                    ref_vmax = float(ref_u.max())
-                    train_n_steps = n_train
-                    ks_dx = cfg.ks_L / cfg.ks_N
-                    t_start_val = cfg.train_start * cfg.dt
-                    
-                    energy_range = full_ref_energy.max() - full_ref_energy.min()
-                    energy_pad = 0.1 * energy_range if energy_range > 0 else 1.0
-                    enstrophy_range = full_ref_enstrophy.max() - full_ref_enstrophy.min()
-                    enstrophy_pad = 0.1 * enstrophy_range if enstrophy_range > 0 else 1.0
-                    energy_ylim = (float(full_ref_energy.min() - energy_pad),
-                                   float(full_ref_energy.max() + energy_pad))
-                    enstrophy_ylim = (float(full_ref_enstrophy.min() - enstrophy_pad),
-                                      float(full_ref_enstrophy.max() + enstrophy_pad))
-                    
-                    figures_dir = os.path.join(args.run_dir, "figures")
-                    ft_dir = os.path.join(figures_dir, "full_trajectory")
-                    os.makedirs(ft_dir, exist_ok=True)
-                    
-                    plot_ks_full_trajectory_reconstruction(
-                        pred_states=pred_u,
-                        ref_states=ref_u,
-                        dt=cfg.dt, dx=ks_dx,
-                        train_n_steps=train_n_steps,
-                        output_path=os.path.join(ft_dir, "ks_full_trajectory_reconstruction.png"),
-                        logger=logger,
-                        method_name="DMD",
-                        vmin=ref_vmin, vmax=ref_vmax,
-                        t_start=t_start_val,
+                    # Single continuous rollout from train IC for the full span
+                    train_ic = train_ICs[0]
+                    continuous_result = forecast_trajectory(
+                        model, train_ic, n_total, _pod,
+                        cfg.k0, cfg.c1,
+                        use_learned_output=use_learned_output,
+                        pde=cfg.pde, ks_L=cfg.ks_L, ks_N=cfg.ks_N,
+                        ns_Lx=cfg.ns_Lx, ns_Ly=cfg.ns_Ly,
+                        use_trained_amplitudes=True,
                     )
                     
-                    plot_ks_full_trajectory_qoi(
-                        pred_qoi_1=full_pred_energy,
-                        pred_qoi_2=full_pred_enstrophy,
-                        ref_qoi_1=full_ref_energy,
-                        ref_qoi_2=full_ref_enstrophy,
-                        dt=cfg.dt,
-                        train_n_steps=train_n_steps,
-                        output_path=os.path.join(ft_dir, "ks_full_trajectory_qoi.png"),
-                        logger=logger,
-                        method_name="DMD",
-                        ylim_1=energy_ylim,
-                        ylim_2=enstrophy_ylim,
-                        t_start=t_start_val,
-                    )
+                    if continuous_result['is_nan']:
+                        logger.warning("Continuous rollout diverged, skipping full trajectory plot")
+                    else:
+                        X_hat_full = continuous_result['X_hat']  # (r, n_total)
+                        Q_full = reconstruct_full_state(X_hat_full, U_r, mean)
+                        pred_u = Q_full.T  # (n_total, N)
+                        ref_u = ref_data['ref_state']
+                    
+                        full_pred_energy = continuous_result.get('Gamma_n')
+                        full_pred_enstrophy = continuous_result.get('Gamma_c')
+                        full_ref_energy = ref_data['ref_energy']
+                        full_ref_enstrophy = ref_data['ref_enstrophy']
+                    
+                        ref_vmin = float(ref_u.min())
+                        ref_vmax = float(ref_u.max())
+                        t_start_val = cfg.train_start * cfg.dt
+                        energy_ylim, enstrophy_ylim = compute_qoi_ylims(
+                            full_ref_energy, full_ref_enstrophy
+                        )
+                    
+                        fig_dirs_ft = get_figure_dirs(args.run_dir)
+                        ft_dir = fig_dirs_ft["full_trajectory"]
+                    
+                        if cfg.pde == "ns":
+                            from shared.plotting import (
+                                plot_ns_full_trajectory_reconstruction,
+                                plot_ns_full_trajectory_state_error,
+                            )
+                            ny_grid = _pod['n_y']
+                            nx_grid = _pod['n_x']
+                            pred_omega_3d = pred_u.reshape(-1, ny_grid, nx_grid)
+                            ref_omega_3d = ref_u.reshape(-1, ny_grid, nx_grid) if ref_u.ndim == 2 else ref_u
+                            plot_ns_full_trajectory_reconstruction(
+                                pred_omega=pred_omega_3d,
+                                ref_omega=ref_omega_3d,
+                                dt=cfg.dt,
+                                output_path=os.path.join(ft_dir, "ns_full_trajectory_reconstruction.png"),
+                                logger=logger,
+                                method_name="DMD",
+                                Lx=cfg.ns_Lx,
+                            )
+                            plot_ns_full_trajectory_state_error(
+                                pred_omega=pred_omega_3d,
+                                ref_omega=ref_omega_3d,
+                                dt=cfg.dt,
+                                train_n_steps=train_n_steps,
+                                output_path=os.path.join(ft_dir, "ns_full_trajectory_state_error.png"),
+                                logger=logger,
+                                method_name="DMD",
+                                t_start=t_start_val,
+                            )
+                        else:
+                            ks_dx = cfg.ks_L / cfg.ks_N
+                            plot_ks_full_trajectory_reconstruction(
+                                pred_states=pred_u,
+                                ref_states=ref_u,
+                                dt=cfg.dt, dx=ks_dx,
+                                train_n_steps=train_n_steps,
+                                output_path=os.path.join(ft_dir, "ks_full_trajectory_reconstruction.png"),
+                                logger=logger,
+                                method_name="DMD",
+                                vmin=ref_vmin, vmax=ref_vmax,
+                                t_start=t_start_val,
+                            )
+                    
+                        pde_label = cfg.pde
+                        plot_ks_full_trajectory_qoi(
+                            pred_qoi_1=full_pred_energy,
+                            pred_qoi_2=full_pred_enstrophy,
+                            ref_qoi_1=full_ref_energy,
+                            ref_qoi_2=full_ref_enstrophy,
+                            dt=cfg.dt,
+                            train_n_steps=train_n_steps,
+                            output_path=os.path.join(ft_dir, f"{pde_label}_full_trajectory_qoi.png"),
+                            logger=logger,
+                            method_name="DMD",
+                            ylim_1=energy_ylim,
+                            ylim_2=enstrophy_ylim,
+                            t_start=t_start_val,
+                        )
                 else:
                     if _pod is None:
                         logger.warning("POD basis not available for full trajectory reconstruction")
@@ -652,13 +740,50 @@ def main():
             "time_seconds": t_elapsed,
         })
         
+        # Write machine-readable run summary
+        try:
+            from shared.metrics import RunSummary
+            summary = RunSummary(method="dmd", pde=cfg.pde, run_dir=args.run_dir,
+                                config_path=args.config, dt=cfg.dt)
+            
+            for split, pred, bounds, ref_files_list, offset in [
+                ("train", train_pred, train_bounds, train_ref_files, train_ref_offset),
+                ("test", test_pred, test_bounds, test_ref_files, test_ref_offset),
+            ]:
+                n_traj = len(bounds) - 1
+                for i in range(n_traj):
+                    if pred['is_nan'][i] or pred['Gamma_n'][i] is None:
+                        continue
+                    pred_n = pred['Gamma_n'][i]
+                    pred_c = pred['Gamma_c'][i]
+                    n_steps = bounds[i + 1] - bounds[i]
+                    actual_len = len(pred_n)
+                    if actual_len < n_steps:
+                        n_steps = actual_len
+                    if cfg.pde in ("ks", "ns"):
+                        import h5py
+                        with h5py.File(ref_files_list[i], 'r') as fh:
+                            ref_n = np.array(fh['energy'][offset:offset + n_steps])
+                            ref_c = np.array(fh['enstrophy'][offset:offset + n_steps])
+                    else:
+                        fh = loader(ref_files_list[i], engine=cfg.engine)
+                        ref_n = fh["gamma_n"].data[offset:offset + n_steps]
+                        ref_c = fh["gamma_c"].data[offset:offset + n_steps]
+                    summary.add_qoi_metrics(pred_n[:n_steps], ref_n, pred_c[:n_steps], ref_c,
+                                            split=split, trajectory=i)
+            
+            summary_path = summary.save()
+            logger.info(f"Saved run summary to {summary_path}")
+        except Exception as e:
+            logger.warning(f"Run summary generation failed (non-fatal): {e}")
+        
         # Print summary
         print_header("STEP 3 COMPLETE")
         print(f"  Runtime: {t_elapsed:.1f}s")
         
         if test_metrics.get('summary'):
-            qoi_1_label = "Energy" if cfg.pde == "ks" else "Γn"
-            qoi_2_label = "Enstrophy" if cfg.pde == "ks" else "Γc"
+            qoi_1_label = "Energy" if cfg.pde in ("ks", "ns") else "Γn"
+            qoi_2_label = "Enstrophy" if cfg.pde in ("ks", "ns") else "Γc"
             print(f"\n  TEST SUMMARY:")
             print(f"    Avg {qoi_1_label} mean error: {test_metrics['summary']['mean_err_Gamma_n']:.4f}")
             print(f"    Avg {qoi_2_label} mean error: {test_metrics['summary']['mean_err_Gamma_c']:.4f}")

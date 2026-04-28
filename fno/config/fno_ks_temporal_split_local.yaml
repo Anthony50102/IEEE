@@ -1,8 +1,8 @@
 run_name: "fno_ks_temporal_split"
 pde: "ks"
 paths:
-  output_base: "/home/anthonypoole/repos/not_work/ieee_paper/IEEE/local_output/"
-  data_dir: "/home/anthonypoole/repos/not_work/ieee_paper/IEEE/data/ks"
+  output_base: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/local_output/"
+  data_dir: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/data/ks"
   training_files: 
     - "ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5"
   test_files: []

@@ -83,21 +83,27 @@ def main():
             train_start, train_end = cfg.train_start, cfg.train_end
             test_start, test_end = cfg.test_start, cfg.test_end
             
+            # If validation is enabled, extend training data to include val window
+            val_end = getattr(cfg, 'val_end', 0)
+            effective_train_end = max(train_end, val_end) if val_end > 0 else train_end
+            
             # Validate
-            if train_end > n_time or test_end > n_time:
+            if effective_train_end > n_time or test_end > n_time:
                 raise ValueError(f"Range exceeds file length ({n_time} snapshots)")
             
             # Extract ranges
-            Q_train = Q_full[:, train_start:train_end]
+            Q_train = Q_full[:, train_start:effective_train_end]
             Q_test = Q_full[:, test_start:test_end]
-            n_train = train_end - train_start
+            n_train = effective_train_end - train_start
             n_test = test_end - test_start
             
             train_boundaries = np.array([0, n_train])
             test_boundaries = np.array([0, n_test])
             
             logger.info(f"  Temporal split:")
-            logger.info(f"    Train: snapshots [{train_start}, {train_end}) = {n_train}")
+            logger.info(f"    Train: snapshots [{train_start}, {effective_train_end}) = {n_train}")
+            if val_end > 0:
+                logger.info(f"      (includes val window [{cfg.val_start}, {val_end}))")
             logger.info(f"    Test:  snapshots [{test_start}, {test_end}) = {n_test}")
         else:
             # Multi-trajectory mode (original behavior)

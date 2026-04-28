@@ -1,0 +1,61 @@
+curriculum:
+- - 5
+  - 0.8
+  - 20
+- - 10
+  - 0.6
+  - 20
+- - 20
+  - 0.4
+  - 20
+- - 40
+  - 0.2
+  - 20
+- - 60
+  - 0.1
+  - 20
+- - 80
+  - 0.0
+  - 50
+log_level: INFO
+model:
+  hidden_channels: 256
+  in_channels: 2
+  n_layers: 5
+  n_modes:
+  - 64
+  - 64
+  out_channels: 2
+paths:
+  data_dir: /work/10407/anthony50102/vista/
+  output_base: /scratch/10407/anthony50102/fno_output/
+  test_files: []
+  training_files:
+  - test_nu5e-9.h5
+pde: hw2d
+physics:
+  dt: 0.025
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+run_name: fno_hw2d_temporal_split
+test_end: 20000
+test_start: 16000
+train_end: 16000
+train_start: 8000
+training:
+  batch_size: 6
+  early_stopping_patience: 10
+  eval_every: 5
+  grad_clip: 1.0
+  gradient_checkpointing: true
+  learning_rate: 0.0005
+  n_epochs: 200
+  noise_std: 0.02
+  save_every: 20
+  scheduler:
+    type: cosine
+    warmup_epochs: 5
+  val_fraction: 0.2
+  weight_decay: 0.0001
+training_mode: temporal_split

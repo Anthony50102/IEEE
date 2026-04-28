@@ -1,0 +1,112 @@
+run_name: "opinf_ks_svd_informed"
+
+pde: "ks"
+
+paths:
+  output_base: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/local_output/"
+  data_dir: "/Users/anthonypoole/Repositories/ieee_paper/IEEE/data/ks"
+  training_files: 
+      - ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+  test_files: []
+
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  L: 100.0
+  N: 200
+
+training_mode:
+  mode: "temporal_split"
+  train_start: 1250
+  train_end: 1800
+  test_start: 1800
+  test_end: 2000
+
+reduction:
+  method: "linear"
+  r: 50
+  target_energy: 0.99
+
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 550
+  n_steps: 550
+
+# =============================================================================
+# SVD-INFORMED REGULARIZATION GRID (r=32 at KS, 99% energy)
+# =============================================================================
+# From SVD diagnosis of D_state (r=32, no closure):
+#
+#   Block       | cond     | σ_min²   | σ_max²   | Strategy
+#   ------------|----------|----------|----------|------------------
+#   linear      | 54       | 2.43     | 7.16e3  | moderate (σ_min² to σ_max²+2OOM)
+#   quadratic   | 1.44e5   | ~0       | 2.0e5   | wide range: under- to over-reg
+#
+# At r=32: 549 training pairs, 560 columns (32 lin + 528 quad) — barely
+# overdetermined. Need regularization for stability AND to prevent overfitting.
+#
+# Strategy:
+#   - Linear: sweep σ_min² to σ_max²×10 (well-conditioned, modest range)
+#   - Quadratic: wide range from weak to strong over-regularization
+#     σ_max²=2e5, so go from 2 OOM below to 4 OOM above
+#   - Output: standard moderate ranges
+#
+# Grid: 10×10×10×10 = 10,000 combos
+# =============================================================================
+
+regularization:
+    # Linear: cond=54, σ_min²=2.43, σ_max²=7.16e3
+    state_lin:
+        min: 1.0e-1
+        max: 1.0e5
+        num: 10
+        scale: "log"
+
+    # Quadratic: cond=1.44e5, σ_max²=2.0e5
+    # Wide sweep from weak reg to heavy over-reg
+    state_quad:
+        min: 1.0e3
+        max: 1.0e9
+        num: 10
+        scale: "log"
+
+    # Output linear: standard moderate range
+    output_lin:
+        min: 1.0e-4
+        max: 1.0e2
+        num: 10
+        scale: "log"
+
+    # Output quadratic: standard moderate range
+    output_quad:
+        min: 1.0e-2
+        max: 1.0e4
+        num: 10
+        scale: "log"
+
+# Start with moderate thresholds to ensure models pass, then tighten
+model_selection:
+  method: "threshold"
+  threshold_mean: 0.10
+  threshold_std: 0.50
+
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: true
+  plot_state_snapshots: true
+  n_snapshot_samples: 5
+  qoi_method: "physics"
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

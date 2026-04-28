@@ -43,13 +43,18 @@ def _get_mpi():
 def get_file_metadata(cfg, file_path: str) -> tuple:
     """Get metadata from a file without loading full data.
     
-    Dispatches based on cfg.pde: 'hw2d' reads density/phi, 'ks' reads u.
+    Dispatches based on cfg.pde: 'hw2d' reads density/phi, 'ks' reads u, 'ns' reads omega.
     """
     if getattr(cfg, 'pde', 'hw2d') == 'ks':
         import h5py
         with h5py.File(file_path, 'r') as f:
             n_time, N = f['u'].shape
         n_spatial = N  # Single field
+    elif getattr(cfg, 'pde', 'hw2d') == 'ns':
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            n_time, ny, nx = f['omega'].shape
+        n_spatial = ny * nx  # Single field (vorticity)
     else:
         with load_dataset(file_path, cfg.engine) as fh:
             n_time = fh["density"].shape[0]
@@ -81,33 +86,72 @@ def load_distributed_snapshots(
     """Load a portion of snapshots corresponding to this rank's spatial DOF.
     
     Dispatches based on pde: 'hw2d' loads density/phi, 'ks' loads u.
+    
+    Memory-efficient: uses h5py slicing to load only the spatial rows and
+    time steps each MPI rank actually needs, avoiding full-file loads.
     """
     if pde == "ks":
         return _load_distributed_snapshots_ks(file_path, start_idx, end_idx, max_snapshots)
     
-    with load_dataset(file_path, engine) as fh:
-        density = fh["density"].values
-        phi = fh["phi"].values
+    if pde == "ns":
+        return _load_distributed_snapshots_ns(file_path, start_idx, end_idx, max_snapshots)
     
-    if max_snapshots is not None and max_snapshots < density.shape[0]:
-        density = density[:max_snapshots]
-        phi = phi[:max_snapshots]
+    import h5py
     
-    n_time = density.shape[0]
+    with h5py.File(file_path, 'r') as f:
+        # Determine dataset shape and time limit
+        dset = f["density"]
+        if dset.ndim == 2:
+            n_time_total = dset.shape[0]
+            grid_size = int(np.sqrt(dset.shape[1]))
+            n_y, n_x = grid_size, grid_size
+        else:
+            n_time_total, n_y, n_x = dset.shape
+        
+        n_t = min(max_snapshots, n_time_total) if max_snapshots is not None else n_time_total
+        n_per_field = n_y * n_x
+        n_local = end_idx - start_idx
+        
+        # Allocate output: (n_local_spatial, n_time)
+        Q_local = np.empty((n_local, n_t), dtype=np.float32)
+        
+        offset = 0
+        for field_idx, field_name in enumerate(["density", "phi"]):
+            field_global_start = field_idx * n_per_field
+            field_global_end = (field_idx + 1) * n_per_field
+            
+            # Intersection of this rank's range with this field
+            local_start = max(start_idx, field_global_start)
+            local_end = min(end_idx, field_global_end)
+            if local_start >= local_end:
+                continue
+            
+            n_points = local_end - local_start
+            field_local_start = local_start - field_global_start
+            field_local_end = local_end - field_global_start
+            
+            # Map flat indices to (y, x) rows
+            y_start = field_local_start // n_x
+            y_end = (field_local_end - 1) // n_x + 1
+            
+            ds = f[field_name]
+            if ds.ndim == 2:
+                # Flat layout: (n_time, n_y*n_x) — slice time then reshape
+                flat_start = y_start * n_x
+                flat_end = y_end * n_x
+                data = ds[:n_t, flat_start:flat_end]  # (n_t, n_loaded_flat)
+            else:
+                # Standard layout: (n_time, n_y, n_x)
+                data = ds[:n_t, y_start:y_end, :]  # (n_t, n_y_rows, n_x)
+                data = data.reshape(n_t, -1)  # (n_t, n_y_rows * n_x)
+            
+            # Select exact indices within the loaded rows
+            row_offset = field_local_start - y_start * n_x
+            Q_local[offset:offset + n_points, :] = data[:, row_offset:row_offset + n_points].T
+            offset += n_points
+            del data
     
-    # Reshape if needed
-    if density.ndim == 2:
-        grid_size = int(np.sqrt(density.shape[1]))
-        density = density.reshape(n_time, grid_size, grid_size)
-        phi = phi.reshape(n_time, grid_size, grid_size)
-    
-    # Stack fields: (n_fields, n_time, n_y, n_x) -> (n_spatial, n_time)
-    Q_full = np.stack([density, phi], axis=0).transpose(0, 2, 3, 1)
-    n_field, n_y, n_x, n_time = Q_full.shape
-    Q_full = Q_full.reshape(n_field * n_y * n_x, n_time)
-    
-    # Return contiguous copy in native dtype (float32 or float64)
-    return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
+    return np.ascontiguousarray(Q_local)
 
 
 def _load_distributed_snapshots_ks(
@@ -125,6 +169,25 @@ def _load_distributed_snapshots_ks(
         u = u[:max_snapshots]
     
     Q_full = u.T  # (N, n_time)
+    return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
+
+
+def _load_distributed_snapshots_ns(
+    file_path: str, start_idx: int, end_idx: int, max_snapshots: int,
+) -> np.ndarray:
+    """Load NS snapshots for distributed processing.
+    
+    NS state vector is [omega_flat], shape (ny*nx, n_time).
+    """
+    import h5py
+    with h5py.File(file_path, 'r') as f:
+        omega = np.array(f['omega'][:])  # (n_time, ny, nx)
+    
+    if max_snapshots is not None and max_snapshots < omega.shape[0]:
+        omega = omega[:max_snapshots]
+    
+    n_time, ny, nx = omega.shape
+    Q_full = omega.reshape(n_time, ny * nx).T  # (ny*nx, n_time)
     return np.ascontiguousarray(Q_full[start_idx:end_idx, :])
 
 
@@ -227,27 +290,33 @@ def load_temporal_split_distributed(cfg, run_dir: str, comm, rank: int, size: in
         train_start, train_end = cfg.train_start, cfg.train_end
         test_start, test_end = cfg.test_start, cfg.test_end
         
+        # If validation is enabled, extend training data to include val window
+        val_end = getattr(cfg, 'val_end', 0)
+        effective_train_end = max(train_end, val_end) if val_end > 0 else train_end
+        
         # Validate ranges
-        if train_end > n_time_total or test_end > n_time_total:
+        if effective_train_end > n_time_total or test_end > n_time_total:
             raise ValueError(f"Range exceeds file length ({n_time_total} snapshots)")
-        if train_start >= train_end:
-            raise ValueError(f"Invalid train range: [{train_start}, {train_end})")
+        if train_start >= effective_train_end:
+            raise ValueError(f"Invalid train range: [{train_start}, {effective_train_end})")
         if test_start >= test_end:
             raise ValueError(f"Invalid test range: [{test_start}, {test_end})")
         
-        n_train = train_end - train_start
+        n_train = effective_train_end - train_start
         n_test = test_end - test_start
         
         metadata = {
             'n_spatial': n_spatial,
             'train_start': train_start,
-            'train_end': train_end,
+            'train_end': effective_train_end,
             'test_start': test_start,
             'test_end': test_end,
             'n_train': n_train,
             'n_test': n_test,
         }
-        logger.info(f"  Train: snapshots [{train_start}, {train_end}) = {n_train} snapshots")
+        logger.info(f"  Train: snapshots [{train_start}, {effective_train_end}) = {n_train} snapshots")
+        if val_end > 0:
+            logger.info(f"    (includes val window [{cfg.val_start}, {val_end}))")
         logger.info(f"  Test:  snapshots [{test_start}, {test_end}) = {n_test} snapshots")
     else:
         metadata = None
@@ -373,10 +442,11 @@ def load_reference_gamma(cfg, rank, logger) -> dict:
         
         # Handle temporal_split mode: use explicit train range
         if cfg.training_mode == "temporal_split":
-            train_start, train_end = cfg.train_start, cfg.train_end
-            gamma_n = gamma_n[train_start:train_end]
-            gamma_c = gamma_c[train_start:train_end]
-            logger.info(f"  Temporal split: using gamma[{train_start}:{train_end}]")
+            train_start = cfg.train_start
+            effective_end = max(cfg.train_end, getattr(cfg, 'val_end', 0)) if getattr(cfg, 'val_end', 0) > 0 else cfg.train_end
+            gamma_n = gamma_n[train_start:effective_end]
+            gamma_c = gamma_c[train_start:effective_end]
+            logger.info(f"  Temporal split: using gamma[{train_start}:{effective_end}]")
         elif cfg.truncation_enabled:
             max_snaps = compute_truncation_snapshots(
                 fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
@@ -414,10 +484,11 @@ def _load_reference_qoi_ks(cfg, logger) -> dict:
             enstrophy = np.array(f['enstrophy'][:])
         
         if cfg.training_mode == "temporal_split":
-            train_start, train_end = cfg.train_start, cfg.train_end
-            energy = energy[train_start:train_end]
-            enstrophy = enstrophy[train_start:train_end]
-            logger.info(f"  Temporal split: using QoI[{train_start}:{train_end}]")
+            train_start = cfg.train_start
+            effective_end = max(cfg.train_end, getattr(cfg, 'val_end', 0)) if getattr(cfg, 'val_end', 0) > 0 else cfg.train_end
+            energy = energy[train_start:effective_end]
+            enstrophy = enstrophy[train_start:effective_end]
+            logger.info(f"  Temporal split: using QoI[{train_start}:{effective_end}]")
         elif cfg.truncation_enabled:
             max_snaps = compute_truncation_snapshots(
                 fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
@@ -504,6 +575,9 @@ def load_data_shared_memory(paths: dict, comm, logger):
             'std_Gamma_n': float(gamma_ref['std_Gamma_n']),
             'mean_Gamma_c': float(gamma_ref['mean_Gamma_c']),
             'std_Gamma_c': float(gamma_ref['std_Gamma_c']),
+            'include_cubic': bool(learning.get('include_cubic', False)),
+            'include_constant': bool(learning.get('include_constant', False)),
+            'closure_enabled': bool(learning.get('closure_enabled', False)),
         }
         shapes = {k: v.shape for k, v in data_local.items()}
         learning.close()
@@ -562,18 +636,29 @@ def load_data_shared_memory(paths: dict, comm, logger):
 def load_model_from_file(filepath: str) -> dict:
     """Load a single model from NPZ file."""
     data = np.load(filepath)
-    return {
-        'A': data['A'], 'F': data['F'], 'C': data['C'], 'G': data['G'], 'c': data['c'],
+    model = {
+        'A': data['A'], 'F': data['F'],
         'total_error': float(data['total_error']),
-        'mean_err_Gamma_n': float(data['mean_err_Gamma_n']),
-        'std_err_Gamma_n': float(data['std_err_Gamma_n']),
-        'mean_err_Gamma_c': float(data['mean_err_Gamma_c']),
-        'std_err_Gamma_c': float(data['std_err_Gamma_c']),
         'alpha_state_lin': float(data['alpha_state_lin']),
         'alpha_state_quad': float(data['alpha_state_quad']),
-        'alpha_out_lin': float(data['alpha_out_lin']),
-        'alpha_out_quad': float(data['alpha_out_quad']),
+        'alpha_out_lin': float(data.get('alpha_out_lin', 0.0)),
+        'alpha_out_quad': float(data.get('alpha_out_quad', 0.0)),
     }
+    # Output operators (optional — not present for physics-based QoI models)
+    for key in ['C', 'G', 'c']:
+        if key in data:
+            model[key] = data[key]
+    for key in ['mean_err_Gamma_n', 'std_err_Gamma_n', 'mean_err_Gamma_c', 'std_err_Gamma_c']:
+        if key in data:
+            model[key] = float(data[key])
+    # Closure operators (optional)
+    if 'H' in data:
+        model['H'] = data['H']
+    if 'c_state' in data:
+        model['c_state'] = data['c_state']
+    if 'closure_enabled' in data:
+        model['closure_enabled'] = bool(data['closure_enabled'])
+    return model
 
 
 def load_ensemble(filepath: str, operators_dir: str, logger) -> list:

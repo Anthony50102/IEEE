@@ -112,7 +112,7 @@ echo "Results saved to: $RUN_DIR"
 echo ""
 
 # Print summary of outputs
-if [ -f "$RUN_DIR/dmd_evaluation_metrics.yaml" ]; then
+if [ -f "$RUN_DIR/evaluation_metrics.yaml" ]; then
     echo "Evaluation metrics:"
-    cat "$RUN_DIR/dmd_evaluation_metrics.yaml" | head -30
+    cat "$RUN_DIR/evaluation_metrics.yaml" | head -30
 fi

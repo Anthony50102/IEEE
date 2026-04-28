@@ -48,14 +48,28 @@ from shared.plotting import plot_pod_energy
 # =============================================================================
 
 def get_file_metadata(cfg, file_path: str) -> tuple:
-    """Get metadata from a file without loading full data."""
-    with load_dataset(file_path, cfg.engine) as fh:
-        n_time = fh["density"].shape[0]
-        if fh["density"].ndim == 3:
-            n_y, n_x = fh["density"].shape[1], fh["density"].shape[2]
-        else:
-            n_y = n_x = int(np.sqrt(fh["density"].shape[1]))
-        n_spatial = cfg.n_fields * n_y * n_x
+    """Get metadata from a file without loading full data.
+    
+    Dispatches based on cfg.pde: 'hw2d' reads density/phi, 'ks' reads u.
+    """
+    if getattr(cfg, 'pde', 'hw2d') == 'ks':
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            n_time, N = f['u'].shape
+        n_spatial = N
+    elif getattr(cfg, 'pde', 'hw2d') == 'ns':
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            n_time, ny, nx = f['omega'].shape
+        n_spatial = ny * nx
+    else:
+        with load_dataset(file_path, cfg.engine) as fh:
+            n_time = fh["density"].shape[0]
+            if fh["density"].ndim == 3:
+                n_y, n_x = fh["density"].shape[1], fh["density"].shape[2]
+            else:
+                n_y = n_x = int(np.sqrt(fh["density"].shape[1]))
+            n_spatial = cfg.n_fields * n_y * n_x
     
     if cfg.truncation_enabled:
         max_snaps = compute_truncation_snapshots(
@@ -68,8 +82,29 @@ def get_file_metadata(cfg, file_path: str) -> tuple:
     return n_spatial, n_time, max_snaps
 
 
-def load_snapshots(file_path: str, engine: str, max_snapshots=None) -> np.ndarray:
-    """Load all snapshots from a file."""
+def load_snapshots(file_path: str, engine: str, max_snapshots=None,
+                   pde: str = "hw2d") -> np.ndarray:
+    """Load all snapshots from a file.
+    
+    Dispatches based on pde: 'hw2d' loads density/phi, 'ks' loads u.
+    """
+    if pde == "ks":
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            u = np.array(f['u'][:])  # (n_time, N)
+        if max_snapshots is not None and max_snapshots < u.shape[0]:
+            u = u[:max_snapshots]
+        return u.T  # (N, n_time)
+    
+    if pde == "ns":
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            omega = np.array(f['omega'][:])  # (n_time, ny, nx)
+        if max_snapshots is not None and max_snapshots < omega.shape[0]:
+            omega = omega[:max_snapshots]
+        n_time = omega.shape[0]
+        return omega.reshape(n_time, -1).T  # (ny*nx, n_time)
+    
     with load_dataset(file_path, engine) as fh:
         density = fh["density"].values
         phi = fh["phi"].values
@@ -136,14 +171,14 @@ def load_all_data_serial(cfg, logger) -> tuple:
     # Load data
     for i, fp in enumerate(cfg.training_files):
         logger.info(f"  Loading training file {i+1}/{len(cfg.training_files)}: {os.path.basename(fp)}")
-        Q = load_snapshots(fp, cfg.engine, train_truncations[i])
+        Q = load_snapshots(fp, cfg.engine, train_truncations[i], pde=getattr(cfg, 'pde', 'hw2d'))
         Q_train[:, train_boundaries[i]:train_boundaries[i + 1]] = Q
         del Q
         gc.collect()
     
     for i, fp in enumerate(cfg.test_files):
         logger.info(f"  Loading test file {i+1}/{len(cfg.test_files)}: {os.path.basename(fp)}")
-        Q = load_snapshots(fp, cfg.engine, test_truncations[i])
+        Q = load_snapshots(fp, cfg.engine, test_truncations[i], pde=getattr(cfg, 'pde', 'hw2d'))
         Q_test[:, test_boundaries[i]:test_boundaries[i + 1]] = Q
         del Q
         gc.collect()
@@ -163,27 +198,33 @@ def load_temporal_split_serial(cfg, logger) -> tuple:
     train_start, train_end = cfg.train_start, cfg.train_end
     test_start, test_end = cfg.test_start, cfg.test_end
     
+    # If validation is enabled, extend training data to include val window
+    val_end = getattr(cfg, 'val_end', 0)
+    effective_train_end = max(train_end, val_end) if val_end > 0 else train_end
+    
     # Validate ranges
-    if train_end > n_time_total or test_end > n_time_total:
+    if effective_train_end > n_time_total or test_end > n_time_total:
         raise ValueError(f"Range exceeds file length ({n_time_total} snapshots)")
-    if train_start >= train_end:
-        raise ValueError(f"Invalid train range: [{train_start}, {train_end})")
+    if train_start >= effective_train_end:
+        raise ValueError(f"Invalid train range: [{train_start}, {effective_train_end})")
     if test_start >= test_end:
         raise ValueError(f"Invalid test range: [{test_start}, {test_end})")
     
-    n_train = train_end - train_start
+    n_train = effective_train_end - train_start
     n_test = test_end - test_start
     
-    logger.info(f"  Train: snapshots [{train_start}, {train_end}) = {n_train} snapshots")
+    logger.info(f"  Train: snapshots [{train_start}, {effective_train_end}) = {n_train} snapshots")
+    if val_end > 0:
+        logger.info(f"    (includes val window [{cfg.val_start}, {val_end}))")
     logger.info(f"  Test:  snapshots [{test_start}, {test_end}) = {n_test} snapshots")
     logger.info(f"  Spatial DOF: {n_spatial:,}")
     
     # Load full trajectory
-    max_snap_needed = max(train_end, test_end)
-    Q_full = load_snapshots(fp, cfg.engine, max_snap_needed)
+    max_snap_needed = max(effective_train_end, test_end)
+    Q_full = load_snapshots(fp, cfg.engine, max_snap_needed, pde=getattr(cfg, 'pde', 'hw2d'))
     
     # Extract train and test ranges
-    Q_train = Q_full[:, train_start:train_end].copy()
+    Q_train = Q_full[:, train_start:effective_train_end].copy()
     Q_test = Q_full[:, test_start:test_end].copy()
     del Q_full
     gc.collect()
@@ -349,7 +390,18 @@ def project_data_serial(
 # =============================================================================
 
 def load_reference_gamma_serial(cfg, logger) -> dict:
-    """Load reference Gamma values from training files."""
+    """Load reference QoI values from training files.
+    
+    Dispatches based on cfg.pde: 'hw2d' loads gamma_n/gamma_c, 'ks' loads energy/enstrophy.
+    """
+    pde = getattr(cfg, 'pde', 'hw2d')
+    
+    if pde == "ks":
+        return _load_reference_qoi_ks_serial(cfg, logger)
+    
+    if pde == "ns":
+        return _load_reference_qoi_ns_serial(cfg, logger)
+    
     logger.info("Loading reference Gamma values...")
     
     Gamma_n_list, Gamma_c_list = [], []
@@ -360,10 +412,11 @@ def load_reference_gamma_serial(cfg, logger) -> dict:
         
         # Handle temporal_split mode: use explicit train range
         if cfg.training_mode == "temporal_split":
-            train_start, train_end = cfg.train_start, cfg.train_end
-            gamma_n = gamma_n[train_start:train_end]
-            gamma_c = gamma_c[train_start:train_end]
-            logger.info(f"  Temporal split: using gamma[{train_start}:{train_end}]")
+            train_start = cfg.train_start
+            effective_end = max(cfg.train_end, getattr(cfg, 'val_end', 0)) if getattr(cfg, 'val_end', 0) > 0 else cfg.train_end
+            gamma_n = gamma_n[train_start:effective_end]
+            gamma_c = gamma_c[train_start:effective_end]
+            logger.info(f"  Temporal split: using gamma[{train_start}:{effective_end}]")
         elif cfg.truncation_enabled:
             max_snaps = compute_truncation_snapshots(
                 fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
@@ -388,7 +441,91 @@ def load_reference_gamma_serial(cfg, logger) -> dict:
     }
 
 
-def gather_initial_conditions_serial(
+def _load_reference_qoi_ks_serial(cfg, logger) -> dict:
+    """Load reference KS QoIs (energy, enstrophy) from training files."""
+    import h5py
+    logger.info("Loading reference KS QoIs (energy, enstrophy)...")
+    
+    energy_list, enstrophy_list = [], []
+    
+    for fp in cfg.training_files:
+        with h5py.File(fp, 'r') as f:
+            energy = np.array(f['energy'][:])
+            enstrophy = np.array(f['enstrophy'][:])
+        
+        if cfg.training_mode == "temporal_split":
+            train_start = cfg.train_start
+            effective_end = max(cfg.train_end, getattr(cfg, 'val_end', 0)) if getattr(cfg, 'val_end', 0) > 0 else cfg.train_end
+            energy = energy[train_start:effective_end]
+            enstrophy = enstrophy[train_start:effective_end]
+            logger.info(f"  Temporal split: using QoI[{train_start}:{effective_end}]")
+        elif cfg.truncation_enabled:
+            max_snaps = compute_truncation_snapshots(
+                fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
+            )
+            if max_snaps:
+                energy = energy[:max_snaps]
+                enstrophy = enstrophy[:max_snaps]
+        
+        energy_list.append(energy)
+        enstrophy_list.append(enstrophy)
+    
+    Energy = np.concatenate(energy_list)
+    Enstrophy = np.concatenate(enstrophy_list)
+    Y_Gamma = np.vstack([Energy, Enstrophy])
+    
+    logger.info(f"  Y_Gamma (KS QoI) shape: {Y_Gamma.shape}")
+    
+    return {
+        'Y_Gamma': Y_Gamma,
+        'mean_Gamma_n': np.mean(Energy), 'std_Gamma_n': np.std(Energy, ddof=1),
+        'mean_Gamma_c': np.mean(Enstrophy), 'std_Gamma_c': np.std(Enstrophy, ddof=1),
+    }
+
+
+def _load_reference_qoi_ns_serial(cfg, logger) -> dict:
+    """Load reference NS QoIs (energy, enstrophy) from training files."""
+    import h5py
+    logger.info("Loading reference NS QoIs (energy, enstrophy)...")
+    
+    energy_list, enstrophy_list = [], []
+    
+    for fp in cfg.training_files:
+        with h5py.File(fp, 'r') as f:
+            energy = np.array(f['energy'][:])
+            enstrophy = np.array(f['enstrophy'][:])
+        
+        if cfg.training_mode == "temporal_split":
+            train_start = cfg.train_start
+            effective_end = max(cfg.train_end, getattr(cfg, 'val_end', 0)) if getattr(cfg, 'val_end', 0) > 0 else cfg.train_end
+            energy = energy[train_start:effective_end]
+            enstrophy = enstrophy[train_start:effective_end]
+            logger.info(f"  Temporal split: using QoI[{train_start}:{effective_end}]")
+        elif cfg.truncation_enabled:
+            max_snaps = compute_truncation_snapshots(
+                fp, cfg.truncation_snapshots, cfg.truncation_time, cfg.dt
+            )
+            if max_snaps:
+                energy = energy[:max_snaps]
+                enstrophy = enstrophy[:max_snaps]
+        
+        energy_list.append(energy)
+        enstrophy_list.append(enstrophy)
+    
+    Energy = np.concatenate(energy_list)
+    Enstrophy = np.concatenate(enstrophy_list)
+    Y_Gamma = np.vstack([Energy, Enstrophy])
+    
+    logger.info(f"  Y_Gamma (NS QoI) shape: {Y_Gamma.shape}")
+    
+    return {
+        'Y_Gamma': Y_Gamma,
+        'mean_Gamma_n': np.mean(Energy), 'std_Gamma_n': np.std(Energy, ddof=1),
+        'mean_Gamma_c': np.mean(Enstrophy), 'std_Gamma_c': np.std(Enstrophy, ddof=1),
+    }
+
+
+def extract_initial_conditions_serial(
     Q_train, Q_test, Xhat_train, Xhat_test, train_boundaries, test_boundaries
 ) -> dict:
     """Extract initial conditions (serial version)."""
@@ -459,7 +596,10 @@ def main():
         # =====================================================================
         if cfg.centering_enabled:
             Q_train_centered, train_mean = center_data_serial(Q_train, logger)
-            Q_test_centered, test_mean = center_data_serial(Q_test, logger)
+            # Center test data using TRAINING mean for coordinate consistency
+            Q_test_centered = Q_test - train_mean[:, np.newaxis]
+            test_mean = train_mean
+            logger.info("  Test data centered using training temporal mean")
         else:
             Q_train_centered, Q_test_centered = Q_train, Q_test
             train_mean = test_mean = np.zeros(n_spatial)
@@ -514,6 +654,9 @@ def main():
                 Q_train_centered, logger, cfg.target_energy
             )
             r_actual = min(cfg.r, r_energy)
+            # When validation rank sweep is enabled, keep full r_max for step 2 to sweep
+            if len(getattr(cfg, 'r_candidates', [])) > 0:
+                r_actual = cfg.r
             selected_modes = np.arange(r_actual)  # Linear POD uses first r modes
             
             logger.info(f"  Using r={r_actual} (config: {cfg.r}, energy-based: {r_energy})")
@@ -542,7 +685,7 @@ def main():
         # =====================================================================
         # 5. Extract initial conditions
         # =====================================================================
-        ics = gather_initial_conditions_serial(
+        ics = extract_initial_conditions_serial(
             Q_train, Q_test, Xhat_train, Xhat_test, train_boundaries, test_boundaries
         )
         
