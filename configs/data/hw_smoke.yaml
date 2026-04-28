@@ -1,0 +1,26 @@
+# SMOKE TEST ONLY. Runs in <1 minute on a laptop. Do not use for science.
+# Verifies: hw2d install -> our wrapper -> trajectory.h5 -> data_card.yaml ->
+# hw.validate. Will produce a `no-reference` verdict (alpha=1 not in this
+# table at 64^2, and the run is far too short to saturate anyway).
+
+alpha: 1.0
+kappa: 1.0
+k0: 0.15
+N: 3
+nu: 5.0e-9
+
+grid_pts: 64
+downsample_factor: 1
+step_size: 0.025
+end_time: 10.0
+snaps: 4
+
+init_type: normal
+init_scale: 0.01
+seed: 0
+
+recording_start_time: 0.0
+buffer_length: 50
+chunk_size: 50
+
+label: hw_smoke_n64
