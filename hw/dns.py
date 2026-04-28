@@ -18,11 +18,12 @@ Usage
 Notes
 -----
 
-* We simulate at ``grid_pts`` (e.g. 512) and save downsampled at
-  ``grid_pts // downsample_factor`` (e.g. 256). hw2d computes scalar
-  properties (gamma_n, gamma_c, ...) at the simulation resolution before
-  downsampling, so they remain comparable to the hw2d README reference
-  table.
+* We simulate AND save at ``grid_pts`` (default 512). The fields are
+  stored at full resolution because Gamma_n and Gamma_c are spatial
+  averages over the full grid; saving downsampled fields would corrupt
+  any later field-level recomputation or diagnostic. Downstream training
+  can spatially stride at load time (see ``hw.dataset.iter_snippets``).
+  ``downsample_factor`` is exposed for completeness but defaults to 1.
 * This module imports `hw2d` lazily so the rest of `hw/` can be imported
   without the package installed.
 """
@@ -55,8 +56,8 @@ class DnsConfig:
     nu: float = 5.0e-9
 
     # Numerics
-    grid_pts: int = 512                # simulation resolution
-    downsample_factor: int = 2         # save at grid_pts // downsample_factor
+    grid_pts: int = 512                # simulation AND save resolution
+    downsample_factor: int = 1         # >1 lossy: corrupts QoIs, avoid
     step_size: float = 0.025
     end_time: float = 1000.0
     snaps: int = 1                     # save every snaps steps

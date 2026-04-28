@@ -96,21 +96,31 @@ def iter_snippets(
     snippet_len: int,
     horizon: int,
     stride: int = 1,
+    spatial_stride: int = 1,
 ):
     """Yield (snippet, future) tuples from a trajectory for ROM training.
 
     Each yielded item is:
-        snippet  : (snippet_len, 2, n_y, n_x)   density+phi stacked
-        future   : (horizon,     2, n_y, n_x)   the next `horizon` frames
+        snippet  : (snippet_len, 2, n_y // s, n_x // s)   density+phi stacked
+        future   : (horizon,     2, n_y // s, n_x // s)   the next `horizon` frames
+    where s = ``spatial_stride``.
+
+    Notes
+    -----
+    DNS fields are stored at full simulation resolution (e.g. 512^2). If
+    the surrogate trains on a coarser grid (e.g. 256^2), set
+    ``spatial_stride=2`` here. QoIs (Gamma_n, Gamma_c) should still be
+    computed on the full-resolution fields, not on the strided view.
     """
+    s = spatial_stride
     n_t = traj.density.shape[0]
     last = n_t - snippet_len - horizon + 1
     for k in range(0, last, stride):
-        s_dens = traj.density[k : k + snippet_len]
-        s_phi = traj.phi[k : k + snippet_len]
-        f_dens = traj.density[k + snippet_len : k + snippet_len + horizon]
-        f_phi = traj.phi[k + snippet_len : k + snippet_len + horizon]
-        snippet = np.stack([s_dens, s_phi], axis=1)   # (T, 2, H, W)
+        s_dens = traj.density[k : k + snippet_len, ::s, ::s]
+        s_phi = traj.phi[k : k + snippet_len, ::s, ::s]
+        f_dens = traj.density[k + snippet_len : k + snippet_len + horizon, ::s, ::s]
+        f_phi = traj.phi[k + snippet_len : k + snippet_len + horizon, ::s, ::s]
+        snippet = np.stack([s_dens, s_phi], axis=1)
         future = np.stack([f_dens, f_phi], axis=1)
         yield snippet, future
 

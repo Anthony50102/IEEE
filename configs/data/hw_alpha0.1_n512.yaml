@@ -1,6 +1,6 @@
 # HW DNS config: alpha = 0.1 (hydrodynamic / weakly adiabatic).
-# Reference Gamma_n = 1.51 +/- 0.21 at 512^2.
-# Saved at 256^2 via downsample_factor = 2.
+# Reference Gamma_n = 1.51 +/- 0.21 (hw2d README, 512^2).
+# Stored at full 512^2 resolution; downstream training may stride to 256^2.
 
 alpha: 0.1
 kappa: 1.0
@@ -9,10 +9,10 @@ N: 3
 nu: 5.0e-9
 
 grid_pts: 512
-downsample_factor: 2
+downsample_factor: 1
 step_size: 0.01
 end_time: 400.0
-snaps: 10                    # save every 10 sim steps -> dt_save = 0.1
+snaps: 25                    # dt_save = 0.25  -> ~1600 frames
 
 init_type: normal
 init_scale: 0.01
@@ -22,4 +22,4 @@ recording_start_time: 0.0
 buffer_length: 100
 chunk_size: 100
 
-label: hw_alpha0.1_n256
+label: hw_alpha0.1_n512
