@@ -57,8 +57,11 @@ for pkg in "${PY_DEPS[@]}"; do
     python3 -m pip install --user --no-deps --upgrade "$pkg"
 done
 
-echo "==> installing hw2d editable (--user --no-deps) from $HW2D_DIR"
-python3 -m pip install --user --no-deps --no-build-isolation -e "$HW2D_DIR"
+echo "==> installing hw2d (--user --no-deps) from $HW2D_DIR"
+# Non-editable: Frontera's system setuptools predates PEP 660, so editable
+# installs fail with "build backend missing build_editable hook". hw2d is a
+# stable upstream we don't intend to modify, so a regular install is fine.
+python3 -m pip install --user --no-deps --no-build-isolation "$HW2D_DIR"
 
 echo "==> post-install check:"
 python3 - <<'PY'
