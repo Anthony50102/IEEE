@@ -11,7 +11,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 mkdir -p logs
 
-DATA_ROOT="${DATA_ROOT:-$SCRATCH/IEEE/data/hw2d}"
+DATA_ROOT="${DATA_ROOT:-$WORK/data/IEEE/hw2d}"
 
 CONFIGS=(
     "configs/data/hw_alpha0.1_n512.yaml"
