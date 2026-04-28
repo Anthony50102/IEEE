@@ -225,3 +225,5 @@ local_output/
 
 # hw2d branch
 hw2d_double
+# Cloned upstream packages (used as reference / Python package)
+hw/hw2d/

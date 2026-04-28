@@ -1,0 +1,25 @@
+# HW DNS config: alpha = 1.5 (HELD-OUT for G3 protocol; not used in training).
+# Reference Gamma_n = 0.46 +/- 0.04 at 512^2.
+# Saved at 256^2 via downsample_factor = 2.
+
+alpha: 1.5
+kappa: 1.0
+k0: 0.15
+N: 3
+nu: 5.0e-9
+
+grid_pts: 512
+downsample_factor: 2
+step_size: 0.025
+end_time: 500.0
+snaps: 4
+
+init_type: normal
+init_scale: 0.01
+seed: 0
+
+recording_start_time: 0.0
+buffer_length: 100
+chunk_size: 100
+
+label: hw_alpha1.5_n256_holdout

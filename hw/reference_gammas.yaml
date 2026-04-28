@@ -1,24 +1,47 @@
-# Reference Gamma_n values from the hw2d README, used as the Phase 1 sanity gate.
-# Source: https://github.com/the-rccg/hw2d (reference table, validated against
-# Numata 2007 and Pushkarev 2013).
+# Reference Gamma_n table from the hw2d README, used as the Phase 1 sanity gate.
 #
-# Our DNS at the same parameters must reproduce these within published
-# variance before any surrogate is trained. If it does not, fix the simulator
-# setup before fitting anything.
+# Source: https://github.com/the-rccg/hw2d (README "Reference Step Sizes" table).
+# All entries are at grid_pts=512, k0=0.15, hyperdiffusion order N=3, nu=5e-9.
+# Each row's reported Gamma_n is averaged over a long, well-saturated stretch
+# starting at the listed `age`. Errors are 1-sigma over that stretch.
 #
-# TODO: populate from the hw2d README before Phase 1.
+# Our DNS at the same parameters must reproduce these within ~1 sigma before
+# any surrogate is trained. If it does not, fix the simulator setup before
+# fitting anything.
 
 reference_grid:
   k0: 0.15
-  nx: 512
-  ny: 512
+  grid_pts: 512
   hyperdiffusion_order: 3   # nabla^6
   nu: 5.0e-9
+  source: "hw2d README, Reference Step Sizes table"
 
-# Schema (filled in Phase 0/1):
-# gamma_n_reference:
-#   "0.1": {mean: ..., std: ..., source: hw2d README}
-#   "0.5": ...
-#   "1.0": ...
-#   "5.0": ...
-gamma_n_reference: {}
+# Schema: alpha (= c1 in hw2d) -> {dt, age, gamma_n_mean, gamma_n_std}
+gamma_n_reference:
+  0.01: {dt: 0.005, age: 750, gamma_n_mean: 2.79, gamma_n_std: 0.80}
+  0.1:  {dt: 0.010, age: 200, gamma_n_mean: 1.51, gamma_n_std: 0.21}
+  0.25: {dt: 0.015, age: 200, gamma_n_mean: 1.17, gamma_n_std: 0.13}
+  0.5:  {dt: 0.020, age: 200, gamma_n_mean: 0.89, gamma_n_std: 0.09}
+  0.75: {dt: 0.025, age: 200, gamma_n_mean: 0.72, gamma_n_std: 0.06}
+  0.9:  {dt: 0.025, age: 200, gamma_n_mean: 0.65, gamma_n_std: 0.05}
+  1.0:  {dt: 0.025, age: 250, gamma_n_mean: 0.60, gamma_n_std: 0.05}
+  1.1:  {dt: 0.025, age: 250, gamma_n_mean: 0.58, gamma_n_std: 0.04}
+  1.25: {dt: 0.025, age: 250, gamma_n_mean: 0.54, gamma_n_std: 0.04}
+  1.5:  {dt: 0.025, age: 250, gamma_n_mean: 0.46, gamma_n_std: 0.04}
+  2.0:  {dt: 0.025, age: 300, gamma_n_mean: 0.38, gamma_n_std: 0.03}
+  2.5:  {dt: 0.020, age: 400, gamma_n_mean: 0.31, gamma_n_std: 0.03}
+  3.0:  {dt: 0.020, age: 500, gamma_n_mean: 0.26, gamma_n_std: 0.02}
+  4.0:  {dt: 0.015, age: 650, gamma_n_mean: 0.18, gamma_n_std: 0.02}
+  5.0:  {dt: 0.010, age: 800, gamma_n_mean: 0.13, gamma_n_std: 0.02}
+
+# 25-run statistical reference at alpha = c1 = 1.0, 512x512, dt=0.025.
+# Useful as the tightest validation point.
+extended_reference_c1_1:
+  alpha: 1.0
+  n_runs: 25
+  start_time: 300
+  gamma_n: {mean: 0.60, std: 0.01, fluctuation: 0.05}
+  gamma_c: {mean: 0.60, std: 0.01, fluctuation: 0.03}
+  energy:  {mean: 3.78, std: 0.07, fluctuation: 0.29}
+  enstrophy: {mean: 13.2, std: 0.91, fluctuation: 0.68}
+  source: "hw2d README, Reference Values table"
