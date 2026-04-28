@@ -1,0 +1,24 @@
+# Reference Gamma_n values from the hw2d README, used as the Phase 1 sanity gate.
+# Source: https://github.com/the-rccg/hw2d (reference table, validated against
+# Numata 2007 and Pushkarev 2013).
+#
+# Our DNS at the same parameters must reproduce these within published
+# variance before any surrogate is trained. If it does not, fix the simulator
+# setup before fitting anything.
+#
+# TODO: populate from the hw2d README before Phase 1.
+
+reference_grid:
+  k0: 0.15
+  nx: 512
+  ny: 512
+  hyperdiffusion_order: 3   # nabla^6
+  nu: 5.0e-9
+
+# Schema (filled in Phase 0/1):
+# gamma_n_reference:
+#   "0.1": {mean: ..., std: ..., source: hw2d README}
+#   "0.5": ...
+#   "1.0": ...
+#   "5.0": ...
+gamma_n_reference: {}

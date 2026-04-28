@@ -1,444 +1,216 @@
-# Copilot Instructions — IEEE ROM/DL Benchmark
+# Copilot Instructions — Context-Conditioned Structured ROM Framework
 
-## Project Overview
+## What this repo is
 
-This repo benchmarks **reduced-order models (ROMs)** and **deep-learning surrogates** for PDE forecasting, targeting an IEEE publication. The primary benchmark PDE is **Hasegawa-Wakatani 2D** (HW2D) plasma turbulence. **Kuramoto-Sivashinsky** (KS) is a second benchmark.
+Code for the IEEE/CiSE-track methods paper *Context-Conditioned Structured
+Reduced Operators: A Framework for Parametric Surrogates of Chaotic PDEs*.
+Companion paper repo lives in `../IEEE-CiSE-Special-Issue/`.
 
-Methods currently implemented:
+The paper proposes a 5-primitive framework for parametric reduced-order
+modeling that sits between classical operator inference (OpInf) and
+unstructured hypernetwork operator-learning (DISCO). The headline
+instantiation is on the parametric Hasegawa-Wakatani plasma turbulence
+equations.
 
-| Method | Directory | Type | Key Library |
-|--------|-----------|------|-------------|
-| Optimized DMD (BOPDMD) | `dmd/` | ROM — continuous-time linear | `pydmd` |
-| Operator Inference (OpInf) | `opinf/` | ROM — discrete-time quadratic | custom (NumPy/SciPy + MPI) |
-| Fourier Neural Operator (FNO) | `fno/` | DL surrogate | `neuralop` + PyTorch |
+This is **scientific computing code**, not production software. There is
+**no CI**. The priorities are:
 
-Possible future methods: DeepONet, generative PDE solvers.
-
-The quantity of interest for **all** methods is prediction of transport coefficients **Γ_n** (particle flux) and **Γ_c** (conductive flux). Every method must produce comparable Gamma predictions and use the same plotting utilities for paper-quality figures.
-
-The first evaluation of the methods is there ability to forecast from a single intial condition. The secondary would be to forecast a unseen intial condition. The Last would be to forcast a whole different parametric variation that hasn't been seen. Currrently we are still trying to get the single IC scenario to work
----
-
-## Repository Structure
-
-```
-../IEEE-CiSE-Special-Issue/   # GitHub clone of Overleaf project for this paper
-../IEEE/                        # This repo — code for the paper
-├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
-├── dmd/             # DMD pipeline (3-step)
-├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
-├── fno/             # FNO pipeline (3-step, PyTorch)
-├── analysis/        # Post-hoc comparison and diagnostic scripts
-├── data/            # Symlinks to actual data (see Data Layout below)
-│   ├── hw2d/        # → HW2D HDF5 simulations (symlink on HPC)
-│   └── ks/          # KS data + generation notebook (small, lives in repo)
-├── scripts/         # SLURM job scripts (Frontera/Vista) + local bash runners
-├── sweep_configs/   # Parameter sweep YAML files
-└── results/         # Curated results for paper figures
-```
-
-### The 3-Step Pipeline Pattern
-
-**Every method follows the same 3-step structure.** This is a hard convention:
-
-| Step | Purpose | CLI Pattern |
-|------|---------|-------------|
-| `step_1_preprocess.py` | Load data, compute basis/embeddings, project | `python step_1_preprocess.py --config config.yaml` |
-| `step_2_train.py` | Fit model (operators, networks, etc.) | `python step_2_train.py --config config.yaml --run-dir <dir>` |
-| `step_3_evaluate.py` | Forecast, reconstruct, compute Gamma, metrics, plots | `python step_3_evaluate.py --config config.yaml --run-dir <dir>` |
-
-Each step writes a status entry to `pipeline_status.yaml` with timestamps. Steps check that prior steps completed before running (`check_step_completed()`).
+1. **Clean, simple, readable code.** Someone reviewing the paper should be
+   able to trace the math through the code in an afternoon.
+2. **Linear flow.** Avoid deep abstractions, metaclasses, framework-heavy
+   patterns, abstract base classes.
+3. **Sanity checks live as `__main__` blocks**, not a `tests/` directory.
+   Run `python -m rom.basis` to validate it on a fixture. No pytest, no
+   pre-commit, no GitHub Actions.
+4. **One file per concept; flat directories.** No `framework/operators/quadratic/triadic/...`
+   nesting. If it's a 200-line file, it lives at one level.
+5. **No `utils.py`.** Every function lives in a file named after its concept.
 
 ---
 
-## Critical Rules
-
-### 1. Physics Consistency
-
-**Γ_n and Γ_c must be computed identically across all methods.** The canonical implementation lives in `shared/physics.py`:
+## Repository Layout
 
 ```
-Γ_n = -⟨n · ∂φ/∂y⟩     (particle flux)
-Γ_c = c₁⟨(n − φ)²⟩     (conductive flux)
+IEEE/
+├── hw/                  # HW physics, DNS, dataset. PDE-specific.
+│   ├── physics.py       # Gamma_n, Gamma_c, Poisson bracket, RHS
+│   ├── dataset.py       # HDF5 loader; whole-trajectory + snippet samplers
+│   ├── dns.py           # Wrapper around the upstream hw2d solver
+│   └── reference_gammas.yaml   # canonical Gamma_n table from hw2d README
+│
+├── rom/                 # The framework. PDE-class-agnostic in intent.
+│   ├── basis.py         # P1: Fourier projection / lift
+│   ├── operator.py      # P2: linear + Poisson-bracket-sparse quadratic
+│   ├── encoder.py       # P3: MLP / Transformer over snippets
+│   ├── head.py          # P4: coefficient head with sign / sparsity priors
+│   ├── integrator.py    # P5: differentiable RK4 / ETDRK4
+│   ├── model.py         # composed end-to-end module
+│   ├── losses.py        # one-step + rollout + QoI losses
+│   └── train.py         # generic train loop, YAML-driven
+│
+├── disco_lite/          # Unstructured-operator ablation. One file differs.
+│   └── unet_operator.py # the only file unique to this baseline
+│
+├── opinf/               # Classical OpInf baselines (B1, B2).
+│   └── ...              # Existing 3-step pipeline; works today.
+│
+├── eval/                # Cross-method evaluation. Stateless.
+│   ├── metrics.py       # trajectory / spectral / QoI / cost metrics
+│   ├── plot.py          # paper figures from saved artifacts
+│   └── compare.py       # B1/B2/B3'/B4 x G1/G2/G3 matrix
+│
+├── shared/              # Pre-refactor utilities still in use:
+│                        #   physics.py, data_io.py, metrics.py,
+│                        #   plotting.py, mpi_utils.py, evaluation_io.py
+│                        # Being ported into hw/ and eval/ incrementally.
+│
+├── configs/             # ONE config tree; named by intent.
+│   ├── data/            # DNS data generation
+│   ├── opinf/           # baselines (b1_per_alpha, b2_affine_mu)
+│   ├── rom/             # framework (g1_alpha1, g2_unseen_ic, g3_unseen_alpha)
+│   └── disco_lite/      # ablation (matched-budget variants)
+│
+├── data/                # Symlinks to actual data; small notebooks in repo.
+│   └── hw2d/            # HW2D HDF5 files (HPC symlink) -- h5 gitignored
+│
+├── scripts/             # SLURM templates only. No method-specific scripts.
+│   ├── setup_data.sh
+│   └── setup_data.slurm
+│
+├── analysis/            # Surviving HW analysis scripts (non-mani/non-ks).
+│
+├── notebooks/           # Exploration only; never imported from src.
+│
+└── archive/             # Preserved for git-log; do not edit.
+    ├── dmd/, fno/                   # cut methods
+    ├── data_ks/, data_ns/           # cut PDEs
+    ├── analysis_old/                # mani/ks/dmd analysis
+    ├── scripts_old/                 # KS/NS/DMD/mani launchers
+    ├── configs_old/                 # OpInf KS/NS configs and old sweeps
+    └── sweep_configs_old/           # old top-level sweep YAMLs
 ```
 
-Where `∂/∂y` is a periodic central-difference gradient. If a method needs its own Gamma computation (e.g., `dmd/utils.py` has one for computing from stacked state vectors), it **must** produce identical numerical results to `shared/physics.py`. When in doubt, delegate to the shared implementation.
+---
 
-Grid parameters come from `get_hw2d_grid_params(k0, nx)` → `{Lx, dx, k0, nx, ny}` with `Lx = 2π/k0`, `dx = Lx/nx`.
+## The Framework: Five Primitives (`rom/`)
 
-### 2. Never Import `mpi_utils` at Module Level
+The whole framework is intentionally seven files and ~1k LOC. Read the
+file order top to bottom and the math reads top to bottom too.
 
-`shared/mpi_utils.py` triggers MPI initialization on import. **Always** use lazy/conditional imports:
+| Primitive | File | Role |
+|-----------|------|------|
+| P1 | `basis.py` | reduced representation: Fourier for HW |
+| P2 | `operator.py` | structured operator: linear + k-sparse quadratic |
+| P3 | `encoder.py` | maps snippet -> context vector |
+| P4 | `head.py` | maps context -> structured-operator coefficients |
+| P5 | `integrator.py` | differentiable RK4 / ETDRK4 in reduced space |
 
-```python
-# WRONG — breaks serial scripts
-from shared.mpi_utils import distribute_indices
+Composed in `model.py`, trained via `train.py` driven by
+`configs/rom/<cell>.yaml`.
 
-# RIGHT
-def my_parallel_function():
-    from shared.mpi_utils import distribute_indices
-    ...
+DISCO-lite (`disco_lite/`) reuses every primitive of `rom/` except P2,
+which is replaced by an unstructured U-Net. This is the controlled
+ablation for the paper's central claim.
+
+### Key sanity checks (Phase 3)
+
+Run each module's `__main__` to validate it:
+- `python -m rom.basis`     -> projection round-trip < 1e-10
+- `python -m rom.operator`  -> RHS matches hw.physics.hw_rhs to numerical precision
+- `python -m rom.integrator`-> short-horizon rollout matches hw2d at fixed alpha
+- *End-to-end with hand-set theta = a valid spectral solver.* This is the
+  most important check in the project. If it fails, nothing else matters.
+
+---
+
+## Critical Conventions
+
+### 1. Physics consistency
+
+Gamma_n / Gamma_c are computed in **one place** (`hw/physics.py`, currently
+mirrored from `shared/physics.py` during port). Every method that reports
+QoIs routes through it. Discrepancies are bugs.
+
+```
+Gamma_n = -<n * dphi/dy>     (particle flux)
+Gamma_c = c1 * <(n - phi)^2> (conductive flux)
 ```
 
-The `shared/__init__.py` deliberately does NOT export `mpi_utils`.
+### 2. MPI is opt-in
 
-### 3. Standardized Plotting for the Paper
+Do **not** import `shared/mpi_utils.py` at module top level. Use lazy imports
+inside functions. The `shared/__init__.py` deliberately does not export it.
+Single-rank execution must work without `mpi4py` installed.
 
-All methods **must** use `shared/plotting.py` for figure generation. Key functions:
+### 3. Configs are typed
 
-- `plot_gamma_timeseries()` — the primary comparison plot (handles single + ensemble with ±2σ)
-- `plot_pod_energy()` — for ROMs that use POD
-- `plot_state_snapshots()` — 6-column grid comparing reference vs predicted fields
-- `plot_state_error_timeseries()` — relative L₂ error over time
-- `generate_state_diagnostic_plots()` — unified wrapper for trajectory lists
-- `setup_publication_style()` — call this to set matplotlib rcParams
+Configs are dataclasses. YAML deserializes into them. Code reads
+`cfg.k_max`, not `cfg["k_max"]`. Naming policy: configs are named by what
+they do (`b1_per_alpha.yaml`), not their hyperparameters
+(`opinf_ks_r15_tighter.yaml` style is forbidden; lives in `archive/`).
 
-Do **not** create one-off matplotlib code in method directories for figures that go in the paper. Extend `shared/plotting.py` instead so all methods benefit.
+### 4. Outputs go outside the repo
 
-### 4. Configuration via YAML + Dataclass
+Run output goes to `$SCRATCH/IEEE/output/<timestamp>/` on HPC and to
+`$IEEE_OUTPUT/<timestamp>/` (or `./local_output/`) locally. Never commit
+checkpoints or per-run logs. Curate a small set of canonical results into
+`results/` for the paper; everything else is ephemeral.
 
-- OpInf and DMD use **dataclass** configs (`OpInfConfig`, `DMDConfig` which extends `OpInfConfig`)
-- FNO currently uses a plain dict — this should eventually be a dataclass too
-- Config files live in `<method>/config/` as YAML
-- The regularization grid is defined as `{min, max, num, scale}` dicts and expanded to arrays by `_build_reg_array()`
-- Two training modes: `"multi_trajectory"` (train/test on different HDF5 files) and `"temporal_split"` (train on `[start, end)` of one file, test on later portion)
+### 5. Plotting reads artifacts, never runs models
 
-### 5. Linear, Simple, Readable Code
+`eval/plot.py` and `eval/compare.py` consume `run_summary.yaml + npz` and
+emit figures. They do not load checkpoints. Re-making a paper figure should
+never require re-running training.
 
-This is a scientific computing paper codebase. Prioritize:
+### 6. No `tests/` directory
 
-- **Linear flow** — avoid deep abstractions, metaclasses, or framework-heavy patterns
-- **Readability** — someone reviewing the paper should be able to trace the math through the code
-- **NumPy-style docstrings** with Parameters/Returns sections
-- **Sectioned code** using `# ===` banner comments for major blocks
-- **Explicit memory management** — `del` large arrays, `gc.collect()` where needed, especially on HPC
-
-### 6. Dual Execution: HPC (SLURM) and Local (bash)
-
-All pipelines must run on both:
-
-- **TACC Frontera** — via SLURM scripts in `scripts/` (Intel Cascade Lake, 56 cores/node, `ibrun` for MPI)
-- **TACC Vista** — via SLURM scripts in `scripts/` (Grace-Hopper H200 GPU nodes for FNO/DL work)
-- **Local machine** — via bash scripts in `scripts/` or `<method>/run_local.sh`
-
-The only difference should be the launch mechanism (SLURM vs bash). The Python code itself should not contain HPC-specific logic. MPI code should degrade gracefully when `mpi4py` is not available or running with 1 rank.
-
-### 7. Data Format
-
-- HW2D data is **HDF5** (NetCDF4-compatible), loaded via `xarray` with the `h5netcdf` engine
-- Fields: `density` (T, H, W), `phi` (T, H, W), `gamma_n` (T,), `gamma_c` (T,)
-- State vector for ROMs: `Q = [density_flat; phi_flat]` shape `(2·ny·nx, n_time)`
-- File naming encodes simulation parameters (step size, domain, grid, physics constants)
-
-### 8. Float Precision
-
-- Default to `float64` (double precision)
-- Use `float32` for large-rank DMD to manage memory
-- FNO uses `float32` (PyTorch default)
-- When comparing across precisions, upcast to `float64` first
+Each module has a `if __name__ == "__main__":` sanity check. No pytest, no
+mocking, no fixtures library. The fixtures are short HW snapshots.
 
 ---
 
 ## Git Policy
 
-### No AI Co-Author Attribution
+### No AI co-author trailers
 
-**Do NOT include any Co-authored-by, AI attribution, or similar trailers in git commits.** Many journals prohibit AI co-authorship claims. When creating commits, use a plain commit message with no trailers.
+Many journals prohibit AI co-authorship claims. Commits MUST NOT include
+`Co-authored-by: Copilot ...` or similar. Plain commit messages only.
 
-### Ask Before Git Operations
+### Ask before git ops
 
-**Do NOT commit, push, or pull on any repo (local or remote) without explicit user approval.** The user controls all git operations. You may stage files or show diffs, but never run `git commit`, `git push`, or `git pull` on your own.
+Do not `commit`, `push`, or `pull` without explicit user approval. Stage and
+show diffs only.
 
----
+### Active branches
 
-## Local ↔ HPC Workflow
-
-### Overview
-
-The development workflow spans a local Mac (code editing, KS testing, AI copilot) and TACC HPC systems (MPI runs, large HW2D data, GPU training).
-
-```
-┌──────────────┐     git push      ┌──────────┐     git pull     ┌──────────────┐
-│  Local Mac   │  ──────────────►  │  GitHub   │  ──────────────► │   Frontera   │
-│  (edit code) │                   │  (origin) │                  │   (run jobs) │
-│              │  ◄──────────────  │           │  ◄────────────── │              │
-│  KS testing  │     git pull      │           │     git push     │  HW2D / MPI  │
-└──────────────┘                   └──────────┘                   └──────────────┘
-```
-
-### Workflow Steps
-
-1. **Edit code locally** — Use Copilot for code changes, test with KS data
-2. **Push to GitHub** — User controls when to push (or Copilot can push via SSH with permission)
-3. **Pull on Frontera** — `cd $WORK/repos/IEEE && git pull`
-4. **Run jobs** — Submit SLURM scripts from `scripts/`; output goes to `$SCRATCH/IEEE/output/`
-5. **Retrieve results** — Either push result YAML/plots to GitHub, or `scp` back to local
-
-### When Copilot Edits on HPC via SSH
-
-For quick fixes that don't warrant a full push/pull cycle, Copilot can edit files directly on Frontera via SSH. In this case:
-- Make changes on Frontera
-- Ask user whether to commit+push from Frontera back to GitHub
-- Pull locally afterward to stay in sync
-
-### Local Development
-
-- **Python**: 3.12 (miniconda3)
-- **KS pipeline** can run fully locally (small data, fast)
-- **HW2D** is HPC-only — data too large for local
-- Small test datasets (KS) live in `data/ks/` in the repo
-- Use `scripts/run_*_local.sh` or method-specific `run_local.sh` scripts
+`main` and `refactor` only. Other branches were intentionally pruned during
+the 2026 refactor; their code (where worth keeping) is in `archive/`.
 
 ---
 
 ## HPC Quick Reference (TACC)
 
-### Connection
+(Unchanged from the prior layout; the local <-> HPC story is the same.
+`hw/dns.py` runs on Frontera, `rom/train.py` runs on Vista.)
 
-| System | SSH | Use Case |
-|--------|-----|----------|
-| Frontera | `ssh $FRONTERA` | CPU work: DMD, OpInf, MPI jobs |
-| Vista | `ssh $VISTA` | GPU work: FNO, PyTorch, DL training |
+| System | Use |
+|--------|-----|
+| Frontera | CPU/MPI: OpInf baselines, HW DNS data generation |
+| Vista (gh) | GPU: ROM / DISCO-lite training |
 
-ControlMaster sockets are configured locally — connections should not require a password.
-
-### User / Allocation
-
-- **Username:** `anthony50102`
-- **Allocation:** `PHY25003` (auto-selected, single project — `-A` flag usually not needed)
-
-### File System Layout
-
-| Location | Path | Purpose | Persistence |
-|----------|------|---------|-------------|
-| `$HOME` | `/home1/10407/anthony50102` | Config, dotfiles | Permanent, small quota |
-| `$WORK` | `/work2/10407/anthony50102/frontera` | Repo, archived data | Permanent, shared via Stockyard |
-| `$SCRATCH` | `/scratch2/10407/anthony50102` | Working data, job output | **Purged after 10 days of no access** |
-
-### Data Layout
-
-```
-$WORK/
-├── repos/IEEE/              # Git repo (code only, no large data)
-│   ├── data/
-│   │   ├── hw2d/            # Notebooks only (h5 files gitignored)
-│   │   └── ks/              # Small KS data + notebook (lives in repo)
-│   └── ...
-└── data/                    # Archived data (canonical copy, persistent)
-    └── hw2d_sim/            # Raw HW2D simulation HDF5 files (372GB)
-
-$SCRATCH/
-└── IEEE/
-    ├── data/                # Working data (striped Lustre, fast I/O)
-    │   └── hw2d/            # Copied from $WORK/data/hw2d_sim/ via setup_data.sh
-    └── output/              # Job output directories (timestamped)
-```
-
-**Why this layout:**
-- **Lustre striping** on `$SCRATCH` enables fast parallel I/O for large HDF5 reads — `$WORK` does not support striping
-- `$WORK/data/` is the persistent archive; `$SCRATCH/IEEE/data/` is the fast working copy
-- If `$SCRATCH` gets purged, run `scripts/setup_data.sh` (or `sbatch scripts/setup_data.slurm` for full copy)
-- Job output goes to `$SCRATCH/IEEE/output/` — ephemeral by design; curate important results into `results/` in the repo
-
-**Data paths in configs:** YAML configs use `data_dir` with absolute paths. HPC configs point to `$SCRATCH/IEEE/data/hw2d/`, local configs point to local paths. There are separate `*_local.yaml` files for local runs. When creating new configs, follow this pattern:
-- HPC: `data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d/"`
-- Local: `data_dir: "<local path to data>"`
-
-### Queues
-
-**Frontera (CPU):**
-
-| Queue | Nodes | Max Time | Notes |
-|-------|-------|----------|-------|
-| `small` | 1–2 | 48 hrs | Serial/OpenMP, 1 SU/node-hr |
-| `normal` | 3–512 | 48 hrs | MPI jobs, 1 SU/node-hr |
-| `development` | 1–40 | 2 hrs | Testing, 1 SU/node-hr |
-| `flex` | 1–128 | 48 hrs | Preemptible after 1 hr, 0.8 SU/node-hr |
-
-**Vista (GPU):**
-
-| Queue | Nodes | Max Time | Notes |
-|-------|-------|----------|-------|
-| `gh` | 1–64 | 48 hrs | Grace-Hopper (1× H200 GPU/node), 1 SU/node-hr |
-| `gh-dev` | 1–8 | 2 hrs | GPU dev queue, 1 SU/node-hr |
-| `gg` | 1–32 | 48 hrs | Grace-Grace CPU-only (144 cores), 0.33 SU/node-hr |
-
-### Node Specs
-
-| | Frontera CLX | Vista GH (GPU) | Vista GG (CPU) |
-|-|-------------|----------------|----------------|
-| Cores | 56 (2×28) | 72 (1 socket) | 144 (2×72) |
-| RAM | 192 GB DDR4 | 116 GB LPDDR + 96 GB HBM3 | 237 GB LPDDR |
-| GPU | — | 1× NVIDIA H200 (96 GB HBM3) | — |
-
-### Module Setup
-
-**Frontera** (default modules are fine for CPU/MPI work):
-```bash
-module list  # intel/19.1.1, impi/19.0.9, python3/3.7.0
-```
-
-**Vista** (for PyTorch/FNO GPU work):
-```bash
-module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
-```
-
-### Python Environments
-
-**Frontera** — Use `python3/3.9.2` (NOT the default 3.7.0):
-```bash
-module load python3/3.9.2 phdf5/1.10.4
-export MPLBACKEND=Agg   # Required — prevents pygobject segfault
-```
-- System `python3/3.7.0` ships numpy 1.16.4 which is **too old** for `pydmd` (BOPDMD requires numpy ≥1.20 for `sliding_window_view`)
-- `python3/3.9.2` ships numpy 1.20.1, scipy, matplotlib, h5py pre-built for Frontera's architecture (Intel MKL-linked)
-- `phdf5/1.10.4` provides `libhdf5.so.103` which the system `h5py` is linked against — **without this module, h5py import fails**
-- Additional packages installed via `pip3 install --user`: `pydmd`, `xarray`, `scikit-learn`
-- The `MPLBACKEND=Agg` export is **mandatory** — without it, importing `h5py` + `matplotlib` together triggers a segfault in the system `pygobject` GTK backend
-- All SLURM scripts for Frontera must include these module loads and the `MPLBACKEND` export
-
-**Vista** (for PyTorch/FNO GPU work):
-```bash
-module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
-```
-- Vista venvs live in `$SCRATCH/venvs/`. Create with: `python3 -m venv $SCRATCH/venvs/<name>`
-- Install PyTorch on Vista: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu129`
-- Always install packages from a **compute node** (`idev`), not the login node
-
-**Common dependency issues on Frontera:**
-- If `h5py` fails with `libhdf5.so.103 not found` → need `module load phdf5/1.10.4`
-- If `pydmd` fails with `cannot import sliding_window_view` → wrong Python module loaded (3.7 instead of 3.9.2)
-- If segfault on import → missing `export MPLBACKEND=Agg`
-- If `--user` pip install overrides system numpy → `pip3 uninstall numpy` to fall back to system numpy (do NOT install numpy via pip on Frontera — use the module-provided one)
-
-### SLURM Job Templates
-
-**Frontera — MPI job (OpInf/DMD):**
-```bash
-#!/bin/bash
-#SBATCH -J opinf-run
-#SBATCH -o $SCRATCH/IEEE/output/opinf.o%j
-#SBATCH -e $SCRATCH/IEEE/output/opinf.e%j
-#SBATCH -p normal
-#SBATCH -N 4
-#SBATCH -n 224             # 56 tasks/node × 4 nodes
-#SBATCH -t 02:00:00
-
-module load python3/3.9.2 phdf5/1.10.4
-export MPLBACKEND=Agg
-cd $WORK/repos/IEEE
-ibrun python3 opinf/step_2_train.py --config opinf/config/example.yaml --run-dir $SCRATCH/IEEE/output
-```
-
-**Vista — single-GPU job (FNO):**
-```bash
-#!/bin/bash
-#SBATCH -J fno-train
-#SBATCH -o $SCRATCH/IEEE/output/fno.o%j
-#SBATCH -e $SCRATCH/IEEE/output/fno.e%j
-#SBATCH -p gh
-#SBATCH -N 1
-#SBATCH -n 1
-#SBATCH -t 04:00:00
-
-module load gcc cuda python3
-source $SCRATCH/venvs/<your-env>/bin/activate
-cd $WORK/repos/IEEE
-python3 fno/step_2_train.py --config fno/config/example.yaml --run-dir $SCRATCH/IEEE/output
-```
-
-### Key Commands
-
-```bash
-sbatch myjob.slurm          # submit batch job
-squeue -u anthony50102       # check your jobs
-scancel <jobid>              # cancel a job
-idev -p gh-dev -N 1 -n 1    # interactive GPU session on Vista
-idev -p development -N 1     # interactive CPU session on Frontera
-showq -u                     # alternative job status view
-qlimits                      # show current queue limits
-/usr/local/etc/taccinfo      # allocation balance + disk quotas
-ibrun ./myprogram            # MPI launcher (use instead of mpirun)
-```
-
-### Important Reminders
-
-- Use `ibrun` for MPI, **never** `mpirun` or `mpiexec`
-- Do **not** run compute-intensive work on login nodes
-- Do **not** run `ssh-keygen` on TACC systems
-- `$SCRATCH` files are purged after 10 days of no access
-- Min charge is 15 minutes per job regardless of actual runtime
-- Do **not** use `#SBATCH --export`, `--mem`, or `--gpus-per-task` on TACC systems
-- SLURM `-o` and `-e` flags should write to `$SCRATCH/IEEE/output/`, not into the repo
+Filesystem layout, queue choices, SLURM templates, module loads, and the
+`MPLBACKEND=Agg` requirement are unchanged. See `archive/configs_old/` and
+`scripts/` for examples to adapt.
 
 ---
 
-## Dependencies (No pyproject.toml Yet)
+## Where to look
 
-There is currently no `pyproject.toml` or `requirements.txt`. This should be created. Current dependencies:
+- Paper draft: `../IEEE-CiSE-Special-Issue/main.tex`
+- Paper repo PLAN: `../IEEE-CiSE-Special-Issue/PLAN.md`
+- Knowledge notes: `../knowledge/{novelty_check,opinf_and_popinf,disco,hasegawa_wakatani}.md`
+- Refactor plan + experimental workflow: session workspace
+  (`~/.copilot/session-state/.../plan.md` if a Copilot session is active).
 
-| Category | Packages |
-|----------|----------|
-| Core scientific | `numpy`, `scipy`, `h5py`, `xarray`, `h5netcdf` |
-| MPI (optional) | `mpi4py` |
-| DMD | `pydmd` |
-| FNO | `torch`, `neuralop` |
-| Visualization | `matplotlib` |
-| Config | `pyyaml` |
-
-Cross-module imports use `sys.path.insert(0, ...)` rather than package installation. This is intentional — the repo is not an installable package.
-
----
-
-## Adding a New Method
-
-When adding a new PDE surrogate method (e.g., DeepONet, diffusion model):
-
-1. **Create a new top-level directory** named after the method (e.g., `deeponet/`)
-2. **Follow the 3-step pipeline**:
-   - `step_1_preprocess.py` — data loading and any method-specific preprocessing
-   - `step_2_train.py` — model fitting/training
-   - `step_3_evaluate.py` — forecasting, Gamma computation, metrics, plots
-3. **Accept `--config` and `--run-dir` CLI arguments** matching existing methods
-4. **Create `config/` subdirectory** with at least an `example.yaml`
-5. **Create `utils.py`** with a config dataclass (inherit from `OpInfConfig` if fields overlap, or create standalone)
-6. **Use `shared/physics.py`** for Gamma computation — do not reimplement
-7. **Use `shared/plotting.py`** for all paper figures
-8. **Use `shared/data_io.py`** for HDF5 loading — do not reimplement
-9. **Add `run_local.sh`** for local execution
-10. **Add SLURM script** in `scripts/` for HPC execution
-11. **Write `pipeline_status.yaml`** entries with `save_step_status()` at each step
-12. **Add a `README.md`** documenting the method, its math, and how to run it
-13. **Support both HW2D and KS** datasets (or at least design for it)
-
-### Adding a New Benchmark PDE
-
-When extending to a new PDE (beyond HW2D and KS):
-
-1. Add data generation notebook in `data/<pde_name>/`
-2. Ensure data is stored as HDF5 with fields that `shared/data_io.py` can load (or extend it)
-3. Define the physics-relevant QoI (analogous to Γ_n, Γ_c) in `shared/physics.py`
-4. Add corresponding plotting support in `shared/plotting.py`
-5. Update configs for each method to point to the new data
-
----
-
-## File Conventions
-
-- **Modules**: `snake_case.py`
-- **Classes**: `PascalCase` (`DMDConfig`, `BasisData`, `SingleStepDataset`)
-- **Functions/variables**: `snake_case`
-- **Constants**: `UPPER_SNAKE_CASE` (`DTYPE`, `CDTYPE`, `DEFAULT_CURRICULUM`)
-- **Author header**: `Author: Anthony Poole` at top of each module
-- **Logging**: always log to both console and file via `setup_logging()`
-- **Output directories**: timestamped, created by `create_run_directory()`
-
----
-
-## Method-Specific Instructions
-
-See the per-method instruction files for detailed guidance:
-
-- [dmd.md](.github/dmd.md) — DMD/BOPDMD specifics
-- [opinf.md](.github/opinf.md) — Operator Inference specifics
-- [fno.md](.github/fno.md) — FNO specifics
+When in doubt about a refactor or experiment design choice, prefer the
+simpler, more readable option. Add complexity only when the math demands it.
