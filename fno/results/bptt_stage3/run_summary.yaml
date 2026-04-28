@@ -1,0 +1,143 @@
+meta:
+  method: fno
+  pde: hw2d
+  run_dir: /scratch/10407/anthony50102/fno_output/fno_hw2d_bptt_full_20260416_155023
+  config_hash: c9ab86d64f12
+  timestamp: '2026-04-21T10:33:37.757529'
+  schema_version: 1
+train:
+  trajectories:
+  - trajectory: 0
+    n_steps: 7999
+    Gamma_n_ref_mean: 0.6369900964382127
+    Gamma_n_ref_std: 0.049224536667787894
+    Gamma_n_pred_mean: -402.1968145225887
+    Gamma_n_pred_std: 37.27096076004822
+    Gamma_n_err_mean: 632.4019900332961
+    Gamma_n_err_std: 756.1622463729153
+    Gamma_n_rmse: 404.5543676151906
+    Gamma_n_mse: 163664.23635652676
+    Gamma_n_nrmse: 8218.551051998575
+    Gamma_n_correlation: -0.056948964214554615
+    Gamma_n_valid_time: 0.025
+    Gamma_c_ref_mean: 0.6327145932793453
+    Gamma_c_ref_std: 0.039139545929529326
+    Gamma_c_pred_mean: 287.6453877005492
+    Gamma_c_pred_std: 23.638864620422172
+    Gamma_c_err_mean: 453.62107363398985
+    Gamma_c_err_std: 602.9636909172094
+    Gamma_c_rmse: 287.98434554163805
+    Gamma_c_mse: 82934.98327704557
+    Gamma_c_nrmse: 7357.886728173937
+    Gamma_c_correlation: 0.010183327766341666
+    Gamma_c_valid_time: 0.025
+    state_mse: 140.06673242398605
+    state_rel_l2_mean: 5.890784095138687
+    state_rel_l2_max: 6.358862490687997
+    state_rel_l2_final: 5.88747526643654
+    state_rel_l2_median: 5.903293295601564
+  aggregate:
+    Gamma_n_ref_mean: 0.6369900964382127
+    Gamma_n_ref_std: 0.049224536667787894
+    Gamma_n_pred_mean: -402.1968145225887
+    Gamma_n_pred_std: 37.27096076004822
+    Gamma_n_err_mean: 632.4019900332961
+    Gamma_n_err_std: 756.1622463729153
+    Gamma_n_rmse: 404.5543676151906
+    Gamma_n_mse: 163664.23635652676
+    Gamma_n_nrmse: 8218.551051998575
+    Gamma_n_correlation: -0.056948964214554615
+    Gamma_n_valid_time: 0.025
+    Gamma_c_ref_mean: 0.6327145932793453
+    Gamma_c_ref_std: 0.039139545929529326
+    Gamma_c_pred_mean: 287.6453877005492
+    Gamma_c_pred_std: 23.638864620422172
+    Gamma_c_err_mean: 453.62107363398985
+    Gamma_c_err_std: 602.9636909172094
+    Gamma_c_rmse: 287.98434554163805
+    Gamma_c_mse: 82934.98327704557
+    Gamma_c_nrmse: 7357.886728173937
+    Gamma_c_correlation: 0.010183327766341666
+    Gamma_c_valid_time: 0.025
+    state_mse: 140.06673242398605
+    state_rel_l2_mean: 5.890784095138687
+    state_rel_l2_max: 6.358862490687997
+    state_rel_l2_final: 5.88747526643654
+    state_rel_l2_median: 5.903293295601564
+test:
+  trajectories:
+  - trajectory: 0
+    n_steps: 3999
+    Gamma_n_ref_mean: 0.607457007384652
+    Gamma_n_ref_std: 0.05145131384991197
+    Gamma_n_pred_mean: -398.1184014565171
+    Gamma_n_pred_std: 53.68879016067565
+    Gamma_n_err_mean: 656.3853138851385
+    Gamma_n_err_std: 1042.4872531591827
+    Gamma_n_rmse: 402.32220558813174
+    Gamma_n_mse: 161863.15710929895
+    Gamma_n_nrmse: 7819.473896463386
+    Gamma_n_correlation: 0.16677098975433044
+    Gamma_n_valid_time: 0.8250000000000001
+    Gamma_c_ref_mean: 0.6074350927286847
+    Gamma_c_ref_std: 0.04031444986378815
+    Gamma_c_pred_mean: 285.89700178897033
+    Gamma_c_pred_std: 32.76017234482488
+    Gamma_c_err_mean: 469.66263574710575
+    Gamma_c_err_std: 811.6161328137388
+    Gamma_c_rmse: 287.1642521506496
+    Gamma_c_mse: 82463.30771324185
+    Gamma_c_nrmse: 7123.109781254651
+    Gamma_c_correlation: -0.07903225729727684
+    Gamma_c_valid_time: 0.05
+    state_mse: 139.06451336201255
+    state_rel_l2_mean: 5.906731799035837
+    state_rel_l2_max: 6.216110382967261
+    state_rel_l2_final: 6.172496649990625
+    state_rel_l2_median: 5.9795568188698605
+  aggregate:
+    Gamma_n_ref_mean: 0.607457007384652
+    Gamma_n_ref_std: 0.05145131384991197
+    Gamma_n_pred_mean: -398.1184014565171
+    Gamma_n_pred_std: 53.68879016067565
+    Gamma_n_err_mean: 656.3853138851385
+    Gamma_n_err_std: 1042.4872531591827
+    Gamma_n_rmse: 402.32220558813174
+    Gamma_n_mse: 161863.15710929895
+    Gamma_n_nrmse: 7819.473896463386
+    Gamma_n_correlation: 0.16677098975433044
+    Gamma_n_valid_time: 0.8250000000000001
+    Gamma_c_ref_mean: 0.6074350927286847
+    Gamma_c_ref_std: 0.04031444986378815
+    Gamma_c_pred_mean: 285.89700178897033
+    Gamma_c_pred_std: 32.76017234482488
+    Gamma_c_err_mean: 469.66263574710575
+    Gamma_c_err_std: 811.6161328137388
+    Gamma_c_rmse: 287.1642521506496
+    Gamma_c_mse: 82463.30771324185
+    Gamma_c_nrmse: 7123.109781254651
+    Gamma_c_correlation: -0.07903225729727684
+    Gamma_c_valid_time: 0.05
+    state_mse: 139.06451336201255
+    state_rel_l2_mean: 5.906731799035837
+    state_rel_l2_max: 6.216110382967261
+    state_rel_l2_final: 6.172496649990625
+    state_rel_l2_median: 5.9795568188698605
+verdict:
+  grade: poor
+  Gamma_n_nrmse: 7819.473896463386
+  Gamma_n_correlation: 0.16677098975433044
+  Gamma_n_err_mean: 656.3853138851385
+  thresholds:
+    excellent:
+      nrmse: 0.1
+      correlation: 0.95
+      err_mean: 0.05
+    good:
+      nrmse: 0.3
+      correlation: 0.8
+      err_mean: 0.15
+    fair:
+      nrmse: 0.6
+      correlation: 0.5
+      err_mean: 0.3

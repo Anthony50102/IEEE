@@ -27,28 +27,45 @@ train_end: 16000       # Train to snapshot 16000 (8000 snapshots)
 test_start: 16000      # Test from snapshot 16000
 test_end: 20000        # Test to snapshot 20000 (4000 snapshots)
 
-# FNO model configuration — scaled up for 2D turbulence
+# FNO model configuration — Tucker-factorized FNO (TFNO)
+# Follows neuraloperator library best practices:
+#   - hidden=128, modes=[64,64] matches "Large" preset with factorization
+#   - Tucker factorization (rank=0.1) reduces params from ~139M to ~14.5M
+#   - 4 layers is the library standard
 model:
-  n_modes: [64, 64]     # Fourier modes in each dimension
-  in_channels: 2        # density + potential
-  out_channels: 2       # predict next density + potential
-  hidden_channels: 256  # Width of the network (doubled from 128)
-  n_layers: 5           # Number of Fourier layers (matching KS)
+  type: "tfno"            # Tucker-factorized Fourier Neural Operator
+  n_modes: [64, 64]       # Fourier modes in each dimension
+  in_channels: 2           # density + potential
+  out_channels: 2          # predict next density + potential
+  hidden_channels: 128     # Width of the network (library "Large" tier)
+  n_layers: 4              # Number of Fourier layers (library default)
+  factorization: "tucker"  # Tucker tensor factorization of spectral weights
+  rank: 0.42                # Library default — keep 42% of full-rank parameters
 
-# Training configuration — KS-style training loop
+# Training configuration
 training:
-  batch_size: 6         # Balanced: better gradients + fits in 97GB GPU
-  n_epochs: 200         # Max epochs (early stopping will cut this short)
-  learning_rate: 5.0e-4 # Lower LR for stability (matching KS)
-  weight_decay: 1.0e-4  # L2 regularization
+  batch_size: 16          # Larger batch — smaller model fits easily in 97GB
+  n_epochs: 300           # More epochs — smaller model needs more training
+  learning_rate: 3.0e-4   # neuraloperator library default for NS
+  weight_decay: 1.0e-4    # L2 regularization
   grad_clip: 1.0
-  noise_std: 0.02       # Higher noise for robustness (matching KS)
-  gradient_checkpointing: true
+  noise_std: 0.02         # Input noise for robustness (applied to GT and own predictions)
+  gradient_checkpointing: true   # Needed for Step 2 rollout (80 steps at 512x512)
+  bptt_steps: 4           # Truncated BPTT: backprop through 4 consecutive model-prediction steps
   
+  # Loss function: H1 Sobolev norm (penalizes spatial gradient errors)
+  loss: "h1"
+  
+  # Per-channel normalization (computed from training data only)
+  normalize: true
+
   # Validation split from training data (NOT test data) for early stopping
   val_fraction: 0.2     # Last 20% of training window → [14400, 16000)
-  early_stopping_patience: 10  # Stop after 10 eval cycles with no improvement
+  early_stopping_patience: 15  # More patience — smaller model trains slower
   
+  # Early stopping per curriculum stage (eval cycles without improvement)
+  stage_early_stopping_patience: 5
+
   # Learning rate scheduler
   scheduler:
     type: "cosine"
@@ -58,10 +75,10 @@ training:
   save_every: 20
   eval_every: 5         # Evaluate more often for early stopping
 
-# Step 2: Curriculum — KS-style with 6 stages for longer rollout training
+# Step 2: Curriculum — 6 stages for longer rollout training
 curriculum:
-  - [5,  0.8, 20]   # Stage 1: Short rollouts, 80% teacher forcing
-  - [10, 0.6, 20]   # Stage 2: Medium rollouts, 60% teacher forcing
+  - [5,  0.8, 30]   # Stage 1: Short rollouts, 80% teacher forcing
+  - [10, 0.6, 30]   # Stage 2: Medium rollouts, 60% teacher forcing
   - [20, 0.4, 20]   # Stage 3: Longer rollouts, 40% teacher forcing
   - [40, 0.2, 20]   # Stage 4: Long rollouts, 20% teacher forcing
   - [60, 0.1, 20]   # Stage 5: Very long rollouts, 10% teacher forcing

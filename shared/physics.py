@@ -502,3 +502,279 @@ def compute_ks_statistical_moments(u: np.ndarray) -> dict:
         "skewness": skew,
         "kurtosis": kurt,
     }
+
+
+# =============================================================================
+# 2D NAVIER-STOKES PHYSICS (ω-ψ FORMULATION)
+# =============================================================================
+
+def get_ns_grid_params(
+    Re: float = 100.0,
+    nx: int = 256,
+    ny: int = 256,
+    Lx: float = 2 * np.pi,
+    Ly: float = None,
+) -> dict:
+    """
+    Get standard 2D NS grid parameters.
+
+    Parameters
+    ----------
+    Re : float
+        Reynolds number.
+    nx, ny : int
+        Number of grid points.
+    Lx : float
+        Domain length in x.
+    Ly : float, optional
+        Domain length in y (defaults to Lx).
+
+    Returns
+    -------
+    dict
+        Dictionary with Re, nu, Lx, Ly, dx, dy, nx, ny.
+    """
+    if Ly is None:
+        Ly = Lx
+    dx = Lx / nx
+    dy = Ly / ny
+    return {
+        'Re': Re,
+        'nu': 1.0 / Re,
+        'Lx': Lx,
+        'Ly': Ly,
+        'dx': dx,
+        'dy': dy,
+        'nx': nx,
+        'ny': ny,
+    }
+
+
+def compute_ns_enstrophy(omega: np.ndarray) -> float:
+    """
+    Compute enstrophy from vorticity: Z = ½⟨ω²⟩.
+
+    Parameters
+    ----------
+    omega : np.ndarray, shape (ny, nx)
+        Vorticity field at a single timestep.
+
+    Returns
+    -------
+    float
+        Scalar enstrophy value.
+    """
+    return 0.5 * np.mean(omega ** 2)
+
+
+def compute_ns_kinetic_energy(omega: np.ndarray, Lx: float, Ly: float = None) -> float:
+    """
+    Compute kinetic energy from vorticity via Poisson solve in Fourier space.
+
+    E = ½⟨|u|²⟩ = ½⟨|∇ψ|²⟩, where ∇²ψ = -ω.
+
+    Parameters
+    ----------
+    omega : np.ndarray, shape (ny, nx)
+        Vorticity field at a single timestep.
+    Lx : float
+        Domain length in x.
+    Ly : float, optional
+        Domain length in y (defaults to Lx).
+
+    Returns
+    -------
+    float
+        Scalar kinetic energy value.
+    """
+    if Ly is None:
+        Ly = Lx
+    ny, nx = omega.shape
+
+    # Wavenumber arrays
+    kx_1d = np.fft.fftfreq(nx, d=Lx / (2 * np.pi * nx))
+    ky_1d = np.fft.fftfreq(ny, d=Ly / (2 * np.pi * ny))
+    kx, ky = np.meshgrid(kx_1d, ky_1d)
+    ksq = kx**2 + ky**2
+
+    # Poisson solve: ψ̂ = ω̂ / k²
+    omega_hat = np.fft.fft2(omega)
+    psi_hat = np.zeros_like(omega_hat)
+    nonzero = ksq > 0
+    psi_hat[nonzero] = omega_hat[nonzero] / ksq[nonzero]
+
+    # Velocity: u = ∂ψ/∂y, v = -∂ψ/∂x
+    u_hat = 1j * ky * psi_hat
+    v_hat = -1j * kx * psi_hat
+    u = np.fft.ifft2(u_hat).real
+    v = np.fft.ifft2(v_hat).real
+
+    return 0.5 * np.mean(u**2 + v**2)
+
+
+def compute_ns_qoi_timeseries(
+    omega: np.ndarray,
+    Lx: float,
+    Ly: float = None,
+) -> tuple:
+    """
+    Compute energy and enstrophy time series for 2D NS data.
+
+    Parameters
+    ----------
+    omega : np.ndarray, shape (n_time, ny, nx)
+        Vorticity field evolution.
+    Lx : float
+        Domain length in x.
+    Ly : float, optional
+        Domain length in y (defaults to Lx).
+
+    Returns
+    -------
+    tuple
+        (energy, enstrophy), each shape (n_time,).
+    """
+    n_time = omega.shape[0]
+    energy = np.zeros(n_time)
+    enstrophy = np.zeros(n_time)
+
+    for t in range(n_time):
+        energy[t] = compute_ns_kinetic_energy(omega[t], Lx, Ly)
+        enstrophy[t] = compute_ns_enstrophy(omega[t])
+
+    return energy, enstrophy
+
+
+def compute_ns_qoi_from_state_vector(
+    state: np.ndarray,
+    ny: int,
+    nx: int,
+    Lx: float,
+    Ly: float = None,
+) -> tuple:
+    """
+    Compute NS energy and enstrophy from a flattened state vector.
+
+    The state vector is assumed to be [omega_flat].
+
+    Parameters
+    ----------
+    state : np.ndarray, shape (ny*nx,) or (ny*nx, n_time)
+        Flattened state vector(s).
+    ny, nx : int
+        Grid dimensions.
+    Lx : float
+        Domain length in x.
+    Ly : float, optional
+        Domain length in y (defaults to Lx).
+
+    Returns
+    -------
+    tuple
+        (energy, enstrophy) — scalars if input is 1D, arrays if 2D.
+    """
+    n_spatial = ny * nx
+    if state.ndim == 1:
+        omega = state[:n_spatial].reshape(ny, nx)
+        return (
+            compute_ns_kinetic_energy(omega, Lx, Ly),
+            compute_ns_enstrophy(omega),
+        )
+    else:
+        # state is (ny*nx, n_time)
+        omega_series = state[:n_spatial, :].T.reshape(-1, ny, nx)
+        return compute_ns_qoi_timeseries(omega_series, Lx, Ly)
+
+
+def compute_ns_energy_spectrum(omega: np.ndarray, Lx: float, Ly: float = None) -> tuple:
+    """
+    Compute isotropic kinetic energy spectrum E(k) from vorticity.
+
+    The spectrum is shell-averaged: E(k) = Σ_{|k'| ∈ [k-Δk/2, k+Δk/2)} ½|û(k')|².
+
+    Parameters
+    ----------
+    omega : np.ndarray, shape (ny, nx) or (n_time, ny, nx)
+        Vorticity field(s). If 3D, time-averaged spectrum is returned.
+    Lx : float
+        Domain length in x.
+    Ly : float, optional
+        Domain length in y (defaults to Lx).
+
+    Returns
+    -------
+    k_bins : np.ndarray
+        Wavenumber bin centres.
+    E_k : np.ndarray
+        Energy spectrum E(k).
+    """
+    if Ly is None:
+        Ly = Lx
+
+    if omega.ndim == 2:
+        omega = omega[np.newaxis, ...]
+
+    n_time, ny, nx = omega.shape
+
+    kx_1d = np.fft.fftfreq(nx, d=Lx / (2 * np.pi * nx))
+    ky_1d = np.fft.fftfreq(ny, d=Ly / (2 * np.pi * ny))
+    kx, ky = np.meshgrid(kx_1d, ky_1d)
+    ksq = kx**2 + ky**2
+    k_mag = np.sqrt(ksq)
+
+    # Velocity spectrum from vorticity: |û|² = |ω̂|²/k² (for k≠0)
+    dk = max(2 * np.pi / Lx, 2 * np.pi / Ly)
+    k_max = np.sqrt((np.pi * nx / Lx)**2 + (np.pi * ny / Ly)**2)
+    k_bins = np.arange(dk, k_max, dk)
+
+    E_k = np.zeros(len(k_bins))
+
+    for t in range(n_time):
+        omega_hat = np.fft.fft2(omega[t])
+        vel_sq_hat = np.zeros_like(ksq)
+        nonzero = ksq > 0
+        vel_sq_hat[nonzero] = np.abs(omega_hat[nonzero])**2 / ksq[nonzero]
+
+        for i, k_c in enumerate(k_bins):
+            shell = (k_mag >= k_c - dk / 2) & (k_mag < k_c + dk / 2)
+            E_k[i] += 0.5 * np.sum(vel_sq_hat[shell]) / (nx * ny)**2
+
+    E_k /= n_time
+
+    return k_bins, E_k
+
+
+def compute_ns_statistical_moments(omega: np.ndarray) -> dict:
+    """
+    Compute spatial statistical moments of vorticity at each timestep.
+
+    Parameters
+    ----------
+    omega : np.ndarray, shape (n_time, ny, nx)
+        Vorticity field evolution.
+
+    Returns
+    -------
+    dict
+        Keys: mean, variance, skewness, kurtosis, each shape (n_time,).
+        Kurtosis is excess kurtosis (normal = 0).
+    """
+    # Flatten spatial dims
+    n_time = omega.shape[0]
+    omega_flat = omega.reshape(n_time, -1)
+
+    mu = np.mean(omega_flat, axis=1)
+    var = np.var(omega_flat, axis=1)
+    std = np.sqrt(var)
+    std_safe = np.where(std < 1e-12, 1e-12, std)
+
+    centered = omega_flat - mu[:, None]
+    skew = np.mean((centered / std_safe[:, None]) ** 3, axis=1)
+    kurt = np.mean((centered / std_safe[:, None]) ** 4, axis=1) - 3.0
+
+    return {
+        "mean": mu,
+        "variance": var,
+        "skewness": skew,
+        "kurtosis": kurt,
+    }

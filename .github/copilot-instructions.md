@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repo benchmarks **reduced-order models (ROMs)** and **deep-learning surrogates** for PDE forecasting, targeting an IEEE publication. The primary benchmark PDE is **Hasegawa-Wakatani 2D** (HW2D) plasma turbulence. **Kuramoto-Sivashinsky** (KS) is a planned second benchmark.
+This repo benchmarks **reduced-order models (ROMs)** and **deep-learning surrogates** for PDE forecasting, targeting an IEEE publication. The primary benchmark PDE is **Hasegawa-Wakatani 2D** (HW2D) plasma turbulence. **Kuramoto-Sivashinsky** (KS) is a second benchmark.
 
 Methods currently implemented:
 
@@ -12,28 +12,29 @@ Methods currently implemented:
 | Operator Inference (OpInf) | `opinf/` | ROM — discrete-time quadratic | custom (NumPy/SciPy + MPI) |
 | Fourier Neural Operator (FNO) | `fno/` | DL surrogate | `neuralop` + PyTorch |
 
-Planned future methods: DeepONet, generative PDE solvers.
+Possible future methods: DeepONet, generative PDE solvers.
 
 The quantity of interest for **all** methods is prediction of transport coefficients **Γ_n** (particle flux) and **Γ_c** (conductive flux). Every method must produce comparable Gamma predictions and use the same plotting utilities for paper-quality figures.
 
+The first evaluation of the methods is there ability to forecast from a single intial condition. The secondary would be to forecast a unseen intial condition. The Last would be to forcast a whole different parametric variation that hasn't been seen. Currrently we are still trying to get the single IC scenario to work
 ---
 
 ## Repository Structure
 
 ```
-    IEEE-CiSE-Special-Issue/ # Github clone of overleaf project for this paper
-../
-    IEEE/
-    ├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
-    ├── dmd/             # DMD pipeline (3-step)
-    ├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
-    ├── fno/             # FNO pipeline (3-step, PyTorch)
-    ├── analysis/        # Post-hoc comparison scripts
-    ├── data/
-    │   ├── hw2d/        # Hasegawa-Wakatani HDF5 simulations + generation notebook
-    │   └── ks/          # Kuramoto-Sivashinsky data + generation notebook
-    ├── scripts/         # SLURM job scripts (Frontera) + local bash runners
-    └── frontera_pip_constraints.txt
+../IEEE-CiSE-Special-Issue/   # GitHub clone of Overleaf project for this paper
+../IEEE/                        # This repo — code for the paper
+├── shared/          # Common utilities: data I/O, physics, plotting, MPI helpers
+├── dmd/             # DMD pipeline (3-step)
+├── opinf/           # OpInf pipeline (3-step, MPI-parallel)
+├── fno/             # FNO pipeline (3-step, PyTorch)
+├── analysis/        # Post-hoc comparison and diagnostic scripts
+├── data/            # Symlinks to actual data (see Data Layout below)
+│   ├── hw2d/        # → HW2D HDF5 simulations (symlink on HPC)
+│   └── ks/          # KS data + generation notebook (small, lives in repo)
+├── scripts/         # SLURM job scripts (Frontera/Vista) + local bash runners
+├── sweep_configs/   # Parameter sweep YAML files
+└── results/         # Curated results for paper figures
 ```
 
 ### The 3-Step Pipeline Pattern
@@ -122,6 +123,72 @@ All pipelines must run on both:
 
 The only difference should be the launch mechanism (SLURM vs bash). The Python code itself should not contain HPC-specific logic. MPI code should degrade gracefully when `mpi4py` is not available or running with 1 rank.
 
+### 7. Data Format
+
+- HW2D data is **HDF5** (NetCDF4-compatible), loaded via `xarray` with the `h5netcdf` engine
+- Fields: `density` (T, H, W), `phi` (T, H, W), `gamma_n` (T,), `gamma_c` (T,)
+- State vector for ROMs: `Q = [density_flat; phi_flat]` shape `(2·ny·nx, n_time)`
+- File naming encodes simulation parameters (step size, domain, grid, physics constants)
+
+### 8. Float Precision
+
+- Default to `float64` (double precision)
+- Use `float32` for large-rank DMD to manage memory
+- FNO uses `float32` (PyTorch default)
+- When comparing across precisions, upcast to `float64` first
+
+---
+
+## Git Policy
+
+### No AI Co-Author Attribution
+
+**Do NOT include any Co-authored-by, AI attribution, or similar trailers in git commits.** Many journals prohibit AI co-authorship claims. When creating commits, use a plain commit message with no trailers.
+
+### Ask Before Git Operations
+
+**Do NOT commit, push, or pull on any repo (local or remote) without explicit user approval.** The user controls all git operations. You may stage files or show diffs, but never run `git commit`, `git push`, or `git pull` on your own.
+
+---
+
+## Local ↔ HPC Workflow
+
+### Overview
+
+The development workflow spans a local Mac (code editing, KS testing, AI copilot) and TACC HPC systems (MPI runs, large HW2D data, GPU training).
+
+```
+┌──────────────┐     git push      ┌──────────┐     git pull     ┌──────────────┐
+│  Local Mac   │  ──────────────►  │  GitHub   │  ──────────────► │   Frontera   │
+│  (edit code) │                   │  (origin) │                  │   (run jobs) │
+│              │  ◄──────────────  │           │  ◄────────────── │              │
+│  KS testing  │     git pull      │           │     git push     │  HW2D / MPI  │
+└──────────────┘                   └──────────┘                   └──────────────┘
+```
+
+### Workflow Steps
+
+1. **Edit code locally** — Use Copilot for code changes, test with KS data
+2. **Push to GitHub** — User controls when to push (or Copilot can push via SSH with permission)
+3. **Pull on Frontera** — `cd $WORK/repos/IEEE && git pull`
+4. **Run jobs** — Submit SLURM scripts from `scripts/`; output goes to `$SCRATCH/IEEE/output/`
+5. **Retrieve results** — Either push result YAML/plots to GitHub, or `scp` back to local
+
+### When Copilot Edits on HPC via SSH
+
+For quick fixes that don't warrant a full push/pull cycle, Copilot can edit files directly on Frontera via SSH. In this case:
+- Make changes on Frontera
+- Ask user whether to commit+push from Frontera back to GitHub
+- Pull locally afterward to stay in sync
+
+### Local Development
+
+- **Python**: 3.12 (miniconda3)
+- **KS pipeline** can run fully locally (small data, fast)
+- **HW2D** is HPC-only — data too large for local
+- Small test datasets (KS) live in `data/ks/` in the repo
+- Use `scripts/run_*_local.sh` or method-specific `run_local.sh` scripts
+
 ---
 
 ## HPC Quick Reference (TACC)
@@ -130,8 +197,8 @@ The only difference should be the launch mechanism (SLURM vs bash). The Python c
 
 | System | SSH | Use Case |
 |--------|-----|----------|
-| Frontera | `ssh $FRONTERA` (or `ssh anthony50102@frontera.tacc.utexas.edu`) | CPU work: DMD, OpInf, MPI jobs |
-| Vista | `ssh $VISTA` (or `ssh anthony50102@vista.tacc.utexas.edu`) | GPU work: FNO, PyTorch, DL training |
+| Frontera | `ssh $FRONTERA` | CPU work: DMD, OpInf, MPI jobs |
+| Vista | `ssh $VISTA` | GPU work: FNO, PyTorch, DL training |
 
 ControlMaster sockets are configured locally — connections should not require a password.
 
@@ -140,17 +207,42 @@ ControlMaster sockets are configured locally — connections should not require 
 - **Username:** `anthony50102`
 - **Allocation:** `PHY25003` (auto-selected, single project — `-A` flag usually not needed)
 
-### File System Paths
+### File System Layout
 
-| | Frontera | Vista |
-|-|----------|-------|
-| `$HOME` | `/home1/10407/anthony50102` | `/home1/10407/anthony50102` |
-| `$WORK` | `/work2/10407/anthony50102/frontera` | `/work/10407/anthony50102/vista` |
-| `$SCRATCH` | `/scratch2/10407/anthony50102` | `/scratch/10407/anthony50102` |
+| Location | Path | Purpose | Persistence |
+|----------|------|---------|-------------|
+| `$HOME` | `/home1/10407/anthony50102` | Config, dotfiles | Permanent, small quota |
+| `$WORK` | `/work2/10407/anthony50102/frontera` | Repo, archived data | Permanent, shared via Stockyard |
+| `$SCRATCH` | `/scratch2/10407/anthony50102` | Working data, job output | **Purged after 10 days of no access** |
 
-- **Project repo on Frontera:** `$SCRATCH/IEEE/IEEE/` (contains `fno/`, `opinf/`, `scripts/`, etc.)
-- `$SCRATCH` is **purged after 10 days** of no access — keep active data there, archive to `$WORK`.
-- `$WORK` is shared across TACC systems via Stockyard (`$STOCKYARD`).
+### Data Layout
+
+```
+$WORK/
+├── repos/IEEE/              # Git repo (code only, no large data)
+│   ├── data/
+│   │   ├── hw2d/            # Notebooks only (h5 files gitignored)
+│   │   └── ks/              # Small KS data + notebook (lives in repo)
+│   └── ...
+└── data/                    # Archived data (canonical copy, persistent)
+    └── hw2d_sim/            # Raw HW2D simulation HDF5 files (372GB)
+
+$SCRATCH/
+└── IEEE/
+    ├── data/                # Working data (striped Lustre, fast I/O)
+    │   └── hw2d/            # Copied from $WORK/data/hw2d_sim/ via setup_data.sh
+    └── output/              # Job output directories (timestamped)
+```
+
+**Why this layout:**
+- **Lustre striping** on `$SCRATCH` enables fast parallel I/O for large HDF5 reads — `$WORK` does not support striping
+- `$WORK/data/` is the persistent archive; `$SCRATCH/IEEE/data/` is the fast working copy
+- If `$SCRATCH` gets purged, run `scripts/setup_data.sh` (or `sbatch scripts/setup_data.slurm` for full copy)
+- Job output goes to `$SCRATCH/IEEE/output/` — ephemeral by design; curate important results into `results/` in the repo
+
+**Data paths in configs:** YAML configs use `data_dir` with absolute paths. HPC configs point to `$SCRATCH/IEEE/data/hw2d/`, local configs point to local paths. There are separate `*_local.yaml` files for local runs. When creating new configs, follow this pattern:
+- HPC: `data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d/"`
+- Local: `data_dir: "<local path to data>"`
 
 ### Queues
 
@@ -193,10 +285,31 @@ module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
 
 ### Python Environments
 
-- **Vista venvs** live in `$SCRATCH/venvs/`. Create with: `python3 -m venv $SCRATCH/venvs/<name>`
-- **Frontera** has Python 3.7.0 system-wide (old — use `pip install --user` or a venv for newer packages).
+**Frontera** — Use `python3/3.9.2` (NOT the default 3.7.0):
+```bash
+module load python3/3.9.2 phdf5/1.10.4
+export MPLBACKEND=Agg   # Required — prevents pygobject segfault
+```
+- System `python3/3.7.0` ships numpy 1.16.4 which is **too old** for `pydmd` (BOPDMD requires numpy ≥1.20 for `sliding_window_view`)
+- `python3/3.9.2` ships numpy 1.20.1, scipy, matplotlib, h5py pre-built for Frontera's architecture (Intel MKL-linked)
+- `phdf5/1.10.4` provides `libhdf5.so.103` which the system `h5py` is linked against — **without this module, h5py import fails**
+- Additional packages installed via `pip3 install --user`: `pydmd`, `xarray`, `scikit-learn`
+- The `MPLBACKEND=Agg` export is **mandatory** — without it, importing `h5py` + `matplotlib` together triggers a segfault in the system `pygobject` GTK backend
+- All SLURM scripts for Frontera must include these module loads and the `MPLBACKEND` export
+
+**Vista** (for PyTorch/FNO GPU work):
+```bash
+module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
+```
+- Vista venvs live in `$SCRATCH/venvs/`. Create with: `python3 -m venv $SCRATCH/venvs/<name>`
 - Install PyTorch on Vista: `pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu129`
-- Always install packages from a **compute node** (`idev`), not the login node.
+- Always install packages from a **compute node** (`idev`), not the login node
+
+**Common dependency issues on Frontera:**
+- If `h5py` fails with `libhdf5.so.103 not found` → need `module load phdf5/1.10.4`
+- If `pydmd` fails with `cannot import sliding_window_view` → wrong Python module loaded (3.7 instead of 3.9.2)
+- If segfault on import → missing `export MPLBACKEND=Agg`
+- If `--user` pip install overrides system numpy → `pip3 uninstall numpy` to fall back to system numpy (do NOT install numpy via pip on Frontera — use the module-provided one)
 
 ### SLURM Job Templates
 
@@ -204,15 +317,16 @@ module load gcc cuda python3   # gcc/15.1.0, cuda/12.5, python3/3.11.8
 ```bash
 #!/bin/bash
 #SBATCH -J opinf-run
-#SBATCH -o opinf.o%j
-#SBATCH -e opinf.e%j
+#SBATCH -o $SCRATCH/IEEE/output/opinf.o%j
+#SBATCH -e $SCRATCH/IEEE/output/opinf.e%j
 #SBATCH -p normal
 #SBATCH -N 4
 #SBATCH -n 224             # 56 tasks/node × 4 nodes
 #SBATCH -t 02:00:00
 
-module list
-cd $SCRATCH/IEEE/IEEE
+module load python3/3.9.2 phdf5/1.10.4
+export MPLBACKEND=Agg
+cd $WORK/repos/IEEE
 ibrun python3 opinf/step_2_train.py --config opinf/config/example.yaml --run-dir $SCRATCH/IEEE/output
 ```
 
@@ -220,8 +334,8 @@ ibrun python3 opinf/step_2_train.py --config opinf/config/example.yaml --run-dir
 ```bash
 #!/bin/bash
 #SBATCH -J fno-train
-#SBATCH -o fno.o%j
-#SBATCH -e fno.e%j
+#SBATCH -o $SCRATCH/IEEE/output/fno.o%j
+#SBATCH -e $SCRATCH/IEEE/output/fno.e%j
 #SBATCH -p gh
 #SBATCH -N 1
 #SBATCH -n 1
@@ -229,7 +343,7 @@ ibrun python3 opinf/step_2_train.py --config opinf/config/example.yaml --run-dir
 
 module load gcc cuda python3
 source $SCRATCH/venvs/<your-env>/bin/activate
-cd $SCRATCH/IEEE/IEEE
+cd $WORK/repos/IEEE
 python3 fno/step_2_train.py --config fno/config/example.yaml --run-dir $SCRATCH/IEEE/output
 ```
 
@@ -247,32 +361,15 @@ qlimits                      # show current queue limits
 ibrun ./myprogram            # MPI launcher (use instead of mpirun)
 ```
 
-### Git Policy
-
-**Do NOT commit, push, or pull on any repo (local or remote) without explicit user approval.** The user controls all git operations. You may stage files or show diffs, but never run `git commit`, `git push`, or `git pull` on your own.
-
 ### Important Reminders
 
-- Use `ibrun` for MPI, **never** `mpirun` or `mpiexec`.
-- Do **not** run compute-intensive work on login nodes.
-- Do **not** run `ssh-keygen` on TACC systems.
-- `$SCRATCH` files are purged after 10 days of no access.
-- Min charge is 15 minutes per job regardless of actual runtime.
-- Do **not** use `#SBATCH --export`, `--mem`, or `--gpus-per-task` on TACC systems.
-
-### 7. Data Format
-
-- HW2D data is **HDF5** (NetCDF4-compatible), loaded via `xarray` with the `h5netcdf` engine
-- Fields: `density` (T, H, W), `phi` (T, H, W), `gamma_n` (T,), `gamma_c` (T,)
-- State vector for ROMs: `Q = [density_flat; phi_flat]` shape `(2·ny·nx, n_time)`
-- File naming encodes simulation parameters (step size, domain, grid, physics constants)
-
-### 8. Float Precision
-
-- Default to `float64` (double precision)
-- Use `float32` for large-rank DMD to manage memory
-- FNO uses `float32` (PyTorch default)
-- When comparing across precisions, upcast to `float64` first
+- Use `ibrun` for MPI, **never** `mpirun` or `mpiexec`
+- Do **not** run compute-intensive work on login nodes
+- Do **not** run `ssh-keygen` on TACC systems
+- `$SCRATCH` files are purged after 10 days of no access
+- Min charge is 15 minutes per job regardless of actual runtime
+- Do **not** use `#SBATCH --export`, `--mem`, or `--gpus-per-task` on TACC systems
+- SLURM `-o` and `-e` flags should write to `$SCRATCH/IEEE/output/`, not into the repo
 
 ---
 

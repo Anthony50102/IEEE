@@ -22,7 +22,7 @@ import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from step_1_train import create_model
+from step_1_train import create_model, create_loss_fn
 
 
 def get_gpu_mem_mb():
@@ -49,8 +49,13 @@ def test_step1(model, cfg, device):
     n_y = cfg.get('physics', {}).get('n_y', 512)
     n_iters = 10  # Multiple iterations to test fragmentation
     
+    # Use actual loss function from config
+    pde = cfg.get('pde', 'hw2d')
+    loss_fn = create_loss_fn(cfg, pde=pde)
+    loss_name = cfg.get('training', {}).get('loss', 'mse')
+    
     print(f"\n{'='*60}")
-    print(f"  STEP 1 TEST: batch={batch_size}, {n_iters} iterations")
+    print(f"  STEP 1 TEST: batch={batch_size}, {n_iters} iterations, loss={loss_name}")
     print(f"  (AdamW, weight_decay={weight_decay}, grad_clip={grad_clip})")
     print(f"{'='*60}")
     
@@ -66,7 +71,7 @@ def test_step1(model, cfg, device):
         
         optimizer.zero_grad()
         pred = model(x)
-        loss = nn.functional.mse_loss(pred, y)
+        loss = loss_fn(pred, y)
         loss.backward()
         
         if grad_clip > 0:
@@ -90,7 +95,7 @@ def test_step1(model, cfg, device):
 
 
 def test_step2_rollout(model, cfg, device):
-    """Simulate Step 2: rollout with gradient checkpointing at max rollout length."""
+    """Simulate Step 2: BPTT rollout with single backward per batch."""
     curriculum = cfg.get('curriculum', [[80, 0.0, 30]])
     max_rollout = max(stage[0] for stage in curriculum)
     weight_decay = cfg.get('training', {}).get('weight_decay', 1e-4)
@@ -99,9 +104,17 @@ def test_step2_rollout(model, cfg, device):
     n_x = cfg.get('physics', {}).get('n_x', 512)
     n_y = cfg.get('physics', {}).get('n_y', 512)
     use_checkpointing = cfg.get('training', {}).get('gradient_checkpointing', True)
+    bptt_steps = cfg.get('training', {}).get('bptt_steps', 4)
+    
+    # Use actual loss function from config
+    pde = cfg.get('pde', 'hw2d')
+    loss_fn = create_loss_fn(cfg, pde=pde)
+    loss_name = cfg.get('training', {}).get('loss', 'mse')
     
     print(f"\n{'='*60}")
-    print(f"  STEP 2 TEST: rollout={max_rollout}, checkpointing={use_checkpointing}")
+    print(f"  STEP 2 TEST: rollout={max_rollout}, bptt_steps={bptt_steps}, "
+          f"checkpointing={use_checkpointing}, loss={loss_name}")
+    print(f"  (BPTT: gradients flow through {bptt_steps} steps, single backward per batch)")
     print(f"{'='*60}")
     
     torch.cuda.reset_peak_memory_stats()
@@ -109,22 +122,34 @@ def test_step2_rollout(model, cfg, device):
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     optimizer.zero_grad()
     
+    # Simulate worst case: fully autoregressive (TF=0.0), single sample
     x = torch.randn(1, n_fields, n_x, n_y, device=device, requires_grad=True)
     rollout_loss = 0.0
+    model_pred_count = 0
     
     for step in range(max_rollout):
         y_true = torch.randn(1, n_fields, n_x, n_y, device=device)
+        
+        if not x.requires_grad:
+            x = x.requires_grad_(True)
         
         if use_checkpointing:
             y_pred = checkpoint(model, x, use_reentrant=False)
         else:
             y_pred = model(x)
         
-        step_loss = nn.functional.mse_loss(y_pred, y_true)
+        step_loss = loss_fn(y_pred, y_true)
         rollout_loss = rollout_loss + step_loss
         
-        x = y_pred.detach().requires_grad_(True)
-        del y_true, y_pred
+        # BPTT: detach every bptt_steps
+        model_pred_count += 1
+        if model_pred_count >= bptt_steps:
+            x = y_pred.detach()
+            model_pred_count = 0
+        else:
+            x = y_pred  # Gradients flow through
+        
+        del y_true
         
         if (step + 1) % 20 == 0:
             print(f"  Step {step+1}/{max_rollout}: alloc={get_gpu_mem_mb():.0f} MB, "
@@ -132,6 +157,7 @@ def test_step2_rollout(model, cfg, device):
     
     rollout_loss = rollout_loss / max_rollout
     rollout_loss.backward()
+    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
     optimizer.step()
     
     peak = get_gpu_peak_mb()

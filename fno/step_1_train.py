@@ -27,7 +27,8 @@ from torch.utils.data import Dataset, DataLoader
 import yaml
 
 # Neural operator library
-from neuralop.models import FNO
+from neuralop.models import FNO, TFNO
+from neuralop.losses import H1Loss
 
 # Parent directory for shared imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -85,6 +86,73 @@ class SingleStepDataset(Dataset):
 
 
 # =============================================================================
+# Per-Channel Normalization
+# =============================================================================
+
+class ChannelNormalizer:
+    """
+    Per-channel zero-mean unit-variance normalization.
+    
+    Computes statistics from training data and applies to any split.
+    Handles both numpy arrays (T, C, ...) and torch tensors (B, C, ...).
+    
+    For a single trajectory: stats come from the training window.
+    For multiple trajectories: compute from all training trajectories (pooled).
+    """
+    
+    def __init__(self, mean: np.ndarray, std: np.ndarray, eps: float = 1e-8):
+        self.mean = np.asarray(mean, dtype=np.float32)  # (C,)
+        self.std = np.asarray(std, dtype=np.float32)     # (C,)
+        self.eps = eps
+    
+    @classmethod
+    def from_data(cls, data: np.ndarray, eps: float = 1e-8):
+        """Compute per-channel stats from (T, C, ...) numpy array."""
+        axes = tuple([0] + list(range(2, data.ndim)))
+        mean = data.mean(axis=axes).astype(np.float32)
+        std = data.std(axis=axes).astype(np.float32)
+        return cls(mean, std, eps)
+    
+    def _broadcast_shape(self, ndim: int) -> list:
+        """Shape for broadcasting (C,) stats to (B/T, C, ...) data."""
+        shape = [1] * ndim
+        shape[1] = len(self.mean)
+        return shape
+    
+    def encode(self, x):
+        """Normalize. Works with numpy or torch."""
+        shape = self._broadcast_shape(x.ndim)
+        if isinstance(x, torch.Tensor):
+            mean = torch.as_tensor(self.mean, dtype=x.dtype, device=x.device).reshape(shape)
+            std = torch.as_tensor(self.std, dtype=x.dtype, device=x.device).reshape(shape)
+        else:
+            mean = self.mean.reshape(shape)
+            std = self.std.reshape(shape)
+        return (x - mean) / (std + self.eps)
+    
+    def decode(self, x):
+        """Un-normalize. Works with numpy or torch."""
+        shape = self._broadcast_shape(x.ndim)
+        if isinstance(x, torch.Tensor):
+            mean = torch.as_tensor(self.mean, dtype=x.dtype, device=x.device).reshape(shape)
+            std = torch.as_tensor(self.std, dtype=x.dtype, device=x.device).reshape(shape)
+        else:
+            mean = self.mean.reshape(shape)
+            std = self.std.reshape(shape)
+        return x * (std + self.eps) + mean
+    
+    def to_dict(self) -> dict:
+        return {'mean': self.mean.tolist(), 'std': self.std.tolist(), 'eps': self.eps}
+    
+    @classmethod
+    def from_dict(cls, d: dict):
+        return cls(np.array(d['mean']), np.array(d['std']), d.get('eps', 1e-8))
+    
+    def __repr__(self):
+        return f"ChannelNormalizer(mean={self.mean}, std={self.std})"
+
+
+# =============================================================================
 # Data Loading (Memory-Efficient)
 # =============================================================================
 
@@ -113,6 +181,10 @@ def load_trajectory_slice(file_path: str, start: int, end: int, pde: str = "hw2d
         with h5py.File(file_path, 'r') as f:
             u = f['u'][start:end]  # (T, N)
         return u[:, np.newaxis, :]  # (T, 1, N)
+    elif pde == "ns":
+        with h5py.File(file_path, 'r') as f:
+            omega = f['omega'][start:end]  # (T, H, W)
+        return omega[:, np.newaxis, :, :]  # (T, 1, H, W)
     else:
         with h5py.File(file_path, 'r') as f:
             density = f['density'][start:end]      # (T, H, W)
@@ -120,7 +192,7 @@ def load_trajectory_slice(file_path: str, start: int, end: int, pde: str = "hw2d
         return np.stack([density, potential], axis=1)  # (T, 2, H, W)
 
 
-def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, DataLoader, np.ndarray]:
+def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, DataLoader, np.ndarray, 'ChannelNormalizer']:
     """
     Create train, validation, and test data loaders.
     
@@ -129,7 +201,7 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, Data
     over DMD/OpInf).
     
     Returns:
-        train_loader, val_loader, test_loader, test_states (for visualization)
+        train_loader, val_loader, test_loader, test_states_raw, normalizer
     """
     data_dir = get_config_value(cfg, 'paths', 'data_dir')
     train_file = get_config_value(cfg, 'paths', 'training_files')[0]
@@ -142,6 +214,7 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, Data
     test_end = cfg.get('test_end', 500)
     batch_size = get_config_value(cfg, 'training', 'batch_size', default=16)
     val_fraction = get_config_value(cfg, 'training', 'val_fraction', default=0.2)
+    do_normalize = get_config_value(cfg, 'training', 'normalize', default=True)
     
     # Split training window into train/val
     n_train_total = train_end - train_start
@@ -164,7 +237,19 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, Data
     mem_mb = (train_states.nbytes + val_states.nbytes + test_states.nbytes) / 1e6
     logger.info(f"  Data memory: {mem_mb:.1f} MB")
     
-    # Create data loaders
+    # Keep raw test states for physics metrics (before normalization)
+    test_states_raw = test_states.copy()
+    
+    # Compute per-channel normalization from training data only
+    normalizer = None
+    if do_normalize:
+        normalizer = ChannelNormalizer.from_data(train_states)
+        logger.info(f"  Normalizer: mean={normalizer.mean}, std={normalizer.std}")
+        train_states = normalizer.encode(train_states)
+        val_states = normalizer.encode(val_states)
+        test_states = normalizer.encode(test_states)
+    
+    # Create data loaders (operating on normalized data)
     train_loader = DataLoader(
         SingleStepDataset(train_states),
         batch_size=batch_size,
@@ -189,7 +274,7 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, Data
         pin_memory=torch.cuda.is_available(),
     )
     
-    return train_loader, val_loader, test_loader, test_states
+    return train_loader, val_loader, test_loader, test_states_raw, normalizer
 
 
 # =============================================================================
@@ -197,16 +282,26 @@ def create_data_loaders(cfg: dict, logger) -> Tuple[DataLoader, DataLoader, Data
 # =============================================================================
 
 def create_model(cfg: dict, device: str) -> nn.Module:
-    """Create FNO model from config."""
+    """Create FNO or TFNO model from config."""
     model_cfg = cfg.get('model', {})
+    model_type = model_cfg.get('type', 'fno').lower()
     
-    model = FNO(
+    common = dict(
         n_modes=tuple(model_cfg.get('n_modes', [32, 32])),
         in_channels=model_cfg.get('in_channels', 2),
         out_channels=model_cfg.get('out_channels', 2),
         hidden_channels=model_cfg.get('hidden_channels', 64),
         n_layers=model_cfg.get('n_layers', 4),
     )
+    
+    if model_type == 'tfno':
+        model = TFNO(
+            **common,
+            factorization=model_cfg.get('factorization', 'tucker'),
+            rank=model_cfg.get('rank', 0.1),
+        )
+    else:
+        model = FNO(**common)
     
     return model.to(device)
 
@@ -215,7 +310,43 @@ def create_model(cfg: dict, device: str) -> nn.Module:
 # Training and Evaluation
 # =============================================================================
 
-def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0):
+def create_loss_fn(cfg: dict, pde: str = 'hw2d'):
+    """Create training loss function based on config."""
+    loss_type = get_config_value(cfg, 'training', 'loss', default='h1')
+    if loss_type == 'h1':
+        d = 1 if pde == 'ks' else 2
+        return H1Loss(d=d, reduction='mean')
+    else:
+        return nn.MSELoss()
+
+
+def _plot_single_field_2d(axes_row, pred_field, truth_field, field_name, cmap='RdBu_r'):
+    """Plot a single 2D field: prediction, truth, error."""
+    error = pred_field - truth_field
+    vmin, vmax = truth_field.min(), truth_field.max()
+    vlim = max(abs(vmin), abs(vmax))
+    import matplotlib.pyplot as plt
+
+    im0 = axes_row[0].imshow(pred_field, cmap=cmap, vmin=-vlim, vmax=vlim, origin='lower', aspect='equal')
+    axes_row[0].set_title(f'{field_name} - Prediction')
+    axes_row[0].axis('off')
+    plt.colorbar(im0, ax=axes_row[0], fraction=0.046)
+
+    im1 = axes_row[1].imshow(truth_field, cmap=cmap, vmin=-vlim, vmax=vlim, origin='lower', aspect='equal')
+    axes_row[1].set_title(f'{field_name} - Ground Truth')
+    axes_row[1].axis('off')
+    plt.colorbar(im1, ax=axes_row[1], fraction=0.046)
+
+    err_max = max(abs(error.min()), abs(error.max()))
+    if err_max == 0:
+        err_max = 1.0
+    im2 = axes_row[2].imshow(error, cmap='RdBu_r', vmin=-err_max, vmax=err_max, origin='lower', aspect='equal')
+    axes_row[2].set_title(f'{field_name} - Error (MSE={np.mean(error**2):.2e})')
+    axes_row[2].axis('off')
+    plt.colorbar(im2, ax=axes_row[2], fraction=0.046)
+
+
+def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0, loss_fn=None):
     """Train for one epoch. Returns average loss."""
     model.train()
     total_loss = 0.0
@@ -226,7 +357,10 @@ def train_one_epoch(model, loader, optimizer, device, grad_clip=1.0):
         
         optimizer.zero_grad()
         pred = model(x)
-        loss = nn.functional.mse_loss(pred, y)
+        if loss_fn is not None:
+            loss = loss_fn(pred, y)
+        else:
+            loss = nn.functional.mse_loss(pred, y)
         loss.backward()
         
         if grad_clip > 0:
@@ -265,7 +399,7 @@ def evaluate(model, loader, device):
 # Checkpointing
 # =============================================================================
 
-def save_checkpoint(model, optimizer, epoch, path, cfg, metrics=None):
+def save_checkpoint(model, optimizer, epoch, path, cfg, metrics=None, normalizer=None):
     """Save training checkpoint."""
     checkpoint = {
         'epoch': epoch,
@@ -273,17 +407,27 @@ def save_checkpoint(model, optimizer, epoch, path, cfg, metrics=None):
         'optimizer_state_dict': optimizer.state_dict(),
         'config': cfg.get('model', {}),
         'metrics': metrics or {},
+        'normalizer': normalizer.to_dict() if normalizer else None,
     }
     torch.save(checkpoint, path)
 
 
 def load_checkpoint(path, model, optimizer=None, device='cpu'):
-    """Load checkpoint. Returns epoch and metrics."""
+    """Load checkpoint. Returns (epoch, metrics). Normalizer stored in ckpt['normalizer']."""
     ckpt = torch.load(path, map_location=device, weights_only=False)
     model.load_state_dict(ckpt['model_state_dict'])
     if optimizer is not None:
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
     return ckpt.get('epoch', 0), ckpt.get('metrics', {})
+
+
+def load_normalizer_from_checkpoint(path, device='cpu') -> 'ChannelNormalizer':
+    """Load just the normalizer from a checkpoint file."""
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    norm_dict = ckpt.get('normalizer')
+    if norm_dict is not None:
+        return ChannelNormalizer.from_dict(norm_dict)
+    return None
 
 
 # =============================================================================
@@ -341,12 +485,12 @@ def generate_loss_plot(train_losses: list, test_mses: list, run_dir: str, logger
     logger.info(f"Saved training loss plot to {plot_path}")
 
 
-def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5, pde="hw2d"):
+def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5, pde="hw2d", normalizer=None):
     """
     Generate comparison figures: prediction vs ground truth + error.
     
-    Saves n_figs equally-spaced snapshots from the test set.
-    Handles both 2D HW2D data (C, H, W) and 1D KS data (1, N).
+    test_states are RAW (un-normalized). If normalizer is provided, inputs are
+    normalized before model and predictions are un-normalized for comparison.
     """
     import matplotlib
     matplotlib.use('Agg')
@@ -364,11 +508,18 @@ def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5,
     is_1d = (pde == "ks")
     
     for i, idx in enumerate(indices):
-        x = torch.from_numpy(test_states[idx:idx+1]).float().to(device)
-        y_true = test_states[idx + 1]  # (C, H, W) or (1, N)
+        x_raw = test_states[idx:idx+1]  # (1, C, H, W) raw
+        y_true = test_states[idx + 1]   # (C, H, W) raw
+        
+        x = torch.from_numpy(x_raw).float().to(device)
+        if normalizer is not None:
+            x = normalizer.encode(x)
         
         with torch.no_grad():
-            y_pred = model(x)[0].cpu().numpy()  # (C, H, W) or (1, N)
+            y_pred = model(x)
+            if normalizer is not None:
+                y_pred = normalizer.decode(y_pred)
+            y_pred = y_pred[0].cpu().numpy()  # (C, H, W)
         
         if is_1d:
             # KS: 1D line plots — single field
@@ -391,6 +542,10 @@ def generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5,
             axes[2].semilogy(x_grid, np.abs(error_1d) + 1e-16, 'k-', linewidth=1)
             axes[2].set_title('|Error| (log scale)')
             axes[2].grid(True, alpha=0.3)
+        elif pde == "ns":
+            # NS: 2D heatmap — single vorticity field
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+            _plot_single_field_2d(axes, y_pred[0], y_true[0], r'$\omega$')
         else:
             # HW2D: 2D heatmaps — two fields
             fig, axes = plt.subplots(2, 3, figsize=(12, 8))
@@ -516,12 +671,17 @@ def main():
     
     try:
         # Load data
-        train_loader, val_loader, test_loader, test_states = create_data_loaders(cfg, logger)
+        train_loader, val_loader, test_loader, test_states, normalizer = create_data_loaders(cfg, logger)
         
         # Create model
         model = create_model(cfg, device)
         n_params = sum(p.numel() for p in model.parameters())
         logger.info(f"Model parameters: {n_params:,}")
+        
+        # Create loss function
+        pde = cfg.get('pde', 'hw2d')
+        loss_fn = create_loss_fn(cfg, pde=pde)
+        logger.info(f"Training loss: {type(loss_fn).__name__}")
         
         # Training setup
         train_cfg = cfg.get('training', {})
@@ -556,7 +716,7 @@ def main():
             t_epoch = time.time()
             
             # Train
-            train_loss = train_one_epoch(model, train_loader, optimizer, device, grad_clip)
+            train_loss = train_one_epoch(model, train_loader, optimizer, device, grad_clip, loss_fn=loss_fn)
             train_losses.append(train_loss)
             scheduler.step()
             
@@ -576,7 +736,7 @@ def main():
                     save_checkpoint(model, optimizer, epoch, 
                                     os.path.join(run_dir, "checkpoint_best.pt"),
                                     cfg, {'train_loss': train_loss, 'val_mse': val_mse,
-                                           'test_mse': test_mse})
+                                           'test_mse': test_mse}, normalizer=normalizer)
                 else:
                     patience_counter += 1
                 
@@ -600,12 +760,13 @@ def main():
             if epoch % save_every == 0:
                 save_checkpoint(model, optimizer, epoch,
                                 os.path.join(run_dir, f"checkpoint_epoch{epoch:04d}.pt"),
-                                cfg, {'train_loss': train_loss})
+                                cfg, {'train_loss': train_loss}, normalizer=normalizer)
         
         # Save final checkpoint
         save_checkpoint(model, optimizer, epoch,
                         os.path.join(run_dir, "checkpoint_latest.pt"),
-                        cfg, {'train_loss': train_losses[-1], 'best_val_mse': best_val_mse})
+                        cfg, {'train_loss': train_losses[-1], 'best_val_mse': best_val_mse},
+                        normalizer=normalizer)
         
         # Final evaluation on test set using BEST model (by val MSE)
         load_checkpoint(os.path.join(run_dir, "checkpoint_best.pt"), model, device=device)
@@ -637,7 +798,7 @@ def main():
         if args.test:
             logger.info("Generating test figures...")
             pde = cfg.get('pde', 'hw2d')
-            generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5, pde=pde)
+            generate_test_figures(model, test_states, device, run_dir, logger, n_figs=5, pde=pde, normalizer=normalizer)
         
         logger.info(f"Results saved to: {run_dir}")
         logger.info(f"Next: python step_2_train.py --config {args.config} --run-dir {run_dir}")

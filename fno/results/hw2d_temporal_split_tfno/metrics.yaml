@@ -1,0 +1,48 @@
+test:
+  gamma_metrics:
+    err_mean_Gamma_c: .nan
+    err_mean_Gamma_n: .nan
+    err_std_Gamma_c: .nan
+    err_std_Gamma_n: .nan
+    mse_Gamma_c: .nan
+    mse_Gamma_n: .nan
+    pred_mean_Gamma_c: .nan
+    pred_mean_Gamma_n: .nan
+    pred_std_Gamma_c: .nan
+    pred_std_Gamma_n: .nan
+    ref_mean_Gamma_c: 0.6074350476264954
+    ref_mean_Gamma_n: 0.6074570417404175
+    ref_std_Gamma_c: 0.0403144508600235
+    ref_std_Gamma_n: 0.051451314240694046
+  n_steps: 3999
+  state_metrics:
+    final_rel_l2_error: .nan
+    max_rel_l2_error: .nan
+    mean_rel_l2_error: .nan
+    mse_density: .nan
+    mse_potential: .nan
+    mse_total: .nan
+train:
+  gamma_metrics:
+    err_mean_Gamma_c: .nan
+    err_mean_Gamma_n: .nan
+    err_std_Gamma_c: .nan
+    err_std_Gamma_n: .nan
+    mse_Gamma_c: .nan
+    mse_Gamma_n: .nan
+    pred_mean_Gamma_c: .nan
+    pred_mean_Gamma_n: .nan
+    pred_std_Gamma_c: .nan
+    pred_std_Gamma_n: .nan
+    ref_mean_Gamma_c: 0.632714569568634
+    ref_mean_Gamma_n: 0.6369900107383728
+    ref_std_Gamma_c: 0.03913954645395279
+    ref_std_Gamma_n: 0.04922453314065933
+  n_steps: 7999
+  state_metrics:
+    final_rel_l2_error: .nan
+    max_rel_l2_error: .nan
+    mean_rel_l2_error: .nan
+    mse_density: .nan
+    mse_potential: .nan
+    mse_total: .nan

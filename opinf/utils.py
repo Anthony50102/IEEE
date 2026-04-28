@@ -57,6 +57,8 @@ class OpInfConfig:
     training_mode: str = "multi_trajectory"  # "multi_trajectory" or "temporal_split"
     train_start: int = 0      # Start snapshot for training (temporal_split only)
     train_end: int = 8000     # End snapshot for training (temporal_split only)
+    val_start: int = 0        # Validation start (0 = no validation split)
+    val_end: int = 0          # Validation end (0 = no validation split)
     test_start: int = 8000    # Start snapshot for testing (temporal_split only)
     test_end: int = 16000     # End snapshot for testing (temporal_split only)
     
@@ -70,9 +72,15 @@ class OpInfConfig:
     ks_L: float = 100.0       # KS domain length
     ks_N: int = 200            # KS spatial points
     
+    # NS-specific physics params (only used when pde="ns")
+    ns_Re: float = 100.0      # Reynolds number
+    ns_Lx: float = 6.283185307179586  # Domain length in x (2π)
+    ns_Ly: float = 6.283185307179586  # Domain length in y (2π)
+    
     # Dimensionality reduction
     reduction_method: str = "linear"  # "linear" (POD) or "manifold" (quadratic)
     r: int = 100
+    r_candidates: List[int] = field(default_factory=list)  # Rank sweep for validation-based selection
     target_energy: float = 0.9999
     
     # Quadratic manifold settings (only used if reduction_method="manifold")
@@ -102,6 +110,11 @@ class OpInfConfig:
     # Model selection (threshold-based)
     threshold_mean: float = 0.05
     threshold_std: float = 0.30
+    # Per-QoI thresholds (optional overrides for Gamma_c / enstrophy)
+    # If not set (0), defaults to the same as Gamma_n thresholds above.
+    # Set to large values (e.g., 100.0) to effectively disable Gamma_c selection.
+    threshold_mean_c: float = 0.0
+    threshold_std_c: float = 0.0
     max_models: int = 0  # 0 = no limit
     
     # Evaluation
@@ -119,11 +132,20 @@ class OpInfConfig:
     # QoI computation method: "learned" (C,G,c operators) or "physics" (reconstruct & compute)
     qoi_method: str = "learned"
     
+    # Sweep QoI method: how to compute energy during step_2 model selection
+    # "learned" = use learned output model (C,G,c) — default, can mask dissipation
+    # "physics_energy" = compute energy analytically from POD coefficients (bypasses output model)
+    sweep_qoi_method: str = "learned"
+    
     # Closure model
     closure_enabled: bool = False
     closure_cubic: bool = True      # Include z_i^3 diagonal terms
     closure_constant: bool = True   # Include constant bias in state equation
     state_cubic: np.ndarray = field(default_factory=lambda: np.array([]))
+    
+    # Stability projection: clip eigenvalues of A to a maximum spectral radius
+    stability_projection: bool = False
+    stability_max_rho: float = 0.999  # Maximum allowed spectral radius
 
 
 def _build_reg_array(reg_config: dict) -> np.ndarray:
@@ -178,10 +200,19 @@ def load_config(config_path: str) -> OpInfConfig:
         cfg.n_x = cfg.ks_N
         cfg.n_y = 1  # 1D PDE
     
+    # NS-specific physics (only relevant when pde="ns")
+    elif cfg.pde == "ns":
+        cfg.ns_Re = physics.get("Re", 100.0)
+        cfg.ns_Lx = physics.get("Lx", 2 * np.pi)
+        cfg.ns_Ly = physics.get("Ly", cfg.ns_Lx)
+        cfg.n_fields = 1  # Single field (vorticity)
+        # n_x and n_y already set from physics block
+    
     # Dimensionality reduction
     reduction = raw.get("reduction", raw.get("pod", {}))  # fallback to 'pod' for compatibility
     cfg.reduction_method = reduction.get("method", "linear")
     cfg.r = reduction.get("r", 100)
+    cfg.r_candidates = reduction.get("r_candidates", [])
     cfg.target_energy = reduction.get("target_energy", 0.9999)
     cfg.n_vectors_to_check = reduction.get("n_vectors_to_check", 200)
     cfg.reg_magnitude = float(reduction.get("reg_magnitude", 1e-6))
@@ -191,6 +222,8 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.training_mode = training_mode.get("mode", "multi_trajectory")
     cfg.train_start = training_mode.get("train_start", 0)
     cfg.train_end = training_mode.get("train_end", 8000)
+    cfg.val_start = training_mode.get("val_start", 0)
+    cfg.val_end = training_mode.get("val_end", 0)
     cfg.test_start = training_mode.get("test_start", 8000)
     cfg.test_end = training_mode.get("test_end", 16000)
     
@@ -222,6 +255,8 @@ def load_config(config_path: str) -> OpInfConfig:
     selection = raw.get("model_selection", {})
     cfg.threshold_mean = selection.get("threshold_mean", 0.05)
     cfg.threshold_std = selection.get("threshold_std", 0.30)
+    cfg.threshold_mean_c = selection.get("threshold_mean_c", 0.0)
+    cfg.threshold_std_c = selection.get("threshold_std_c", 0.0)
     cfg.max_models = selection.get("max_models", 0)
     
     # Evaluation
@@ -239,6 +274,7 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.engine = execution.get("engine", "h5netcdf")
     
     cfg.qoi_method = evaluation.get("qoi_method", "learned")
+    cfg.sweep_qoi_method = evaluation.get("sweep_qoi_method", "learned")
     
     # Closure
     closure = raw.get("closure", {})
@@ -247,6 +283,11 @@ def load_config(config_path: str) -> OpInfConfig:
     cfg.closure_constant = closure.get("constant", True)
     if cfg.closure_enabled and "state_cubic" in reg:
         cfg.state_cubic = _build_reg_array(reg["state_cubic"])
+    
+    # Stability projection
+    stability = raw.get("stability_projection", {})
+    cfg.stability_projection = stability.get("enabled", False)
+    cfg.stability_max_rho = stability.get("max_spectral_radius", 0.999)
     
     return cfg
 

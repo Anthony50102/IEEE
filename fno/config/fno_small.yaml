@@ -1,0 +1,71 @@
+run_name: "fno_hw2d_small"
+
+pde: "hw2d"
+
+paths:
+  output_base: "/scratch/10407/anthony50102/fno_output/"
+  
+  data_dir: "/work/10407/anthony50102/vista/"
+  
+  training_files: 
+    - "test_nu5e-9.h5"
+
+  test_files: []
+
+physics:
+  dt: 0.025
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+
+training_mode: "temporal_split"
+train_start: 8000
+train_end: 16000
+test_start: 16000
+test_end: 20000
+
+# Small TFNO — ~3-4M params for fast iteration
+model:
+  type: "tfno"
+  n_modes: [32, 32]        # Fewer Fourier modes (was 64)
+  in_channels: 2
+  out_channels: 2
+  hidden_channels: 32       # Narrower (was 128)
+  n_layers: 4
+  factorization: "tucker"
+  rank: 0.42
+
+training:
+  batch_size: 32            # Can use larger batch with smaller model
+  n_epochs: 150             # Fewer epochs — faster convergence expected
+  learning_rate: 3.0e-4
+  weight_decay: 1.0e-4
+  grad_clip: 1.0
+  noise_std: 0.02
+  gradient_checkpointing: true
+  bptt_steps: 4
+  
+  loss: "h1"
+  normalize: true
+
+  val_fraction: 0.2
+  early_stopping_patience: 15
+  stage_early_stopping_patience: 5
+
+  scheduler:
+    type: "cosine"
+    warmup_epochs: 5
+  
+  save_every: 20
+  eval_every: 5
+
+# Same curriculum structure
+curriculum:
+  - [5,  0.8, 30]
+  - [10, 0.6, 30]
+  - [20, 0.4, 20]
+  - [40, 0.2, 20]
+  - [60, 0.1, 20]
+  - [80, 0.0, 50]
+
+log_level: "INFO"

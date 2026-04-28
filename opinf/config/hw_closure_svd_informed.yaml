@@ -1,0 +1,119 @@
+run_name: "hw_closure_svd_informed"
+
+paths:
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+  data_dir: "/scratch2/10407/anthony50102/IEEE/data/hw2d_sim/t600_d512x512_striped/"
+
+  training_files: 
+      - test_nu5e-9.h5
+
+  test_files: []
+
+physics:
+  dt: 0.025
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+
+training_mode:
+  mode: "temporal_split"
+  train_start: 8000
+  train_end: 16000
+  test_start: 16000
+  test_end: 20000
+
+reduction:
+  method: "linear"
+  r: 75
+  target_energy: 0.95
+
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: false
+  scaling: false
+
+training:
+  training_end: 8000
+  n_steps: 20000
+
+# Cubic diagonal closure + constant bias
+closure:
+  enabled: true
+  cubic_diagonal: true
+  constant: true
+
+# =============================================================================
+# SVD-INFORMED REGULARIZATION GRID
+# =============================================================================
+# Ranges derived from SVD diagnosis of D_state (r=75, closure):
+#
+#   Block       | cond   | σ_min²  | σ_max²  | Optimal found
+#   ------------|--------|---------|---------|---------------
+#   linear      | 6.5    | 1.86e7  | 7.89e8  | ~8e3
+#   quadratic   | 1.41e7 | 4.21    | 8.33e14 | ~2.6e17
+#   cubic_diag  | 333    | 7.79e14 | 8.66e19 | ~1.3e24
+#
+# Key insight: chaotic PDE rollouts need "over-regularization" of
+# ill-conditioned blocks (quad needs α >> σ_max²). Linear block is
+# well-conditioned and needs weak regularization (α << σ_min²).
+# Output regularization needs very weak α_lin (~1e-4) and moderate α_quad.
+#
+# Grid: 10×10×6×8×8 = 38,400 combos (manageable on 560 MPI ranks)
+# =============================================================================
+
+regularization:
+    # Linear: well-conditioned (cond=6.5), optimal ~8e3
+    # Range: 2 OOM below to 3 OOM above optimal
+    state_lin:
+        min: 1.0e1
+        max: 1.0e6
+        num: 10
+        scale: "log"
+
+    # Quadratic: ill-conditioned (cond=1.4e7), optimal ~2.6e17
+    # Needs heavy "over-regularization" well above σ_max² (8.3e14)
+    # Range: 3 OOM below to 3 OOM above optimal
+    state_quad:
+        min: 1.0e14
+        max: 1.0e20
+        num: 10
+        scale: "log"
+
+    # Cubic diagonal: moderate conditioning (cond=333), optimal ~1.3e24
+    # Also needs over-regularization above σ_max² (8.7e19)
+    state_cubic:
+        min: 1.0e18
+        max: 1.0e26
+        num: 6
+        scale: "log"
+
+    # Output linear: very weak regularization, optimal ~1e-4
+    output_lin:
+        min: 1.0e-6
+        max: 1.0e2
+        num: 8
+        scale: "log"
+
+    # Output quadratic: moderate, optimal ~1e-2
+    output_quad:
+        min: 1.0e-4
+        max: 1.0e4
+        num: 8
+        scale: "log"
+
+model_selection:
+  threshold_mean: 0.05
+  threshold_std: 0.3
+  max_models: 500
+
+evaluation:
+  compute_full_state: false
+  save_predictions: true
+  generate_plots: true
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

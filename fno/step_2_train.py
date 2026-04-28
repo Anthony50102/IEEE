@@ -28,8 +28,9 @@ import yaml
 
 # Reuse functions from step_1
 from step_1_train import (
-    load_config, get_config_value, create_model, setup_logging,
-    save_checkpoint, load_checkpoint, load_trajectory_slice,
+    load_config, get_config_value, create_model, create_loss_fn, setup_logging,
+    save_checkpoint, load_checkpoint, load_normalizer_from_checkpoint,
+    load_trajectory_slice, ChannelNormalizer, _plot_single_field_2d,
 )
 
 # Parent directory for shared imports
@@ -79,25 +80,36 @@ def train_rollout_epoch(
     grad_clip: float = 1.0,
     use_checkpointing: bool = True,
     noise_std: float = 0.01,
+    loss_fn=None,
+    bptt_steps: int = 4,
 ) -> float:
     """
-    Train one epoch of rollout training.
+    Train one epoch of rollout training with truncated BPTT.
     
-    Memory optimization: Instead of storing full trajectories on GPU,
-    we sample starting indices and process one rollout at a time.
-    Uses gradient checkpointing to reduce memory at the cost of compute.
+    Gradients flow through up to bptt_steps consecutive model-prediction
+    steps before truncating. This teaches the model to self-correct
+    compounding errors. Loss is accumulated over the full batch and
+    backward'd once per batch for efficient GPU utilization.
+    
+    Memory is bounded because:
+    - gradient checkpointing recomputes activations (no storage per layer)
+    - x is detached every bptt_steps, capping the chain depth
+    - each chain stores only input/output tensors at checkpoint boundaries
     
     Args:
         model: FNO model
-        states: (T, C, H, W) numpy array of training states
+        states: (T, C, H, W) numpy array of training states (normalized)
         optimizer: PyTorch optimizer
         device: 'cuda' or 'cpu'
         rollout_length: Number of autoregressive steps
-        teacher_forcing_ratio: Probability of using GT instead of prediction
-        batch_size: Number of parallel rollouts
+        teacher_forcing_ratio: Probability of using ground truth vs prediction
+        batch_size: Number of parallel rollouts per optimizer step
         grad_clip: Gradient clipping value
         use_checkpointing: If True, use gradient checkpointing to save memory
         noise_std: Std of Gaussian noise added to inputs (robustness)
+        loss_fn: Loss function (e.g., H1Loss). Falls back to MSE if None.
+        bptt_steps: Number of consecutive model-prediction steps to
+            backpropagate through before truncating (detaching x).
     
     Returns:
         Average loss for the epoch
@@ -110,13 +122,14 @@ def train_rollout_epoch(
         raise ValueError(f"Trajectory too short ({T}) for rollout length {rollout_length}")
     
     # Sample starting indices for this epoch
-    n_samples = min(max(16, max_start // 2), max_start)  # Cap at max_start to avoid error
+    n_samples = min(max(16, max_start // 2), max_start)
     start_indices = np.random.choice(max_start, size=n_samples, replace=False)
     
     total_loss = 0.0
     n_batches = 0
+    total_batches = (len(start_indices) + batch_size - 1) // batch_size
+    t_epoch_start = time.time()
     
-    # Process in mini-batches
     for batch_start in range(0, len(start_indices), batch_size):
         batch_indices = start_indices[batch_start:batch_start + batch_size]
         batch_loss = 0.0
@@ -124,53 +137,63 @@ def train_rollout_epoch(
         optimizer.zero_grad()
         
         for start_idx in batch_indices:
-            # Load initial state (memory efficient: load one at a time)
             x = torch.from_numpy(states[start_idx:start_idx+1]).float().to(device)
             
-            # Add noise for robustness (helps model handle its own prediction errors)
             if noise_std > 0:
                 x = x + noise_std * torch.randn_like(x)
             
             rollout_loss = 0.0
+            model_pred_count = 0  # Consecutive model-prediction steps (for BPTT truncation)
             
             for step in range(rollout_length):
-                # Ground truth for this step
                 target_idx = start_idx + step + 1
                 y_true = torch.from_numpy(states[target_idx:target_idx+1]).float().to(device)
                 
-                # Forward pass with optional gradient checkpointing
-                if use_checkpointing and x.requires_grad:
-                    # Checkpoint requires input to have requires_grad=True
+                # Ensure requires_grad for gradient checkpointing
+                if not x.requires_grad:
+                    x = x.requires_grad_(True)
+                
+                # Forward pass
+                if use_checkpointing:
                     y_pred = checkpoint(model, x, use_reentrant=False)
                 else:
-                    # First step or when checkpointing disabled
-                    x.requires_grad_(True)
-                    if use_checkpointing:
-                        y_pred = checkpoint(model, x, use_reentrant=False)
-                    else:
-                        y_pred = model(x)
+                    y_pred = model(x)
                 
                 # Accumulate loss
-                step_loss = nn.functional.mse_loss(y_pred, y_true)
+                if loss_fn is not None:
+                    step_loss = loss_fn(y_pred, y_true)
+                else:
+                    step_loss = nn.functional.mse_loss(y_pred, y_true)
                 rollout_loss = rollout_loss + step_loss
                 
-                # Scheduled sampling: use GT or prediction for next step
+                # Scheduled sampling: choose next input
                 if np.random.random() < teacher_forcing_ratio:
+                    # Teacher forcing: use ground truth (breaks gradient chain)
                     x = y_true
-                    # Add noise even to GT to improve robustness
                     if noise_std > 0:
                         x = x + noise_std * torch.randn_like(x)
+                    model_pred_count = 0
                 else:
-                    x = y_pred.detach()
+                    # Use model's own prediction — BPTT truncation logic
+                    model_pred_count += 1
+                    if model_pred_count >= bptt_steps:
+                        # Truncate: detach to cap gradient chain depth
+                        x = y_pred.detach()
+                        model_pred_count = 0
+                    else:
+                        # Keep gradients flowing through (core BPTT fix)
+                        x = y_pred
+                    # Add noise to own predictions (simulates inference distribution)
+                    if noise_std > 0:
+                        x = x + noise_std * torch.randn_like(x)
                 
-                # Clean up
                 del y_true, y_pred
             
             # Average loss over rollout steps
             batch_loss = batch_loss + rollout_loss / rollout_length
             del x
         
-        # Average over batch
+        # Average over batch, single backward call
         batch_loss = batch_loss / len(batch_indices)
         batch_loss.backward()
         
@@ -181,6 +204,13 @@ def train_rollout_epoch(
         
         total_loss += batch_loss.item()
         n_batches += 1
+        
+        # Progress logging every 50 batches
+        if n_batches % 50 == 0 or n_batches == 1:
+            elapsed = time.time() - t_epoch_start
+            print(f"    batch {n_batches}/{total_batches} | "
+                  f"loss={batch_loss.item():.6f} | "
+                  f"elapsed={elapsed:.0f}s", flush=True)
         
         del batch_loss
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
@@ -195,16 +225,19 @@ def evaluate_rollout(
     device: str,
     rollout_length: int,
     n_eval: int = 10,
+    clamp_range: float = 6.0,
 ) -> Tuple[float, np.ndarray]:
     """
     Evaluate autoregressive rollout MSE on test set.
     
     Args:
         model: FNO model
-        states: (T, C, H, W) numpy array of test states
+        states: (T, C, H, W) numpy array of test states (normalized)
         device: 'cuda' or 'cpu'
         rollout_length: Number of autoregressive steps
         n_eval: Number of rollouts to evaluate
+        clamp_range: Clamp predictions to [-clamp_range, +clamp_range]
+            in normalized space. Prevents catastrophic blowup. Set to 0 to disable.
     
     Returns:
         average_mse: Mean MSE over all rollouts and steps
@@ -220,7 +253,6 @@ def evaluate_rollout(
     # Sample evaluation starting points (evenly spaced for consistency)
     n_samples = min(n_eval, max_start + 1)
     start_indices = np.linspace(0, max_start, n_samples, dtype=int)
-    # Remove duplicates that can occur with linspace + int conversion
     start_indices = np.unique(start_indices)
     
     step_mses = np.zeros(rollout_length)
@@ -231,6 +263,8 @@ def evaluate_rollout(
         
         for step in range(rollout_length):
             y_pred = model(x)
+            if clamp_range > 0:
+                y_pred = torch.clamp(y_pred, -clamp_range, clamp_range)
             target_idx = start_idx + step + 1
             y_true = torch.from_numpy(states[target_idx:target_idx+1]).float().to(device)
             
@@ -318,6 +352,9 @@ def generate_rollout_figures(
             axes[1].plot(x_grid, error_1d, 'k-', lw=1)
             axes[1].set_title(f'Error (MSE={np.mean(error_1d**2):.2e})')
             axes[1].grid(True, alpha=0.3)
+        elif pde == "ns":
+            fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+            _plot_single_field_2d(axes, pred[0], truth[0], r'$\omega$')
         else:
             fig, axes = plt.subplots(2, 3, figsize=(12, 8))
             field_names = ['Density', 'Potential']
@@ -491,6 +528,17 @@ def main():
         logger.info(f"Loaded checkpoint from epoch {epoch_loaded}")
         logger.info(f"  Step 1 metrics: {metrics}")
         
+        # Load normalizer from step 1 checkpoint
+        normalizer = load_normalizer_from_checkpoint(checkpoint_path, device=device)
+        if normalizer is not None:
+            logger.info(f"  Normalizer: mean={normalizer.mean}, std={normalizer.std}")
+            train_states = normalizer.encode(train_states)
+            test_states = normalizer.encode(test_states)
+            logger.info("  Applied normalization to train/test states")
+        
+        # Create loss function
+        loss_fn = create_loss_fn(cfg, pde=pde)
+        
         # Training setup
         train_cfg = cfg.get('training', {})
         lr = train_cfg.get('learning_rate', 1e-3) * 0.1  # Lower LR for fine-tuning
@@ -499,9 +547,11 @@ def main():
         batch_size = train_cfg.get('batch_size', 8)
         use_checkpointing = train_cfg.get('gradient_checkpointing', True)  # Default ON for memory
         noise_std = train_cfg.get('noise_std', 0.01)  # Input noise for robustness
+        bptt_steps = train_cfg.get('bptt_steps', 4)  # BPTT window for rollout training
         
         if use_checkpointing:
             logger.info("Gradient checkpointing ENABLED (saves memory, slower training)")
+        logger.info(f"Truncated BPTT: backprop through {bptt_steps} consecutive model-prediction steps")
         
         optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         
@@ -519,7 +569,38 @@ def main():
         epoch_counter = 0
         train_loss = 0.0  # Initialize to avoid unbound variable if all stages are empty
         
+        # Resume support: check for completed stage checkpoints
+        resume_stage = 0
+        for i in range(len(curriculum)):
+            stage_ckpt = os.path.join(run_dir, f"checkpoint_stage{i+1}.pt")
+            if os.path.exists(stage_ckpt):
+                resume_stage = i + 1
+            else:
+                break
+        
+        if resume_stage > 0:
+            # Load the latest completed stage checkpoint
+            stage_ckpt = os.path.join(run_dir, f"checkpoint_stage{resume_stage}.pt")
+            epoch_loaded, metrics = load_checkpoint(stage_ckpt, model, optimizer, device=device)
+            # Load normalizer from stage checkpoint if not already loaded
+            if normalizer is None:
+                normalizer = load_normalizer_from_checkpoint(stage_ckpt, device=device)
+                if normalizer is not None:
+                    train_states = normalizer.encode(train_states)
+                    test_states = normalizer.encode(test_states)
+            epoch_counter = epoch_loaded
+            # Skip completed stages' epoch counts
+            for i in range(resume_stage):
+                epoch_counter = sum(stage[2] for stage in curriculum[:resume_stage])
+            logger.info(f"RESUMING from stage {resume_stage + 1} "
+                        f"(loaded checkpoint_stage{resume_stage}.pt, epoch {epoch_counter})")
+        
         for stage_idx, (rollout_length, tf_ratio, n_epochs) in enumerate(curriculum):
+            # Skip already-completed stages
+            if stage_idx < resume_stage:
+                logger.info(f"--- Stage {stage_idx + 1}/{len(curriculum)}: SKIPPED (already completed) ---")
+                continue
+            
             logger.info(f"--- Stage {stage_idx + 1}/{len(curriculum)}: "
                         f"rollout={rollout_length}, TF={tf_ratio:.1f}, epochs={n_epochs} ---")
             
@@ -530,6 +611,11 @@ def main():
             
             # Decide logging frequency for this stage
             log_every = max(1, n_epochs // 5)  # Log ~5 times per stage
+            
+            # Early stopping per stage
+            stage_patience = train_cfg.get('stage_early_stopping_patience', 3)
+            best_stage_eval = float('inf')
+            stage_patience_counter = 0
             
             # Scheduler for this stage
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -546,6 +632,8 @@ def main():
                     rollout_length, tf_ratio, batch_size, grad_clip,
                     use_checkpointing=use_checkpointing,
                     noise_std=noise_std,
+                    loss_fn=loss_fn,
+                    bptt_steps=bptt_steps,
                 )
                 all_losses.append(train_loss)
                 scheduler.step()
@@ -562,9 +650,22 @@ def main():
                         'mse': eval_mse,
                     })
                     
+                    # Per-stage early stopping
+                    if eval_mse < best_stage_eval:
+                        best_stage_eval = eval_mse
+                        stage_patience_counter = 0
+                    else:
+                        stage_patience_counter += 1
+                    
                     logger.info(f"  Epoch {epoch:3d}/{n_epochs} | "
                                 f"Train: {train_loss:.6f} | Eval: {eval_mse:.6f} | "
+                                f"Patience: {stage_patience_counter}/{stage_patience} | "
                                 f"Time: {time.time()-t_epoch:.1f}s")
+                    
+                    if stage_patience_counter >= stage_patience:
+                        logger.info(f"  Early stopping stage {stage_idx+1} at epoch {epoch} "
+                                    f"(eval not improved for {stage_patience} cycles)")
+                        break
                 elif epoch % log_every == 0:
                     # Log progress periodically without evaluation
                     logger.info(f"  Epoch {epoch:3d}/{n_epochs} | "
@@ -574,7 +675,8 @@ def main():
             save_checkpoint(
                 model, optimizer, epoch_counter,
                 os.path.join(run_dir, f"checkpoint_stage{stage_idx+1}.pt"),
-                cfg, {'train_loss': train_loss, 'rollout_length': rollout_length}
+                cfg, {'train_loss': train_loss, 'rollout_length': rollout_length},
+                normalizer=normalizer
             )
         
         # Save final checkpoint
@@ -582,7 +684,8 @@ def main():
         save_checkpoint(
             model, optimizer, epoch_counter,
             os.path.join(run_dir, "checkpoint_rollout_final.pt"),
-            cfg, {'train_loss': final_loss}
+            cfg, {'train_loss': final_loss},
+            normalizer=normalizer
         )
         
         # Final long-horizon evaluation

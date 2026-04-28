@@ -1,0 +1,117 @@
+run_name: "opinf_ks_r32_closure_physics"
+
+pde: "ks"
+
+paths:
+  output_base: "./local_output/"
+  data_dir: "./data/ks"
+  training_files: 
+      - ks_sim_step0.1_L100_N200_steps2000_20260223093716_4479.h5
+  test_files: []
+
+physics:
+  dt: 0.1
+  n_fields: 1
+  n_x: 200
+  n_y: 1
+  L: 100.0
+  N: 200
+
+training_mode:
+  mode: "temporal_split"
+  train_start: 1250
+  train_end: 1800
+  test_start: 1800
+  test_end: 2000
+
+reduction:
+  method: "linear"
+  r: 50
+  target_energy: 0.99
+
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 550
+  n_steps: 550
+
+# =============================================================================
+# CLOSURE + PHYSICS ENERGY SELECTION
+# =============================================================================
+# Diagnosis showed:
+# 1. Output model masks dissipation (learned C,G,c compensates energy decay)
+# 2. All models dissipative (E decays ~30% over 550 steps)
+# 3. Best state models: slin~0.1, squad>1e6 (nearly linear, quad suppressed)
+# 4. Energy std metric meaningless (ref CV=1.7%)
+#
+# Fix: enable closure constant to offset systematic energy drift,
+# use physics-based energy for selection, select on mean only.
+# Grid focuses on low slin (where good models exist) and wide squad.
+# =============================================================================
+
+closure:
+  enabled: true
+  cubic_diagonal: true
+  constant: true
+
+regularization:
+  # Focus grid on low slin where best models exist
+  state_lin:
+    min: 1.0e-3
+    max: 1.0e3
+    num: 12
+    scale: "log"
+
+  state_quad:
+    min: 1.0e1
+    max: 1.0e9
+    num: 12
+    scale: "log"
+
+  # Cubic diagonal regularization for closure
+  state_cubic:
+    min: 1.0e0
+    max: 1.0e8
+    num: 6
+    scale: "log"
+
+  # In physics_energy sweep mode, output reg doesn't affect selection.
+  # Use a single reasonable value; output operators are recomputed after selection.
+  output_lin:
+    min: 1.0e-1
+    max: 1.0e-1
+    num: 1
+    scale: "log"
+
+  output_quad:
+    min: 1.0e1
+    max: 1.0e1
+    num: 1
+    scale: "log"
+
+model_selection:
+  method: "threshold"
+  # Select on mean energy only (std is meaningless for KS energy)
+  threshold_mean: 0.05
+  threshold_std: 100.0
+  threshold_mean_c: 100.0
+  threshold_std_c: 100.0
+
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: true
+  plot_state_snapshots: true
+  n_snapshot_samples: 5
+  qoi_method: "physics"
+  sweep_qoi_method: "physics_energy"
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

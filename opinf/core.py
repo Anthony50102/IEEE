@@ -64,6 +64,23 @@ def get_cubic_diagonal_terms(X: np.ndarray) -> np.ndarray:
     return X ** 3
 
 
+def project_to_stable(A: np.ndarray, max_spectral_radius: float = 0.999) -> np.ndarray:
+    """
+    Project the linear operator A so all eigenvalues satisfy |λ| ≤ max_spectral_radius.
+    
+    Eigenvalues exceeding the threshold are scaled down to the boundary of the
+    stability disk while preserving their phase. This ensures the discrete-time
+    system x_{k+1} = A x_k + ... does not exhibit exponential energy growth.
+    """
+    eigs, V = np.linalg.eig(A)
+    magnitudes = np.abs(eigs)
+    scale = np.where(magnitudes > max_spectral_radius,
+                     max_spectral_radius / magnitudes, 1.0)
+    eigs_clipped = eigs * scale
+    A_stable = (V @ np.diag(eigs_clipped) @ np.linalg.inv(V)).real
+    return A_stable
+
+
 def solve_difference_model(
     x0: np.ndarray, 
     n_steps: int, 

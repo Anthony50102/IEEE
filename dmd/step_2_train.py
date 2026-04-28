@@ -149,7 +149,7 @@ def load_gamma_reference(cfg: DMDConfig, n_train: int, logger) -> np.ndarray:
     
     pde = getattr(cfg, 'pde', 'hw2d')
     
-    if pde == "ks":
+    if pde in ("ks", "ns"):
         return _load_qoi_reference_ks(cfg, n_train, logger)
     
     if cfg.training_mode == "temporal_split":
@@ -261,6 +261,178 @@ def load_training_data(paths: dict, cfg: DMDConfig, logger) -> tuple:
 
 
 # =============================================================================
+# VALIDATION-BASED RANK SWEEP
+# =============================================================================
+
+def validation_rank_sweep_dmd(cfg, paths, logger):
+    """
+    Sweep over DMD rank using a validation window.
+    
+    For each r_c in r_candidates:
+      1. Truncate max-rank POD coefficients to r_c
+      2. Fit BOPDMD on train portion [0, train_end)
+      3. Forecast through validation window [val_start, val_end)
+      4. Score by validation kinetic energy error
+    
+    Select best rank, retrain on [0, val_end) for final model.
+    """
+    import h5py
+
+    val_start = cfg.val_start
+    val_end = cfg.val_end
+    train_end = cfg.train_end
+    r_candidates = cfg.r_candidates
+
+    # Load max-rank data from step 1
+    Xhat_full = np.load(paths['xhat_train'])   # (n_total, r_max)
+    pod_data = np.load(paths['pod_basis'])      # npz with U_r and mean
+    Ur_full = pod_data['U_r']                   # (n_spatial, r_max)
+    u_mean = pod_data['mean']                   # (n_spatial,)
+    pod_data.close()
+
+    r_max = Xhat_full.shape[1]
+    n_x = getattr(cfg, 'n_x', 64)
+    n_y = getattr(cfg, 'n_y', 64)
+    N = n_x * n_y
+
+    n_train_fit = train_end - cfg.train_start
+    n_val = val_end - val_start
+
+    logger.info(f"DMD Validation sweep: train [0,{n_train_fit}), val [{val_start},{val_end}) "
+                f"= {n_val} steps, r_candidates={r_candidates}")
+
+    # Load reference validation QoI from HDF5
+    # ROM state is vorticity (ω) for NS, so 0.5/N * ||ω||² = enstrophy
+    hdf5_path = cfg.training_files[0]
+    pde = getattr(cfg, 'pde', 'hw2d')
+    with h5py.File(hdf5_path, 'r') as hf:
+        if pde == 'ns':
+            val_ref_qoi = np.array(hf['enstrophy'][val_start:val_end])
+        else:
+            val_ref_qoi = np.array(hf['energy'][val_start:val_end])
+
+    Xhat_fit = Xhat_full[:n_train_fit, :]
+    t_fit = np.arange(n_train_fit) * cfg.dt
+
+    all_results = []
+
+    for r_c in r_candidates:
+        if r_c > r_max:
+            logger.warning(f"  r_c={r_c} > r_max={r_max}, skipping")
+            continue
+
+        logger.info(f"  --- Rank r={r_c} ---")
+        X_dmd = Xhat_fit[:, :r_c]
+
+        try:
+            dmd_result = fit_bopdmd(X_dmd, t_fit, r_c, cfg, logger)
+        except Exception as e:
+            logger.warning(f"    BOPDMD fit failed: {e}")
+            continue
+
+        # Forecast through validation window using trained amplitudes
+        eigs_ct = dmd_result['eigs']       # continuous-time eigenvalues
+        modes = dmd_result['modes_reduced'] # (r_c, r_c) complex
+        amps = dmd_result['amplitudes']     # (r_c,) complex
+
+        # Forecast at validation times (continue from training time axis)
+        t_val = np.arange(val_start, val_end) * cfg.dt
+        dynamics = np.exp(np.outer(eigs_ct, t_val))   # (r_c, n_val)
+        X_pred_val = (modes @ np.diag(amps) @ dynamics).real.T  # (n_val, r_c)
+
+        # Compute validation QoI error (enstrophy for NS, energy for KS)
+        Ur_trunc = Ur_full[:, :r_c]
+        energy_a = float(np.sum(u_mean ** 2))
+        energy_b = Ur_trunc.T @ u_mean
+        norms_sq = np.sum(X_pred_val ** 2, axis=1)
+        cross = X_pred_val @ energy_b
+        pred_qoi = 0.5 / N * (norms_sq + 2.0 * cross + energy_a)
+
+        val_err = float(np.linalg.norm(pred_qoi - val_ref_qoi) /
+                       np.linalg.norm(val_ref_qoi))
+
+        # Validation state MSE
+        Xhat_val_ref = Xhat_full[n_train_fit:n_train_fit + n_val, :r_c]
+        n_cmp = min(len(X_pred_val), len(Xhat_val_ref))
+        val_state_mse = float(np.mean(
+            (X_pred_val[:n_cmp] - Xhat_val_ref[:n_cmp]) ** 2))
+
+        n_stable = int(np.sum(eigs_ct.real < 0))
+        logger.info(f"    val_E_err={val_err:.4%}, val_MSE={val_state_mse:.2e}, "
+                     f"eigs: {n_stable}/{r_c} stable")
+
+        all_results.append({
+            'r': r_c,
+            'val_energy_err': val_err,
+            'val_state_mse': val_state_mse,
+            'n_stable_eigs': n_stable,
+            'dmd_result': dmd_result,
+        })
+
+    if not all_results:
+        logger.error("No valid DMD models in validation sweep!")
+        return None
+
+    # Sort by validation energy error
+    all_results.sort(key=lambda x: x['val_energy_err'])
+    best = all_results[0]
+
+    # Simplicity tiebreaker: among models within 5% of best, prefer smallest r
+    tol = 0.05
+    best_val = best['val_energy_err']
+    within_tol = [r for r in all_results if r['val_energy_err'] <= best_val * (1 + tol)]
+    within_tol.sort(key=lambda x: x['r'])
+    best = within_tol[0]
+
+    logger.info(f"\n  === DMD VALIDATION SWEEP RESULTS ===")
+    logger.info(f"  Best rank: r={best['r']}, val_E_err={best['val_energy_err']:.4%}")
+    logger.info(f"  Models within {tol:.0%} of best: {len(within_tol)}")
+    for i, res in enumerate(all_results[:7]):
+        logger.info(f"    {i+1}. r={res['r']}, val_E_err={res['val_energy_err']:.4%}")
+
+    # === RETRAIN on full [0, val_end) with winning rank ===
+    r_best = best['r']
+    n_retrain = val_end - cfg.train_start
+    logger.info(f"\n  Retraining at r={r_best} on [0,{n_retrain}) (train+val)...")
+
+    X_retrain = Xhat_full[:n_retrain, :r_best]
+    t_retrain = np.arange(n_retrain) * cfg.dt
+    dmd_retrain = fit_bopdmd(X_retrain, t_retrain, r_best, cfg, logger)
+
+    # Save truncated step-1 artifacts
+    logger.info(f"  Saving truncated artifacts for r={r_best}...")
+    Xhat_test = np.load(paths['xhat_test'])
+    # DMD pod_basis is npz with U_r, mean, n_y, n_x
+    np.savez(paths['pod_basis'], U_r=Ur_full[:, :r_best], mean=u_mean,
+             n_y=n_x, n_x=n_x)
+    np.save(paths['xhat_train'], Xhat_full[:, :r_best])
+    np.save(paths['xhat_test'], Xhat_test[:, :r_best])
+
+    ic_data2 = np.load(paths['initial_conditions'])
+    ic_dict = {k: ic_data2[k] for k in ic_data2.files}
+    ic_data2.close()
+    if 'train_ICs_reduced' in ic_dict:
+        ic_dict['train_ICs_reduced'] = ic_dict['train_ICs_reduced'][:, :r_best]
+    if 'test_ICs_reduced' in ic_dict:
+        ic_dict['test_ICs_reduced'] = ic_dict['test_ICs_reduced'][:, :r_best]
+    np.savez(paths['initial_conditions'], **ic_dict)
+
+    preproc = np.load(paths['preprocessing_info'], allow_pickle=True)
+    preproc_dict = {k: preproc[k] for k in preproc.files}
+    preproc.close()
+    preproc_dict['r_actual'] = r_best
+    np.savez(paths['preprocessing_info'], **preproc_dict)
+
+    return {
+        'best': best,
+        'all_results': [{k: v for k, v in r.items() if k != 'dmd_result'} for r in all_results],
+        'dmd_result': dmd_retrain,
+        'r': r_best,
+        'n_retrain': n_retrain,
+    }
+
+
+# =============================================================================
 # MAIN
 # =============================================================================
 
@@ -294,6 +466,56 @@ def main():
     t_start = time.time()
     
     try:
+        # Check if validation-based selection is enabled
+        use_val = getattr(cfg, 'val_end', 0) > 0 and len(getattr(cfg, 'r_candidates', [])) > 0
+
+        if use_val:
+            logger.info("=== VALIDATION-BASED RANK SELECTION ===")
+            t_start_val = time.time()
+            val_result = validation_rank_sweep_dmd(cfg, paths, logger)
+            t_elapsed_val = time.time() - t_start_val
+
+            if val_result is None:
+                save_step_status(args.run_dir, "step_2", "failed",
+                                 {"error": "No valid DMD models in validation sweep"})
+                return
+
+            # Save retrained model
+            dmd_result = val_result['dmd_result']
+            r_best = val_result['r']
+            save_dict = {
+                'eigs': dmd_result['eigs'],
+                'modes_reduced': dmd_result['modes_reduced'],
+                'amplitudes': dmd_result['amplitudes'],
+                'dt': dmd_result['dt'],
+                'dmd_rank': r_best,
+                'use_learned_output': False,
+            }
+            np.savez(paths['dmd_model'], **save_dict)
+
+            # Update cfg so step_3 uses correct rank
+            cfg.dmd_rank = r_best
+
+            print_header("MODEL SELECTION SUMMARY (VALIDATION)")
+            print(f"  Best rank: {r_best}")
+            print(f"  Val energy error: {val_result['best']['val_energy_err']:.4%}")
+            print(f"  Retrained on: [0, {val_result['n_retrain']}) snapshots")
+            print(f"  Sweep time: {t_elapsed_val:.1f}s")
+
+            save_step_status(args.run_dir, "step_2", "completed", {
+                "dmd_rank": r_best,
+                "use_learned_output": False,
+                "n_train_snapshots": val_result['n_retrain'],
+                "time_seconds": t_elapsed_val,
+                "selection_method": "validation",
+                "val_energy_err": float(val_result['best']['val_energy_err']),
+            })
+
+            print_header("STEP 2 COMPLETE")
+            logger.info("Step 2 completed successfully (validation-based)")
+            return
+
+        # === Original path: single DMD fit ===
         # Load preprocessing info
         preproc = np.load(paths['preprocessing_info'])
         r_actual = int(preproc['r_actual'])
