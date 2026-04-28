@@ -50,7 +50,9 @@ PY
 # `--no-deps` is critical to avoid pulling fresh numpy/scipy.
 # numba+llvmlite are not pure-Python but are the canonical pip wheels and
 # will install cleanly to ~/.local without touching system numpy.
-PY_DEPS=(pyyaml fire tqdm perfplot matplotx llvmlite numba)
+# numba==0.56.4 / llvmlite==0.39.1 is the last numba line that supports
+# numpy 1.20 (Frontera's system numpy). Newer numba demands numpy>=1.22.
+PY_DEPS=(pyyaml fire tqdm perfplot matplotx "llvmlite==0.39.1" "numba==0.56.4")
 
 echo "==> installing pure-Python deps (--user --no-deps):"
 for pkg in "${PY_DEPS[@]}"; do
@@ -61,7 +63,11 @@ echo "==> installing hw2d (--user --no-deps) from $HW2D_DIR"
 # Non-editable: Frontera's system setuptools predates PEP 660, so editable
 # installs fail with "build backend missing build_editable hook". hw2d is a
 # stable upstream we don't intend to modify, so a regular install is fine.
-python3 -m pip install --user --no-deps --no-build-isolation "$HW2D_DIR"
+# Allow build isolation so pip uses a modern setuptools to build the wheel
+# (system setuptools is too old to honour the [project] table and would
+# otherwise produce an "UNKNOWN-0.0.0" wheel). --no-deps still applies at
+# install time, so no fresh numpy/scipy lands in ~/.local.
+python3 -m pip install --user --no-deps "$HW2D_DIR"
 
 echo "==> post-install check:"
 python3 - <<'PY'
