@@ -190,17 +190,21 @@ the 2026 refactor; their code (where worth keeping) is in `archive/`.
 
 ## HPC Quick Reference (TACC)
 
-(Unchanged from the prior layout; the local <-> HPC story is the same.
-`hw/dns.py` runs on Frontera, `rom/train.py` runs on Vista.)
+`hw/dns.py` runs on Frontera, `rom/train.py` runs on Vista.
 
 | System | Use |
 |--------|-----|
 | Frontera | CPU/MPI: OpInf baselines, HW DNS data generation |
 | Vista (gh) | GPU: ROM / DISCO-lite training |
 
-Filesystem layout, queue choices, SLURM templates, module loads, and the
-`MPLBACKEND=Agg` requirement are unchanged. See `archive/configs_old/` and
-`scripts/` for examples to adapt.
+**Frontera specifics: see `.github/frontera.md`.** That file documents the
+canonical Python module load (`unset PYTHONPATH; module reset; module load
+python3/3.9.2 phdf5/1.10.4`), filesystem layout, queue choices, the
+`PYTHONPATH` bashrc gotcha, and submit conventions. Read it before any new
+Frontera session; the rules are non-obvious.
+
+Vista specifics: TBD (will be a sibling `.github/vista.md`). MPLBACKEND=Agg
+is required on both clusters for matplotlib in headless jobs.
 
 ---
 

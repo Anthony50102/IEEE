@@ -22,9 +22,10 @@
 
 set -euo pipefail
 
-module load python3 || true
-
 cd "$SLURM_SUBMIT_DIR"
+
+# Canonical Frontera environment.
+source scripts/frontera/env.sh
 
 if [ -z "${CONFIG:-}" ] || [ -z "${OUTDIR:-}" ]; then
     echo "ERROR: must set CONFIG and OUTDIR env vars (see header)."

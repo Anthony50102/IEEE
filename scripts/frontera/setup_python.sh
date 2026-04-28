@@ -13,11 +13,13 @@
 
 set -euo pipefail
 
-# Frontera puts a recent Python under the python3 module.
-module load python3 || true
-
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HW2D_DIR="$REPO_ROOT/hw/hw2d"
+
+# Canonical environment: Python 3.9.2 + parallel HDF5 1.10.4 + system
+# numpy/scipy/h5py/matplotlib. Strips the bashrc-injected PYTHONPATH that
+# would otherwise force python3.7 site-packages into a 3.9 interpreter.
+source "$REPO_ROOT/scripts/frontera/env.sh"
 
 if [ ! -d "$HW2D_DIR/src/hw2d" ]; then
     echo "ERROR: $HW2D_DIR/src/hw2d not found. Did you forget to clone hw2d?"
@@ -46,6 +48,8 @@ PY
 
 # Pure-Python deps we need that are not part of the standard TACC stack.
 # `--no-deps` is critical to avoid pulling fresh numpy/scipy.
+# numba+llvmlite are not pure-Python but are the canonical pip wheels and
+# will install cleanly to ~/.local without touching system numpy.
 PY_DEPS=(pyyaml fire tqdm perfplot matplotx llvmlite numba)
 
 echo "==> installing pure-Python deps (--user --no-deps):"
