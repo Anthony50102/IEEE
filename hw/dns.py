@@ -171,10 +171,28 @@ def main(argv: list[str] | None = None) -> None:
     p = argparse.ArgumentParser(description="Run one HW DNS trajectory.")
     p.add_argument("--config", required=True, help="Path to DNS config YAML.")
     p.add_argument("--out-dir", required=True, help="Directory for trajectory.h5 + data_card.yaml.")
+    p.add_argument(
+        "--card-only",
+        action="store_true",
+        help=(
+            "Skip simulation; recompute Gamma stats from an existing "
+            "trajectory.h5 in --out-dir and (re)write data_card.yaml. "
+            "Use this to salvage a run that hit a SLURM walltime before "
+            "post-processing finished."
+        ),
+    )
     args = p.parse_args(argv)
     cfg = DnsConfig.from_yaml(args.config)
-    h5 = run(cfg, args.out_dir)
-    print(f"wrote {h5}")
+    out_dir = Path(args.out_dir)
+    if args.card_only:
+        h5 = out_dir / "trajectory.h5"
+        if not h5.exists():
+            raise SystemExit(f"--card-only: {h5} does not exist")
+        write_data_card(cfg, h5, out_dir / "data_card.yaml")
+        print(f"wrote {out_dir / 'data_card.yaml'}")
+    else:
+        h5 = run(cfg, args.out_dir)
+        print(f"wrote {h5}")
 
 
 if __name__ == "__main__":
