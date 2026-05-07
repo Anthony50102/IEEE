@@ -242,14 +242,12 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
             if actual_len < traj_len:
                 traj_len = actual_len
         
-        # Load reference QoIs based on PDE type
+        # Load reference QoIs based on PDE type. (Module-level h5py import.)
         if pde == "ks":
-            import h5py
             with h5py.File(ref_files[traj_idx], 'r') as f:
                 ref_n = np.array(f['energy'][start_offset:start_offset + traj_len])
                 ref_c = np.array(f['enstrophy'][start_offset:start_offset + traj_len])
         elif pde == "ns":
-            import h5py
             with h5py.File(ref_files[traj_idx], 'r') as f:
                 ref_n = np.array(f['energy'][start_offset:start_offset + traj_len])
                 ref_c = np.array(f['enstrophy'][start_offset:start_offset + traj_len])
