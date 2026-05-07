@@ -665,7 +665,6 @@ def main():
                     if actual_len < traj_len:
                         traj_len = actual_len
                     if cfg.pde == "ks" or cfg.pde == "ns":
-                        import h5py
                         with h5py.File(ref_files_list[i], 'r') as fh:
                             ref_n = np.array(fh['energy'][offset:offset + traj_len])
                             ref_c = np.array(fh['enstrophy'][offset:offset + traj_len])
