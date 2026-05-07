@@ -16,7 +16,6 @@ import yaml
 import logging
 import gc
 import h5py
-import xarray as xr
 import numpy as np
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -543,7 +542,14 @@ def compute_truncation_snapshots(
 
 
 def load_dataset(path: str, engine: str = "h5netcdf"):
-    """Load xarray dataset from HDF5 file."""
+    """Load xarray dataset from HDF5 file.
+
+    xarray is imported lazily so the rest of the package (and
+    `step_1_preprocess.py` end-to-end on hw2d files) works on a Python
+    environment without xarray / h5netcdf installed. Step 3 / reference
+    QoI loading still requires it.
+    """
+    import xarray as xr
     try:
         return xr.open_dataset(path, engine=engine)
     except Exception:

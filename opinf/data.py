@@ -56,13 +56,18 @@ def get_file_metadata(cfg, file_path: str) -> tuple:
             n_time, ny, nx = f['omega'].shape
         n_spatial = ny * nx  # Single field (vorticity)
     else:
-        with load_dataset(file_path, cfg.engine) as fh:
-            n_time = fh["density"].shape[0]
-            if fh["density"].ndim == 3:
-                n_y, n_x = fh["density"].shape[1], fh["density"].shape[2]
+        # hw2d: read directly with h5py to avoid xarray/h5netcdf dependency.
+        # Files written by hw.dns / hw2d store density as either (n_t, n_y, n_x)
+        # or flattened (n_t, n_y*n_x). cfg.n_fields covers density+phi.
+        import h5py
+        with h5py.File(file_path, 'r') as f:
+            dset = f["density"]
+            n_time = dset.shape[0]
+            if dset.ndim == 3:
+                n_y, n_x = dset.shape[1], dset.shape[2]
             else:
-                n_y = n_x = int(np.sqrt(fh["density"].shape[1]))
-            n_spatial = cfg.n_fields * n_y * n_x
+                n_y = n_x = int(np.sqrt(dset.shape[1]))
+        n_spatial = cfg.n_fields * n_y * n_x
     
     if cfg.truncation_enabled:
         max_snaps = compute_truncation_snapshots(
