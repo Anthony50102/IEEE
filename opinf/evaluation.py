@@ -10,6 +10,7 @@ Author: Anthony Poole
 """
 
 import numpy as np
+import h5py
 
 from core import get_quadratic_terms, solve_difference_model
 from utils import load_dataset
@@ -253,9 +254,9 @@ def compute_metrics(predictions: dict, ref_files: list, boundaries: np.ndarray,
                 ref_n = np.array(f['energy'][start_offset:start_offset + traj_len])
                 ref_c = np.array(f['enstrophy'][start_offset:start_offset + traj_len])
         else:
-            fh = load_dataset(ref_files[traj_idx], engine)
-            ref_n = fh["gamma_n"].values[start_offset:start_offset + traj_len]
-            ref_c = fh["gamma_c"].values[start_offset:start_offset + traj_len]
+            with h5py.File(ref_files[traj_idx], 'r') as f:
+                ref_n = np.asarray(f['gamma_n'][start_offset:start_offset + traj_len])
+                ref_c = np.asarray(f['gamma_c'][start_offset:start_offset + traj_len])
         
         # Handle case where all models produced NaN (empty predictions)
         if pred_n.size == 0 or pred_c.size == 0:

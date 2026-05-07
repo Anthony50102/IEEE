@@ -12,6 +12,7 @@ Author: Anthony Poole
 
 import gc
 import os
+import h5py
 import numpy as np
 
 from utils import (
@@ -442,8 +443,11 @@ def load_reference_gamma(cfg, rank, logger) -> dict:
     Gamma_n_list, Gamma_c_list = [], []
     
     for fp in cfg.training_files:
-        fh = load_dataset(fp, cfg.engine)
-        gamma_n, gamma_c = fh["gamma_n"].values, fh["gamma_c"].values
+        # hw2d trajectory.h5 stores gamma_n / gamma_c as 1D float arrays
+        # at top level (see hw.dns). Read with h5py to avoid xarray.
+        with h5py.File(fp, 'r') as fh:
+            gamma_n = np.asarray(fh["gamma_n"][:])
+            gamma_c = np.asarray(fh["gamma_c"][:])
         
         # Handle temporal_split mode: use explicit train range
         if cfg.training_mode == "temporal_split":

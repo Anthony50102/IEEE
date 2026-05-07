@@ -18,9 +18,8 @@
 #   sbatch --export=ALL,CONFIG=configs/opinf/b1_alpha0.1.yaml \
 #          scripts/frontera/run_opinf_smoke.slurm
 #
-# Step 3 (evaluation) is intentionally skipped: it still imports xarray
-# for reference-Gamma loading, which is not installed in our minimal env.
-# We will port that to h5py during Phase 2A cleanup.
+# Step 3 (evaluation, serial) is now portable -- reads gamma_n / gamma_c
+# directly via h5py.
 
 set -euo pipefail
 
@@ -68,6 +67,15 @@ echo "==> RUN_DIR: $RUN_DIR"
 echo ""
 echo "================== STEP 2 =================="
 ibrun -n "$SLURM_NTASKS" python3 opinf/step_2_train.py \
+    --config "$CONFIG" \
+    --run-dir "$RUN_DIR"
+
+# ------------------------------------------------------------------
+# Step 3 -- evaluation (serial; runs on rank 0 of the allocation)
+# ------------------------------------------------------------------
+echo ""
+echo "================== STEP 3 =================="
+python3 opinf/step_3_evaluate.py \
     --config "$CONFIG" \
     --run-dir "$RUN_DIR"
 

@@ -17,6 +17,7 @@ Author: Anthony Poole
 import argparse
 import os
 import time
+import h5py
 import numpy as np
 import yaml
 from typing import Optional
@@ -102,9 +103,10 @@ def generate_gamma_plots(predictions: dict, ref_files: list, boundaries: np.ndar
                 t_start=t_start,
             )
         else:
-            fh = load_dataset(ref_files[i], engine)
-            ref_n = fh["gamma_n"].values[start_offset:start_offset + n_steps]
-            ref_c = fh["gamma_c"].values[start_offset:start_offset + n_steps]
+            import h5py
+            with h5py.File(ref_files[i], 'r') as f:
+                ref_n = np.asarray(f['gamma_n'][start_offset:start_offset + n_steps])
+                ref_c = np.asarray(f['gamma_c'][start_offset:start_offset + n_steps])
             
             output_path = os.path.join(output_dir, f'traj_{i+1}_gamma.png')
             plot_gamma_timeseries(
@@ -668,10 +670,9 @@ def main():
                             ref_n = np.array(fh['energy'][offset:offset + traj_len])
                             ref_c = np.array(fh['enstrophy'][offset:offset + traj_len])
                     else:
-                        from shared.data_io import load_dataset as _load
-                        fh = _load(ref_files_list[i], cfg.engine)
-                        ref_n = fh["gamma_n"].values[offset:offset + traj_len]
-                        ref_c = fh["gamma_c"].values[offset:offset + traj_len]
+                        with h5py.File(ref_files_list[i], 'r') as fh:
+                            ref_n = np.asarray(fh['gamma_n'][offset:offset + traj_len])
+                            ref_c = np.asarray(fh['gamma_c'][offset:offset + traj_len])
                     summary.add_qoi_metrics(mean_pred_n, ref_n, mean_pred_c, ref_c,
                                             split=split, trajectory=i)
             

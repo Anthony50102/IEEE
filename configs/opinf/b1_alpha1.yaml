@@ -80,7 +80,7 @@ model_selection:
 
 evaluation:
   save_predictions: true
-  generate_plots: false  # step 3 still needs xarray; defer plotting
+  generate_plots: true
 
 execution:
   verbose: true
