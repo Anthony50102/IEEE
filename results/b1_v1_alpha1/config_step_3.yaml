@@ -1,0 +1,80 @@
+_saved_at: '2026-05-11T12:45:04.055211'
+_step: step_3
+run_name: b1_alpha1_r50
+run_dir: /scratch2/10407/anthony50102/IEEE/output/20260511_124229_b1_alpha1_r50
+pde: hw2d
+paths:
+  output_base: /scratch2/10407/anthony50102/IEEE/output/
+  data_dir: /work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/
+  training_files:
+  - /work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/trajectory.h5
+  test_files: []
+physics:
+  dt: 0.25
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+training_mode:
+  mode: temporal_split
+  train_start: 3000
+  train_end: 5000
+  test_start: 5000
+  test_end: 6001
+reduction:
+  method: linear
+  r: 50
+  target_energy: 0.99
+  n_vectors_to_check: 200
+  reg_magnitude: 1.0e-06
+truncation:
+  enabled: false
+  method: time
+  snapshots: null
+  time: null
+preprocessing:
+  centering: true
+  scaling: false
+training:
+  training_end: 2000
+  n_steps: 3001
+regularization:
+  state_lin:
+  - 0.01
+  - 4.6415888336127775
+  - 2154.4346900318824
+  - 1000000.0
+  state_quad:
+  - 100.0
+  - 1000000.0
+  - 10000000000.0
+  - 100000000000000.0
+  output_lin:
+  - 1.0e-06
+  - 0.00046415888336127773
+  - 0.21544346900318823
+  - 100.0
+  output_quad:
+  - 1.0e-06
+  - 0.00046415888336127773
+  - 0.21544346900318823
+  - 100.0
+  state_cubic: []
+closure:
+  enabled: false
+  cubic_diagonal: true
+  constant: true
+model_selection:
+  threshold_mean: 0.2
+  threshold_std: 1.0
+  max_models: 100
+evaluation:
+  save_predictions: true
+  generate_plots: true
+  plot_state_error: false
+  plot_state_snapshots: false
+  n_snapshot_samples: 5
+  qoi_method: learned
+execution:
+  verbose: true
+  log_level: INFO
+  engine: h5netcdf
