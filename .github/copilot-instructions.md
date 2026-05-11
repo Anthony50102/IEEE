@@ -1,5 +1,9 @@
 # Copilot Instructions — Context-Conditioned Structured ROM Framework
 
+> 📍 **Roadmap**: Read [`ROADMAP.md`](../ROADMAP.md) at the repo root for
+> what's built, what's in progress, and what's next. Keep it updated as
+> work lands — it's the human-readable source of truth for project state.
+
 ## What this repo is
 
 Code for the IEEE/CiSE-track methods paper *Context-Conditioned Structured
