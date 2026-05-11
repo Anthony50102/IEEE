@@ -1,9 +1,11 @@
-run_name: "b1_alpha1_smoke"
+run_name: "b1_alpha1_r50"
 
-# B1 single-α OpInf smoke test on Frontera dev queue.
-# Goal: confirm preprocessing + POD + operator inference pipeline runs
-# end-to-end on the new HW DNS files at α=1.0. Small rank, modest
-# regularizer grid -- sizing/tuning happens *after* this works.
+# B1 single-α OpInf at α=1.0 on extended DNS (T=1500, 6001 frames).
+# After smoke validated pipeline, this is the first tuning run:
+#   r=20 -> r=50 (POD energy 66% -> ~92%, knee of the spectrum)
+#   train window 700 -> 2000 rows (1.5x over-determined at r=50)
+# Vanilla OpInf: linear A + quadratic H, mean-centered, Tikhonov.
+# No closure, no stability projection.
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/"
@@ -20,18 +22,18 @@ physics:
   n_x: 512
   n_y: 512
 
-# 2001 frames total. data_card.yaml burn_in_frames=1000, so post-burn-in
-# usable range is [1000, 2001). Hold out the last ~300 for test.
+# 6001 frames total. data_card.yaml burn_in_frames=3000, so post-burn-in
+# usable range is [3000, 6001) = 3001 frames. Train on 2000, test on last 1001.
 training_mode:
   mode: "temporal_split"
-  train_start: 1000
-  train_end: 1700
-  test_start: 1700
-  test_end: 2001
+  train_start: 3000
+  train_end: 5000
+  test_start: 5000
+  test_end: 6001
 
 reduction:
   method: "linear"
-  r: 20
+  r: 50
   target_energy: 0.99
 
 truncation:
@@ -42,8 +44,8 @@ preprocessing:
   scaling: false
 
 training:
-  training_end: 700
-  n_steps: 1001
+  training_end: 2000
+  n_steps: 3001
 
 # Closure off for the smoke; turn on once the basic pipeline is verified.
 closure:
