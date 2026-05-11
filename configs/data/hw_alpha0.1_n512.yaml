@@ -2,8 +2,8 @@
 # Reference Gamma_n = 1.51 +/- 0.21 (hw2d README, 512^2).
 # Stored at full 512^2 resolution; downstream training may stride to 256^2.
 #
-# end_time bumped from 400 -> 1500 to give OpInf (Phase 2) ~5500 post-burn-in
-# snapshots, enough to fit r=50 with a comfortable rows/cols ratio.
+# end_time 3000 t.u.: gives ~5000 post-burn-in train rows so r=75 (p=2925)
+# is ~1.7x over-determined for OpInf (Phase 2).
 
 alpha: 0.1
 kappa: 1.0
@@ -14,7 +14,7 @@ nu: 5.0e-9
 grid_pts: 512
 downsample_factor: 1
 step_size: 0.01
-end_time: 1500.0
+end_time: 3000.0
 snaps: 25                    # dt_save = 0.25  -> ~6000 frames
 
 init_type: normal

@@ -3,6 +3,8 @@
 # Stored at full 512^2 resolution; downstream training may stride to 256^2.
 #
 # Long end_time required: hw2d table reports `age 800+` for steady stats here.
+# end_time 3000 t.u.: gives ~5000 post-burn-in train rows so r=75 (p=2925)
+# is ~1.7x over-determined for OpInf (Phase 2).
 
 alpha: 5.0
 kappa: 1.0
@@ -13,7 +15,7 @@ nu: 5.0e-9
 grid_pts: 512
 downsample_factor: 1
 step_size: 0.01
-end_time: 1000.0
+end_time: 3000.0
 snaps: 25                    # dt_save = 0.25  -> ~4000 frames
 
 init_type: normal
