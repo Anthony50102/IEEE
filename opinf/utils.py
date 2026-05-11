@@ -605,10 +605,12 @@ def chunked_gather(comm, local_data, root: int = 0, max_bytes: int = 2**30):
     local_bytes = int(np.prod(local_shape)) * itemsize
     all_bytes = comm.gather(local_bytes, root=root)
     
-    # Check if we need chunking (any rank has data > max_bytes)
-    max_local_bytes = comm.allreduce(local_bytes, op=_get_mpi().MAX)
-    
-    if max_local_bytes <= max_bytes:
+    # Check if we need chunking — the 2GB pickle limit applies to the
+    # *aggregate* gathered payload at root, not each per-rank message.
+    # So gate on the sum across ranks, not the per-rank max.
+    total_bytes = comm.allreduce(local_bytes, op=_get_mpi().SUM)
+
+    if total_bytes <= max_bytes:
         # Small enough for regular gather
         gathered = comm.gather(local_data, root=root)
         if rank == root:
