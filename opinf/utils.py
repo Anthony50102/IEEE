@@ -575,10 +575,14 @@ def distribute_indices(rank: int, n_total: int, size: int) -> tuple:
 
 def chunked_gather(comm, local_data, root: int = 0, max_bytes: int = 2**30):
     """
-    Gather numpy arrays from all ranks to root, chunking to avoid MPI 32-bit overflow.
-    
-    MPI's gather uses a 32-bit signed integer for message sizes, limiting to ~2GB.
-    This function gathers row-by-row chunks when arrays are large.
+    Gather numpy arrays from all ranks to root, chunking to avoid the
+    MPI4py pickle 2 GB limit at root.
+
+    NOTE: This is a duplicate of `shared.mpi_utils.chunked_gather` kept
+    here so that `opinf/` can stay self-contained (top-level imports
+    inside this package; `shared/mpi_utils.py` is required to be
+    lazy-imported per repo conventions). They MUST stay in sync. See
+    `shared/mpi_utils.py` module docstring for the full pitfall write-up.
     
     Args:
         comm: MPI communicator
@@ -683,9 +687,10 @@ def chunked_gather(comm, local_data, root: int = 0, max_bytes: int = 2**30):
 
 def chunked_bcast(comm, data, root: int = 0, max_bytes: int = 2**30):
     """
-    Broadcast a numpy array in chunks to avoid MPI 32-bit integer overflow.
-    
-    MPI's Bcast uses a 32-bit signed integer for count, limiting messages to ~2GB.
+    Broadcast a numpy array in chunks to avoid the MPI 32-bit count limit.
+
+    NOTE: Duplicate of `shared.mpi_utils.chunked_bcast`, kept here to
+    keep `opinf/` self-contained. MUST stay in sync.
     """
     rank = comm.Get_rank()
     
