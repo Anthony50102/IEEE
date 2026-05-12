@@ -1,0 +1,89 @@
+run_name: "b2_alpha_p015_r75"
+
+# B2: affine-mu pOpInf. Train on {0.1, 1.0, 5.0} with the n=512 trajectories
+# that B1 already used; evaluate at the trained alphas (G1) and at the
+# sentinel alpha=1.5 (G3). Both A and H are affine in alpha; constant too.
+# q=2 linear-in-alpha throughout (Theorem 2.3: q=3 is ill-conditioned at
+# s=3 training points).
+
+paths:
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+
+physics:
+  dt: 0.25
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+
+reduction:
+  method: "linear"
+  r: 75
+  target_energy: 0.99
+
+preprocessing:
+  # Per-alpha centering — each alpha's trajectory is centered by its own
+  # temporal mean over the training range. c0 + alpha*c1 then absorbs
+  # residual forcing/closure in centered coordinates (not mean shifts).
+  centering: true
+  scaling: false
+
+parametric:
+  alphas:
+    0.1:
+      data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha0.1_n512/"
+      training_file: "trajectory.h5"
+      train_start: 6000
+      train_end: 11000
+      test_start: 11000
+      test_end: 12001
+    1.0:
+      data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/"
+      training_file: "trajectory.h5"
+      train_start: 6000
+      train_end: 11000
+      test_start: 11000
+      test_end: 12001
+    5.0:
+      data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha5.0_n512/"
+      training_file: "trajectory.h5"
+      train_start: 6000
+      train_end: 11000
+      test_start: 11000
+      test_end: 12001
+  # G3: held-out alpha for stability sentinel + held-out evaluation.
+  # If the alpha=1.5 trajectory doesn't exist yet, leave sentinel_data_dir
+  # empty and the sweep will skip the sentinel check (still reports G1).
+  sentinel_alpha: 1.5
+  sentinel_data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.5_n512/"
+  sentinel_training_file: "trajectory.h5"
+  # alpha=1.5 trajectory is T=500, n_frames=2001, burn_in_frames=1000.
+  # Use [1000, 2001) = 1001 post-burn-in frames for the G3 evaluation
+  # window (also used as the stability sentinel IC in step 2).
+  sentinel_eval_start: 1000
+  sentinel_eval_end: 2001
+
+# 6 x 6 = 36 candidates. McQuarrie Eq 4.3 form: lambda1 on (A0, A1, c0, c1),
+# lambda2 on (F0, F1). Wide log range; tighten once we see the optimum.
+# These are *squared* lambdas (opinf convention).
+regularization_parametric:
+  lambda1_sq:
+    min: 1.0e-2
+    max: 1.0e8
+    num: 6
+    scale: log
+  lambda2_sq:
+    min: 1.0e2
+    max: 1.0e14
+    num: 6
+    scale: log
+
+stability:
+  # Disqualify any (lambda1, lambda2) whose sentinel-alpha rollout NaNs out
+  # or whose centered reduced-coordinate L2 norm exceeds this threshold.
+  sentinel_max_norm: 1.0e5
+  sentinel_steps: 200
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

@@ -1,0 +1,72 @@
+run_name: "b2_alpha_p015_r20_smoke"
+
+# B2 SMOKE: r=20, tiny 4x4 reg grid, short training window per alpha
+# to validate end-to-end pipeline on Frontera in <15 minutes.
+
+paths:
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+
+physics:
+  dt: 0.25
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+
+reduction:
+  method: "linear"
+  r: 20
+  target_energy: 0.99
+
+preprocessing:
+  centering: true
+  scaling: false
+
+parametric:
+  alphas:
+    0.1:
+      data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha0.1_n512/"
+      training_file: "trajectory.h5"
+      train_start: 6000
+      train_end: 8000
+      test_start: 8000
+      test_end: 8500
+    1.0:
+      data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/"
+      training_file: "trajectory.h5"
+      train_start: 6000
+      train_end: 8000
+      test_start: 8000
+      test_end: 8500
+    5.0:
+      data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha5.0_n512/"
+      training_file: "trajectory.h5"
+      train_start: 6000
+      train_end: 8000
+      test_start: 8000
+      test_end: 8500
+  sentinel_alpha: 1.5
+  sentinel_data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.5_n512/"
+  sentinel_training_file: "trajectory.h5"
+  sentinel_eval_start: 1000
+  sentinel_eval_end: 2001
+
+regularization_parametric:
+  lambda1_sq:
+    min: 1.0e-2
+    max: 1.0e6
+    num: 4
+    scale: log
+  lambda2_sq:
+    min: 1.0e2
+    max: 1.0e12
+    num: 4
+    scale: log
+
+stability:
+  sentinel_max_norm: 1.0e5
+  sentinel_steps: 100
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"

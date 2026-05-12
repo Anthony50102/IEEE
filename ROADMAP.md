@@ -68,6 +68,9 @@ Generalization protocols:
 - [x] **B1 v2 at α=1, r=75** (`results/b1_v2_alpha1/`, job 7711029). Test ⟨Γₙ⟩ err **3.7%** (down from 6.6%), σ collapse **87%** (up from 75%). Doubling modes resolved the mean better but made σ collapse *worse* — confirms the σ-collapse is structural to vanilla unstructured OpInf, not a resolution issue. **This is the paper's headline B1 finding.**
 - [x] r=75 reg-grid audit: `state_quad` widening succeeded (top-5 winners at interior 2.2e11). `out_quad` still pinned at new max 1e4; further widening abandoned (would only damp σ further, worsening the headline weakness).
 - [ ] **B2 affine-µ pOpInf on G1+G3** — train across {0.1, 1, 5}; eval at trained αs and at held-out α=1.5. (`p2-b2-g1g3`)
+  - [x] Math layer (`opinf/parametric_data.py`, `opinf/parametric_solve.py`) verified to machine precision on synthetic planted data (`opinf/test_parametric_smoke.py`).
+  - [x] Pipeline scaffolded: `step_1_preprocess_parametric.py` (multi-α load, per-α centering, pooled POD, α-blocked D/Y), `step_2_train_parametric.py` (MPI 2D Tikhonov sweep with sentinel disqualification), `step_3_evaluate_parametric.py` (G1+G3 eval). `parametric_config.py` is a dedicated multi-α YAML loader. `configs/opinf/b2_alpha_p015.yaml` + `run_opinf_parametric.slurm` ready.
+  - [ ] Frontera dry-run (small-r smoke; then r=75 production).
 - [ ] **Phase 2A cleanup** — delete `step_*_serial.py` (~3500 LOC), fan out `opinf/utils.py`, consolidate `opinf/config/` into `configs/opinf/`. (`p2-cleanup`)
 
 ### Phase 3 — Framework B4, smoke at α=1
