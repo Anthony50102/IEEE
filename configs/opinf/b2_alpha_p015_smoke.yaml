@@ -22,28 +22,30 @@ preprocessing:
   scaling: false
 
 parametric:
+  # Uniform 1500-frame training window per alpha (anchored at each alpha's
+  # burn-in). Asymmetric raw n_frames: 0.1=10700, 1.0=12001, 5.0=12001.
   alphas:
     0.1:
       data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha0.1_n512/"
       training_file: "trajectory.h5"
-      train_start: 6000
-      train_end: 8000
-      test_start: 8000
-      test_end: 8500
+      train_start: 5350
+      train_end: 6850
+      test_start: 6850
+      test_end: 7350
     1.0:
       data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/"
       training_file: "trajectory.h5"
       train_start: 6000
-      train_end: 8000
-      test_start: 8000
-      test_end: 8500
+      train_end: 7500
+      test_start: 7500
+      test_end: 8000
     5.0:
       data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha5.0_n512/"
       training_file: "trajectory.h5"
       train_start: 6000
-      train_end: 8000
-      test_start: 8000
-      test_end: 8500
+      train_end: 7500
+      test_start: 7500
+      test_end: 8000
   sentinel_alpha: 1.5
   sentinel_data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.5_n512/"
   sentinel_training_file: "trajectory.h5"

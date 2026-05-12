@@ -28,27 +28,37 @@ preprocessing:
   scaling: false
 
 parametric:
+  # NOTE on asymmetric data sizes (logged so we don't re-discover this):
+  #   alpha=0.1 : n_frames=10700, burn_in=5350, post-burn=5350
+  #   alpha=1.0 : n_frames=12001, burn_in=6000, post-burn=6001
+  #   alpha=5.0 : n_frames=12001, burn_in=6000, post-burn=6001
+  #   alpha=1.5 : n_frames= 2001, burn_in=1000, post-burn=1001 (sentinel only)
+  # We use a uniform 4000-frame training window per alpha (anchored at each
+  # alpha's burn-in), so all three contribute equally to the pooled D matrix
+  # (no alpha imbalance). At r=75 that gives K_total=12000 vs 5852 columns =>
+  # 2.05x over-det. Test windows differ slightly per alpha but each is at
+  # least 1001 frames.
   alphas:
     0.1:
       data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha0.1_n512/"
       training_file: "trajectory.h5"
-      train_start: 6000
-      train_end: 11000
-      test_start: 11000
-      test_end: 12001
+      train_start: 5350
+      train_end: 9350
+      test_start: 9350
+      test_end: 10700
     1.0:
       data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/"
       training_file: "trajectory.h5"
       train_start: 6000
-      train_end: 11000
-      test_start: 11000
+      train_end: 10000
+      test_start: 10000
       test_end: 12001
     5.0:
       data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha5.0_n512/"
       training_file: "trajectory.h5"
       train_start: 6000
-      train_end: 11000
-      test_start: 11000
+      train_end: 10000
+      test_start: 10000
       test_end: 12001
   # G3: held-out alpha for stability sentinel + held-out evaluation.
   # If the alpha=1.5 trajectory doesn't exist yet, leave sentinel_data_dir
