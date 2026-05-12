@@ -1,0 +1,65 @@
+test:
+  ensemble:
+    mean_err_Gamma_c: 0.06357329987734528
+    mean_err_Gamma_n: 0.059070275595005294
+    std_err_Gamma_c: 0.8786363833156432
+    std_err_Gamma_n: 0.8982081536972686
+  trajectories:
+  - err_mean_Gamma_c: 0.06357329987734528
+    err_mean_Gamma_n: 0.059070275595005294
+    err_std_Gamma_c: 0.8786363833156432
+    err_std_Gamma_n: 0.8982081536972686
+    n_steps: !!python/object/apply:numpy.core.multiarray.scalar
+    - &id001 !!python/object/apply:numpy.dtype
+      args:
+      - i8
+      - false
+      - true
+      state: !!python/tuple
+      - 3
+      - <
+      - null
+      - null
+      - null
+      - -1
+      - -1
+      - 0
+    - !!binary |
+      RgUAAAAAAAA=
+    pred_mean_Gamma_c: 1.0959418118575657
+    pred_mean_Gamma_n: 1.4217750216469331
+    pred_std_Gamma_c: 0.014933342337584768
+    pred_std_Gamma_n: 0.022175071555165304
+    ref_mean_Gamma_c: 1.1703444719314575
+    ref_mean_Gamma_n: 1.5110321044921875
+    ref_std_Gamma_c: 0.12304628640413284
+    ref_std_Gamma_n: 0.21784722805023193
+    rmse_Gamma_c: 0.1459238371929813
+    rmse_Gamma_n: 0.23881912801689584
+    trajectory: 0
+train:
+  ensemble:
+    mean_err_Gamma_c: 0.06475507327195086
+    mean_err_Gamma_n: 0.06851414000477168
+    std_err_Gamma_c: 0.9668494901490031
+    std_err_Gamma_n: 0.9716240590268476
+  trajectories:
+  - err_mean_Gamma_c: 0.06475507327195086
+    err_mean_Gamma_n: 0.06851414000477168
+    err_std_Gamma_c: 0.9668494901490031
+    err_std_Gamma_n: 0.9716240590268476
+    n_steps: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      oA8AAAAAAAA=
+    pred_mean_Gamma_c: 1.0902092865719364
+    pred_mean_Gamma_n: 1.4119894611176949
+    pred_std_Gamma_c: 0.00386926101695011
+    pred_std_Gamma_n: 0.00596325314172762
+    ref_mean_Gamma_c: 1.1656938791275024
+    ref_mean_Gamma_n: 1.5158463716506958
+    ref_std_Gamma_c: 0.11671799421310425
+    ref_std_Gamma_n: 0.21015173196792603
+    rmse_Gamma_c: 0.1385754715349711
+    rmse_Gamma_n: 0.23395381284503503
+    trajectory: 0

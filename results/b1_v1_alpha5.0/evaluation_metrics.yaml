@@ -1,0 +1,65 @@
+test:
+  ensemble:
+    mean_err_Gamma_c: 0.11517369676434423
+    mean_err_Gamma_n: 0.12697891816159307
+    std_err_Gamma_c: 0.6427444214085404
+    std_err_Gamma_n: 0.6608965024504516
+  trajectories:
+  - err_mean_Gamma_c: 0.11517369676434423
+    err_mean_Gamma_n: 0.12697891816159307
+    err_std_Gamma_c: 0.6427444214085404
+    err_std_Gamma_n: 0.6608965024504516
+    n_steps: !!python/object/apply:numpy.core.multiarray.scalar
+    - &id001 !!python/object/apply:numpy.dtype
+      args:
+      - i8
+      - false
+      - true
+      state: !!python/tuple
+      - 3
+      - <
+      - null
+      - null
+      - null
+      - -1
+      - -1
+      - 0
+    - !!binary |
+      6QMAAAAAAAA=
+    pred_mean_Gamma_c: 0.11869049461289931
+    pred_mean_Gamma_n: 0.11684123423078274
+    pred_std_Gamma_c: 0.0061784867409732025
+    pred_std_Gamma_n: 0.004547318257417725
+    ref_mean_Gamma_c: 0.13413988053798676
+    ref_mean_Gamma_n: 0.13383552432060242
+    ref_std_Gamma_c: 0.017294304445385933
+    ref_std_Gamma_n: 0.01340982411056757
+    rmse_Gamma_c: 0.02479857679038914
+    rmse_Gamma_n: 0.022723094789286295
+    trajectory: 0
+train:
+  ensemble:
+    mean_err_Gamma_c: 0.04121281339663231
+    mean_err_Gamma_n: 0.031501742745969605
+    std_err_Gamma_c: 0.6876579501747835
+    std_err_Gamma_n: 0.6970800463592938
+  trajectories:
+  - err_mean_Gamma_c: 0.04121281339663231
+    err_mean_Gamma_n: 0.031501742745969605
+    err_std_Gamma_c: 0.6876579501747835
+    err_std_Gamma_n: 0.6970800463592938
+    n_steps: !!python/object/apply:numpy.core.multiarray.scalar
+    - *id001
+    - !!binary |
+      iBMAAAAAAAA=
+    pred_mean_Gamma_c: 0.11545169674813135
+    pred_mean_Gamma_n: 0.11727769317561078
+    pred_std_Gamma_c: 0.0047757385978223965
+    pred_std_Gamma_n: 0.003892175406153016
+    ref_mean_Gamma_c: 0.12041430920362473
+    ref_mean_Gamma_n: 0.1210923120379448
+    ref_std_Gamma_c: 0.0152900917455554
+    ref_std_Gamma_n: 0.012848857790231705
+    rmse_Gamma_c: 0.01589276865002159
+    rmse_Gamma_n: 0.013166688072370829
+    trajectory: 0

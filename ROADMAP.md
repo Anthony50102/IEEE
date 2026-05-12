@@ -51,20 +51,22 @@ Generalization protocols:
 - [x] Rewrite `.github/copilot-instructions.md` for the new layout
 - [x] One-config-tree under `configs/` (`data/`, `opinf/`, `rom/`, `disco_lite/`)
 
-### Phase 1 — HW DNS data ✅ done (T=500/1000), 🟡 extending (T=3000)
+### Phase 1 — HW DNS data ✅ done (T=3000 for {0.1, 1, 5}; α=1.5 held-out at T=500)
 - [x] 4-α DNS at 256² (jobs 7683431–7683434, +salvage 7692505)
 - [x] `hw.validate` Γₙ vs hw2d reference: all 4 α pass (z ≤ 1.22)
 - [x] `hw.dataset` loader + snippet sampler, smoke verified
 - [x] Extended α∈{0.1, 1.0} to T=1500 (jobs 7698655, 7698656)
-- [ ] **Extended α∈{0.1, 1.0, 5.0} to T=3000** — *running* (jobs 7706867, 7706868, 7706869). Gives ~5000 train rows per α → r=75 at 1.7× over-det.
+- [x] Extended α∈{0.1, 1.0, 5.0} to T=3000 (jobs 7706867/8/9). α=0.1: 10700 frames. α=1: 12001 frames. α=5: 12001 frames. Gives ≥3000 post-burn-in rows per α → r=75 at ≥1.7× over-det. α=1.5 intentionally held-out.
 
-### Phase 2 — Classical OpInf baselines (B1, B2) 🟡 in progress
+### Phase 2 — Classical OpInf baselines (B1, B2) 🟡 in progress (B1 done; B2 next)
 - [x] B1 α=1.0 smoke at r=20, T=500: ran end-to-end (job 7698116). σ(Γₙ) collapse 13× — diagnosed as rank-limit (r=20 captures only 66% POD energy).
 - [x] Port reference-Γ loaders off `xarray` → `h5py` (Frontera-portable)
 - [x] **B1 v1 at r=50 locked** as fair classical baseline (`results/b1_v1_alpha1/`, commit `d425804`). Test ⟨Γₙ⟩ err 6.6%, σ(Γₙ) err 75% (collapsed 4×), 1.51× over-det.
-- [x] Reg-grid corner-pinning audit: interior on all 4 axes. `state_quad` and `out_quad` lean right (~40% at max) — widen on next sweep.
-- [ ] **B1 at α∈{0.1, 5.0} (G1 each)** — apply v1 recipe once their T=3000 DNS lands.
-- [ ] **B1 r=75 retry at α=1.0** — once T=3000 data lands. Widen `state_quad` to 1e16, `out_quad` to 1e4. (`p2-b1-reg-grid-widen`)
+- [x] Reg-grid corner-pinning audit at r=50: interior on all 4 axes; `state_quad`/`out_quad` lean right (~40% at max) — widened upper bounds for r=75 sweep.
+- [x] **B1 v1 at α=0.1, r=50** (`results/b1_v1_alpha0.1/`, job 7711030). Test ⟨Γₙ⟩ err 5.9%, σ collapse ~10× (worst — strongest-transport regime). 3.0× over-det.
+- [x] **B1 v1 at α=5.0, r=50** (`results/b1_v1_alpha5.0/`, job 7711047). Test ⟨Γₙ⟩ err 12.7%, σ collapse ~3× (mildest — strongly damped). 3.8× over-det. Train→test gap suggests longer trajectory needed but window length already capped by walltime.
+- [x] **B1 v2 at α=1, r=75** (`results/b1_v2_alpha1/`, job 7711029). Test ⟨Γₙ⟩ err **3.7%** (down from 6.6%), σ collapse **87%** (up from 75%). Doubling modes resolved the mean better but made σ collapse *worse* — confirms the σ-collapse is structural to vanilla unstructured OpInf, not a resolution issue. **This is the paper's headline B1 finding.**
+- [x] r=75 reg-grid audit: `state_quad` widening succeeded (top-5 winners at interior 2.2e11). `out_quad` still pinned at new max 1e4; further widening abandoned (would only damp σ further, worsening the headline weakness).
 - [ ] **B2 affine-µ pOpInf on G1+G3** — train across {0.1, 1, 5}; eval at trained αs and at held-out α=1.5. (`p2-b2-g1g3`)
 - [ ] **Phase 2A cleanup** — delete `step_*_serial.py` (~3500 LOC), fan out `opinf/utils.py`, consolidate `opinf/config/` into `configs/opinf/`. (`p2-cleanup`)
 
@@ -101,10 +103,15 @@ Generalization protocols:
 
 | Run | What | Test ⟨Γₙ⟩ err | Test σ(Γₙ) err | Location |
 |-----|------|--------------:|---------------:|----------|
-| B1 v1 α=1 r=50 | Fair classical OpInf, vanilla A+H, mean-centered, Tikhonov | 6.6% | 75% | `results/b1_v1_alpha1/` |
+| B1 v1 α=0.1 r=50 | Vanilla OpInf, T=3000, 3.0× over-det | 5.9% | 90% | `results/b1_v1_alpha0.1/` |
+| B1 v1 α=1   r=50 | Vanilla OpInf, T=1500, 1.5× over-det (initial lock) | 6.6% | 75% | `results/b1_v1_alpha1/` |
+| B1 v1 α=5   r=50 | Vanilla OpInf, T=3000, 3.8× over-det | 12.7% | 66% | `results/b1_v1_alpha5.0/` |
+| **B1 v2 α=1 r=75** | Vanilla OpInf, T=3000, 1.7× over-det, widened reg | **3.7%** | 87% | `results/b1_v2_alpha1/` |
 
-(Add rows as runs land. Means + stds plus full `evaluation_metrics.yaml`
-in the per-run subdir.)
+Headline B1 finding: more modes (r=50 → r=75) cut the mean error nearly
+in half but *worsened* the σ collapse. The collapse is structural to
+unstructured OpInf on a chaotic flux state — exactly the gap our
+context-conditioned structured operator is designed to close.
 
 ---
 
@@ -121,6 +128,8 @@ in the per-run subdir.)
 
 ## Known open questions
 
-- **B1 σ(Γₙ) collapse at α=1**: known rank-limit (POD says r=73 for 95% energy). r=75 retry on T=3000 data is the test. If σ still collapses, the next move is to *report it as the unstructured-OpInf weakness that motivates the paper*, not chase it further.
+- ~~B1 σ(Γₙ) collapse at α=1: known rank-limit~~ **Resolved**: r=75 retry
+  shows the collapse is structural to unstructured OpInf, not a rank
+  issue. Reported as the B1 weakness that motivates the framework.
 - **DISCO-lite architectural choices** (channels, depth, conditioning mechanism) deferred until B4's encoder/head are settled, so both methods can share design language.
 - **B2 transition behavior**: we *expect* B2 to fail at α=1.5. That failure mode is a paper plot, not a bug to fix.
