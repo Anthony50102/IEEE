@@ -1,25 +1,19 @@
-run_name: "b1_alpha1_r75"
+run_name: "b1_alpha5.0_r50"
 
-# B1 at alpha=1.0 on extended DNS (T=3000, 12001 frames).
-# r=50 v1 was 1.51x over-det but sigma(Gamma_n) still collapsed 4x.
-# r=75 needs p=2925 cols; with 5000 train rows that's 1.71x over-det.
-# POD energy at r=75 ~95% (vs 92% at r=50).
-# Vanilla OpInf: linear A + quadratic H, mean-centered, Tikhonov.
-# No closure, no stability projection.
-# Reg grid widened on state_quad and out_quad (audit found right-leaning
-# mass at r=50 with old bounds): state_quad max 1e14 -> 1e16, out_quad
-# max 1e2 -> 1e4. state_lin and out_lin unchanged (interior).
+# B1 at alpha=5.0 on extended DNS (T=3000, 12001 frames).
+# Locked v1 recipe: r=50, vanilla OpInf (linear A + quadratic H,
+# mean-centered, Tikhonov), no closure, no stability projection.
+# Same reg grid as v1 alpha=1.
 
 paths:
   output_base: "/scratch2/10407/anthony50102/IEEE/output/"
-  data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha1.0_n512/"
+  data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha5.0_n512/"
   training_files:
     - trajectory.h5
   test_files: []
 
 physics:
-  # frame_dt from data_card.yaml: density/phi are saved every 0.25 t.u.
-  # That is the snapshot dt OpInf sees; the underlying simulator dt is 0.025.
+  # frame_dt 0.25 t.u.; sim_dt 0.01.
   dt: 0.25
   n_fields: 2
   n_x: 512
@@ -27,6 +21,7 @@ physics:
 
 # 12001 frames total. data_card.yaml burn_in_frames=6000, so post-burn-in
 # usable range is [6000, 12001) = 6001 frames. Train on 5000, test on last 1001.
+# 5000 rows / p(r=50)=1325 cols = 3.77x over-determined.
 training_mode:
   mode: "temporal_split"
   train_start: 6000
@@ -36,7 +31,7 @@ training_mode:
 
 reduction:
   method: "linear"
-  r: 75
+  r: 50
   target_energy: 0.99
 
 truncation:
@@ -50,12 +45,9 @@ training:
   training_end: 5000
   n_steps: 6001
 
-# Closure off for the smoke; turn on once the basic pipeline is verified.
 closure:
   enabled: false
 
-# Tiny grid -- 4 x 4 x 4 x 4 = 256 combos. Wide log range so something lands
-# in a sensible regime; tighten once we see optimum location.
 regularization:
   state_lin:
     min: 1.0e-2
@@ -64,7 +56,7 @@ regularization:
     scale: "log"
   state_quad:
     min: 1.0e2
-    max: 1.0e16
+    max: 1.0e14
     num: 4
     scale: "log"
   output_lin:
@@ -74,7 +66,7 @@ regularization:
     scale: "log"
   output_quad:
     min: 1.0e-6
-    max: 1.0e4
+    max: 1.0e2
     num: 4
     scale: "log"
 

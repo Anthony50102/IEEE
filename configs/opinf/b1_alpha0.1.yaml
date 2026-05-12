@@ -1,0 +1,86 @@
+run_name: "b1_alpha0.1_r50"
+
+# B1 at alpha=0.1 on extended DNS (T=3000, 10700 frames).
+# Locked v1 recipe: r=50, vanilla OpInf (linear A + quadratic H,
+# mean-centered, Tikhonov), no closure, no stability projection.
+# Same reg grid as the v1 alpha=1 run (the audit-driven widening was
+# specific to the r=75 retry; v1 recipe stays at original bounds).
+
+paths:
+  output_base: "/scratch2/10407/anthony50102/IEEE/output/"
+  data_dir: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d/alpha0.1_n512/"
+  training_files:
+    - trajectory.h5
+  test_files: []
+
+physics:
+  # frame_dt 0.25 t.u.; sim_dt 0.01.
+  dt: 0.25
+  n_fields: 2
+  n_x: 512
+  n_y: 512
+
+# 10700 frames total. data_card.yaml burn_in_frames=5350, so post-burn-in
+# usable range is [5350, 10700) = 5350 frames. Train on 4000, test on last 1350.
+# 4000 rows / p(r=50)=1325 cols = 3.02x over-determined.
+training_mode:
+  mode: "temporal_split"
+  train_start: 5350
+  train_end: 9350
+  test_start: 9350
+  test_end: 10700
+
+reduction:
+  method: "linear"
+  r: 50
+  target_energy: 0.99
+
+truncation:
+  enabled: false
+
+preprocessing:
+  centering: true
+  scaling: false
+
+training:
+  training_end: 4000
+  n_steps: 5350
+
+closure:
+  enabled: false
+
+regularization:
+  state_lin:
+    min: 1.0e-2
+    max: 1.0e6
+    num: 4
+    scale: "log"
+  state_quad:
+    min: 1.0e2
+    max: 1.0e14
+    num: 4
+    scale: "log"
+  output_lin:
+    min: 1.0e-6
+    max: 1.0e2
+    num: 4
+    scale: "log"
+  output_quad:
+    min: 1.0e-6
+    max: 1.0e2
+    num: 4
+    scale: "log"
+
+model_selection:
+  threshold_mean: 0.20
+  threshold_std: 1.0
+  max_models: 100
+
+evaluation:
+  save_predictions: true
+  generate_plots: true
+
+execution:
+  verbose: true
+  log_level: "INFO"
+  engine: "h5netcdf"
