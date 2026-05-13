@@ -75,15 +75,20 @@ parametric:
 # 6 x 6 = 36 candidates. McQuarrie Eq 4.3 form: lambda1 on (A0, A1, c0, c1),
 # lambda2 on (F0, F1). Wide log range; tighten once we see the optimum.
 # These are *squared* lambdas (opinf convention).
+# These are *squared* lambdas (opinf convention). Smoke run showed
+# projected centered states have norm ~10^2-10^3 (un-rescaled snapshots),
+# so quadratic features go ~10^4-10^6 and lambda needs to be commensurate.
+# Stability appears around lambda1_sq~1e8, lambda2_sq~1e14 in smoke.
+# TODO: implement snapshot-norm scaling so the grid can be O(1)-centric.
 regularization_parametric:
   lambda1_sq:
-    min: 1.0e-2
-    max: 1.0e8
+    min: 1.0e3
+    max: 1.0e11
     num: 6
     scale: log
   lambda2_sq:
-    min: 1.0e2
-    max: 1.0e14
+    min: 1.0e8
+    max: 1.0e18
     num: 6
     scale: log
 

@@ -54,13 +54,13 @@ parametric:
 
 regularization_parametric:
   lambda1_sq:
-    min: 1.0e-2
-    max: 1.0e6
+    min: 1.0e4
+    max: 1.0e10
     num: 4
     scale: log
   lambda2_sq:
-    min: 1.0e2
-    max: 1.0e12
+    min: 1.0e10
+    max: 1.0e16
     num: 4
     scale: log
 
