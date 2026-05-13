@@ -83,7 +83,10 @@ case $STEP in
     all)
         run_step_1
         # Step 1 prints the run dir; parse from log and pass to step 2/3.
-        RUN_DIR=$(grep "Run directory:" opinf_param_${SLURM_JOB_ID}.out \
+        # logger writes to stderr; check both .err and .out
+        RUN_DIR=$(grep -h "Run directory:" \
+                    opinf_param_${SLURM_JOB_ID}.err \
+                    opinf_param_${SLURM_JOB_ID}.out 2>/dev/null \
                   | tail -1 | awk '{print $NF}')
         echo "Run dir: $RUN_DIR"
         run_step_2
