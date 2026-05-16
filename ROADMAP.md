@@ -130,7 +130,7 @@ Generalization protocols (kept):
 Workflow:
 
 - [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
-- [ ] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. Each α as a separate dataset entry in a `DATASET_SPECS`-shaped dict (matching upstream interface). No explicit α label — hypernet infers from context.
+- [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` registers the four αs as `hw2d_a01/a10/a50/a15` (a15=G3 held-out). `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha, with `train`/`g1` tail-holdout split) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index`). Per-sample dict matches upstream's `MixedDataset` contract. CPU-smoke verified on synthetic HDF5.
 - [ ] **`p6-smoke`** — Single-α (α=1.0) training smoke at 128² or 256², minimal hypernet+operator, 1–2 epochs; verify loss decreases and predictions aren't trivial. Goes to `local_output/` or `$SCRATCH`.
 - [ ] **`p6-train`** — Full multi-α training on 3-α, 256², ~50 epochs on 1–2 Frontera GPU nodes (rtx queue). Target NRMSE comparable to DISCO's PDEBench numbers.
 - [ ] **`p6-sweep`** — Light HP sweep: LR, snippet length T, hypernet capacity (~3–5 configs total).
@@ -186,5 +186,5 @@ context-conditioned structured operator is designed to close.
 - ~~B1 σ(Γₙ) collapse at α=1~~ **Resolved**: structural to unstructured OpInf, reported as the B1 weakness motivating the framework.
 - ~~B2 transition behavior~~ **Cut** (out of compute budget).
 - **DISCO HW2D adaptation**: the original paper uses CNN encoder + attention processor; for HW2D's periodic BCs we need to verify the encoder respects translation equivariance. Resolve during `p6-clone`.
-- **Multi-α conditioning**: original DISCO does not use an explicit parameter label — the hypernet infers from context snippet. For α-generalization at fixed physics, we follow the same recipe (no α label fed to model). Decide during `p6-data`.
+- **Multi-α conditioning** (resolved `p6-data`): we follow upstream — no α label fed to model. Each α registered as a separate dataset in `HW2D_DATASET_SPECS`; the hypernet must infer regime from the context snippet.
 - **Statistical metric for G3**: ⟨Γₙ⟩ and σ(Γₙ) are obvious; energy time-average is cheap. Whether to also report kₓ–k_y spectra is a Phase 6 stretch.
