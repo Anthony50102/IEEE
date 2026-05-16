@@ -1,0 +1,66 @@
+# Model-size sweep: SMALLER variant of hw2d_multi_tuned.yaml.
+#
+# Same data, same optimization, just a smaller backbone:
+#   - hidden_dim 384 → 192       (half width)
+#   - processor_blocks 12 → 8    (2/3 depth)
+#   - hpnn_head_hidden_dim 384 → 192
+# heads kept at 6 (192/6 = 32 dims per head, still even and reasonable).
+#
+# Purpose: tell us whether 384/12 is undersized, well-matched, or
+# oversized for HW2D at 256². Figure: val_nrmse vs param count across
+# {small, multi_tuned, large}.
+
+run_name: "disco_hw2d_multi_small"
+seed: 0
+
+data_root: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
+train_datasets:
+  - "hw2d_a01"
+  - "hw2d_a10"
+  - "hw2d_a50"
+val_datasets:
+  - "hw2d_a01"
+  - "hw2d_a10"
+  - "hw2d_a50"
+resolution: [256, 256]
+n_past: 16
+n_future: 1
+burn_in_frac: 0.5
+g1_tail_frac: 0.1
+num_workers: 4
+
+# --- model (SMALL) ------------------------------------------------------
+hidden_dim: 192
+patch_size: 16
+processor_blocks: 8
+num_heads: 6
+groups: 1
+bias_type: "space-time"
+drop_path: 0.1
+max_steps: 32
+rtol: 5.0e-6
+atol: 1.0e-9
+integration_library: "torchdiffeq"
+hpnn_head_hidden_dim: 192
+
+# --- optimization (unchanged from tuned) -------------------------------
+batch_size: 8
+accum_grad: 1
+max_epochs: 2000
+epoch_size: 200
+optimizer: "adamw"
+learning_rate: 5.0e-5
+weight_decay: 1.0e-3
+scheduler: "cosine"
+warmup_epochs: 10
+gnorm: 1.0
+amp: false
+
+val_batches: 16
+val_rollout_steps: [1]
+
+checkpoint_save_interval: 50
+log_interval: 20
+wandb_enabled: false
+wandb_project: "ieee-disco"
+wandb_entity: ""
