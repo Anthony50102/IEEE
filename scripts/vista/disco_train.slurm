@@ -15,7 +15,7 @@
 set -euo pipefail
 
 module reset
-module load cuda/12.5
+module load gcc/15.1.0 cuda/12.5 python3/3.11.8
 
 source "$WORK/envs/disco/bin/activate"
 cd "$WORK/repos/IEEE"
