@@ -40,9 +40,16 @@ export PYTHONUNBUFFERED=1
 export OMP_NUM_THREADS=8
 
 # --- run ----------------------------------------------------------------
+# Config: defaults to hw2d_multi.yaml; override with
+#   sbatch --export=CONFIG=configs/disco/hw2d_multi_tuned.yaml scripts/vista/disco_train.slurm
+# Note: don't pass --export for env vars on Vista other than this single
+# overrideable knob; the rest comes from `module load` + the venv.
+CONFIG="${CONFIG:-configs/disco/hw2d_multi.yaml}"
+echo "config=$CONFIG"
+
 # Add --wandb to opt into wandb; add --resume <path> to continue.
 srun python -m disco.train_hw2d \
-    --config configs/disco/hw2d_multi.yaml \
+    --config "$CONFIG" \
     --out "$out"
 
 echo "done; artifacts in $out"
