@@ -26,20 +26,22 @@ data, encoders, integrators, and compute budgets.
 
 ---
 
-## Methods we evaluate
+## Methods we evaluate (2-week sprint scope)
 
 | ID | Name | What it is | Role |
 |----|------|------------|------|
-| B1 | **Per-α OpInf** | Classical OpInf fit independently at each α | Sanity baseline; per-trajectory upper bound on what unstructured-linear-quadratic can do |
-| B2 | **Affine-µ pOpInf** | Parametric OpInf with affine-µ operator stacking across {0.1, 1, 5} | Classical parametric baseline; expected to fail at the transition (α=1.5 G3) — that's a paper plot |
-| B3 | **DISCO-lite** | Unstructured U-Net operator, same encoder / head / integrator / data as B4 | Apples-to-apples control: isolates the *structured vs unstructured operator* claim |
-| B4 | **Framework** | Our structured operator + context encoder + head + diff. integrator | The headline method |
+| B1 | **Per-α OpInf** | Classical OpInf fit independently at each α | Classical baseline ✅ locked |
+| DISCO | **DISCO (Morel et al. 2025)** | Hypernetwork → small U-Net operator → time integration, trained on multi-α context snippets | Headline method for this paper |
+
+*Cut from this paper:* B2 (affine-µ pOpInf, out of budget), B3 ablation
+naming (we just call the method **DISCO**), B4 structured operator
+(future / journal version).
 
 Generalization protocols:
 
-- **G1**: same α, unseen IC.
-- **G2**: same α, unseen IC, longer rollout.
-- **G3**: held-out α=1.5 (between {1.0, 5.0}, near transition).
+- **G1**: trained α, future time (short-horizon NRMSE).
+- **G3**: held-out α=1.5 (statistical observables + rollout boundedness).
+- **G2**: optional stretch goal (trained α, fresh IC).
 
 ---
 
@@ -77,28 +79,66 @@ Generalization protocols:
         B2 uses a uniform 4000-frame training window per α anchored at
         each α's own burn-in (so no α imbalance in D); at r=75 K_total=12000
         vs 5852 cols = 2.05× over-det.
-  - [ ] Frontera dry-run (r=20 smoke; then r=75 production).
+  - [x] Frontera dry-run (r=20 smoke, pipeline validation only — `20260512_132420_b2_alpha_p015_r20_smoke`):
+        step 1 → POD orthog. 2.7e-14, D=(4497, 462), over-det 9.73×.
+        step 2 → 6/16 candidates admitted; best λ₁²=1e6, λ₂²=1e14.
+        step 3 → G1 α=0.1 MSE=3.5e4 (bounded), α=1.0 MSE=8.1e3 (bounded),
+        **α=5.0 NaN** (diverges); G3 α=1.5 MSE=6.9e3 (bounded).
+        Finding: sentinel-only disqualification is insufficient — best
+        candidate is unstable at α=5.0 because sweep never checked it.
+        Also: snapshot-norm rescaling not yet implemented → projected
+        states have norm ~10²-10³, forcing reg grid up to λ₂²~1e14.
+  - [ ] r=75 production run (after: add trained-α stability check + snapshot rescaling).
 - [ ] **Phase 2A cleanup** — delete `step_*_serial.py` (~3500 LOC), fan out `opinf/utils.py`, consolidate `opinf/config/` into `configs/opinf/`. (`p2-cleanup`)
 
-### Phase 3 — Framework B4, smoke at α=1
-- [ ] `rom.basis.fourier` + projection round-trip < 1e-10 (`p3-basis`)
-- [ ] `rom.operator.hw_quadratic` — triadic Poisson-bracket sparse quadratic; matches hw2d RHS to numerical precision (`p3-op`)
-- [ ] `rom.integrator.etdrk4` (or RK4) — differentiable; matches hw2d short-horizon rollout from fixed IC at α=1 (`p3-int`)
-- [ ] End-to-end solver with **hand-set coefficients** — sanity gate. If this fails we stop. (`p3-handset`)
-- [ ] `rom.encoder.mlp` + `rom.head.symmetric` — start with small MLP, transformer later (`p3-encoder`)
-- [ ] **B4 G1 train+eval at α=1**, gate within 2× B1 nrmse (`p3-b4-g1`)
+### Phase 2 — Classical OpInf baselines (B1) ✅ locked
 
-### Phase 4 — Headline experiments (B4 vs DISCO-lite, all G's)
-- [ ] **Generate 5–10 ICs per training α at 256²** (`p4-ic-gen`)
-- [ ] **B4 G2** (unseen IC, trained α) (`p4-b4-g2`)
-- [ ] **B4 G3** (held-out α=1.5) — *the headline result* (`p4-b4-g3`)
-- [ ] **DISCO-lite** on G1/G2/G3, matched compute budget (`p4-disco-lite`)
-- [ ] **Parameter-count vs accuracy figure** — rhetorical centerpiece (`p4-paramcount`)
+**B2 cut** (2026-05-16): with 2 weeks of Frontera compute remaining,
+B2 affine-µ pOpInf is out of scope. B1 stands as the sole classical
+baseline. The B2 pipeline code (`opinf/parametric_*`, `step_*_parametric.py`,
+`configs/opinf/b2_*`) is retained on `refactor` branch but not pursued.
 
-### Phase 5 — Polish & paper
-- [ ] 512² spot-check at α=1 (resolution scaling) (`p5-512`)
-- [ ] Ablations: r / k_max, snippet length, sparsity prior, rollout horizon (`p5-ablate`)
-- [ ] Fill `needsresult` placeholders in `main.tex` (`p5-fill-tex`)
+- [x] B1 v1 at α∈{0.1, 1, 5}, r=50 — locked (see Locked results below)
+- [x] B1 v2 at α=1, r=75 — headline B1 finding (3.7% mean / 87% σ collapse)
+- [x] B1 reg-grid audits at r=50 and r=75
+- ~~[ ] B2 affine-µ pOpInf~~ **cut** (out of compute budget)
+
+### Phase 6 — DISCO sprint (2-week, hard deadline) 🟢 active
+
+Cut from the original plan: **B2** (above), the **structured-operator B4**
+contribution, and the **B3-vs-B4 head-to-head**. The single paper claim
+becomes:
+
+> *DISCO (Morel, Han, Oyallon 2025) — an architecture for
+> multi-physics-agnostic prediction — also generalizes across parameter
+> regimes within a single chaotic PDE (Hasegawa–Wakatani), without
+> retraining at the unseen parameter.*
+
+Training data: 3-α snippet pairs from existing HW2D DNS at α∈{0.1, 1, 5},
+held-out α=1.5.
+
+Generalization protocols (kept):
+- **G1**: trained α, future time (short-horizon MSE — meaningful inside τ_Lyap).
+- **G3**: held-out α=1.5 (statistical observables: ⟨Γₙ⟩, σ(Γₙ), energy time-average; rollout boundedness).
+- **G2**: only if Phase 6 finishes early.
+
+Workflow:
+
+- [ ] **`p6-clone`** — Inspect DISCO authors' code (paper §3, App. C); decide whether to fork or reimplement; place under `disco/`. Repurpose the `disco_lite/` stub directory.
+- [ ] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. Multi-α dataloader (no explicit α label — let the hypernetwork infer parameters from the context, as in the paper).
+- [ ] **`p6-smoke`** — Single-α (α=1.0) training smoke at 128² or 256², minimal hypernet+operator, 1–2 epochs; verify loss decreases and predictions aren't trivial. Goes to `local_output/` or `$SCRATCH`.
+- [ ] **`p6-train`** — Full multi-α training on 3-α, 256², ~50 epochs on 1–2 Frontera GPU nodes (rtx queue). Target NRMSE comparable to DISCO's PDEBench numbers.
+- [ ] **`p6-sweep`** — Light HP sweep: LR, snippet length T, hypernet capacity (~3–5 configs total).
+- [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
+- [ ] **`p6-eval-g3`** — G3 rollout at α=1.5; report stability + ⟨Γₙ⟩, σ(Γₙ), energy time-average compared to ground-truth DNS.
+- [ ] **`p6-figures`** — Rollout snapshots, error tables, possibly a parameter-space UMAP (analog of paper Fig. 4) over the 3 αs.
+- [ ] **`p6-paper-update`** — Strip B4/structured language from `IEEE-CiSE-Special-Issue/`; refocus claim on parameter-regime generalization.
+
+### Phases retired (~~~~ kept for record ~~~~)
+
+- ~~Phase 3 — Framework B4, smoke at α=1~~ deferred (post-deadline / journal version)
+- ~~Phase 4 — Headline B4 vs DISCO-lite~~ deferred
+- ~~Phase 5 — 512² scaling + ablations~~ deferred; only the most critical ablations make it in
 
 ### Infrastructure (cross-cutting)
 - [x] MPI 2 GB pickle pitfall: fix `chunked_gather` gate, document in `shared/mpi_utils.py`
@@ -138,8 +178,8 @@ context-conditioned structured operator is designed to close.
 
 ## Known open questions
 
-- ~~B1 σ(Γₙ) collapse at α=1: known rank-limit~~ **Resolved**: r=75 retry
-  shows the collapse is structural to unstructured OpInf, not a rank
-  issue. Reported as the B1 weakness that motivates the framework.
-- **DISCO-lite architectural choices** (channels, depth, conditioning mechanism) deferred until B4's encoder/head are settled, so both methods can share design language.
-- **B2 transition behavior**: we *expect* B2 to fail at α=1.5. That failure mode is a paper plot, not a bug to fix.
+- ~~B1 σ(Γₙ) collapse at α=1~~ **Resolved**: structural to unstructured OpInf, reported as the B1 weakness motivating the framework.
+- ~~B2 transition behavior~~ **Cut** (out of compute budget).
+- **DISCO HW2D adaptation**: the original paper uses CNN encoder + attention processor; for HW2D's periodic BCs we need to verify the encoder respects translation equivariance. Resolve during `p6-clone`.
+- **Multi-α conditioning**: original DISCO does not use an explicit parameter label — the hypernet infers from context snippet. For α-generalization at fixed physics, we follow the same recipe (no α label fed to model). Decide during `p6-data`.
+- **Statistical metric for G3**: ⟨Γₙ⟩ and σ(Γₙ) are obvious; energy time-average is cheap. Whether to also report kₓ–k_y spectra is a Phase 6 stretch.
