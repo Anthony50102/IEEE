@@ -53,7 +53,9 @@ weight_decay: 1.0e-3
 scheduler: "cosine"
 warmup_epochs: 1
 gnorm: 1.0
-amp: true                  # bf16 on H200
+amp: false                 # disabled: upstream DISCO.forward has a fp32 buffer
+                           # indexed-assigned with autocast-bf16 outputs.
+                           # Revisit in p6-sweep with a targeted autocast scope.
 
 # --- validation ---------------------------------------------------------
 val_batches: 16
