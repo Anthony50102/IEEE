@@ -115,7 +115,12 @@ becomes:
 > retraining at the unseen parameter.*
 
 Training data: 3-α snippet pairs from existing HW2D DNS at α∈{0.1, 1, 5},
-held-out α=1.5.
+held-out α=1.5. **Each α is registered as a separate "dataset"** in
+DISCO's framework (matching how PDEBench treats different physics) so
+the hypernetwork infers α from the context snippet.
+
+Compute: HW2D OpInf/B1 work used **Frontera CPU**; DISCO training and
+evaluation moves to **Vista Grace Hopper (GH200)** GPU nodes.
 
 Generalization protocols (kept):
 - **G1**: trained α, future time (short-horizon MSE — meaningful inside τ_Lyap).
@@ -124,8 +129,8 @@ Generalization protocols (kept):
 
 Workflow:
 
-- [ ] **`p6-clone`** — Inspect DISCO authors' code (paper §3, App. C); decide whether to fork or reimplement; place under `disco/`. Repurpose the `disco_lite/` stub directory.
-- [ ] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. Multi-α dataloader (no explicit α label — let the hypernetwork infer parameters from the context, as in the paper).
+- [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
+- [ ] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. Each α as a separate dataset entry in a `DATASET_SPECS`-shaped dict (matching upstream interface). No explicit α label — hypernet infers from context.
 - [ ] **`p6-smoke`** — Single-α (α=1.0) training smoke at 128² or 256², minimal hypernet+operator, 1–2 epochs; verify loss decreases and predictions aren't trivial. Goes to `local_output/` or `$SCRATCH`.
 - [ ] **`p6-train`** — Full multi-α training on 3-α, 256², ~50 epochs on 1–2 Frontera GPU nodes (rtx queue). Target NRMSE comparable to DISCO's PDEBench numbers.
 - [ ] **`p6-sweep`** — Light HP sweep: LR, snippet length T, hypernet capacity (~3–5 configs total).
