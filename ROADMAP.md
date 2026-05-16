@@ -131,7 +131,7 @@ Workflow:
 
 - [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
 - [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` registers the four αs as `hw2d_a01/a10/a50/a15` (a15=G3 held-out). `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha, with `train`/`g1` tail-holdout split) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index`). Per-sample dict matches upstream's `MixedDataset` contract. CPU-smoke verified on synthetic HDF5.
-- [ ] **`p6-smoke`** — Single-α (α=1.0) training smoke at 128² or 256², minimal hypernet+operator, 1–2 epochs; verify loss decreases and predictions aren't trivial. Goes to `local_output/` or `$SCRATCH`.
+- [x] **`p6-smoke`** — Single-α α=1.0 CPU smoke (`disco/smoke_train.py`) at 32², hidden_dim=96, 15.8M params, batch=2, 8 SGD steps: loss 0.31→0.088 (monotone). Validated `src.*` import shim, HW2D `DATASET_SPECS` injection, full forward+backward through hypernet→param-generator→ODE-integrated operator. `hidden_dim` must be ÷12 (upstream `RMSGroupNorm` hardcode) and ÷`num_heads`.
 - [ ] **`p6-train`** — Full multi-α training on 3-α, 256², ~50 epochs on 1–2 Frontera GPU nodes (rtx queue). Target NRMSE comparable to DISCO's PDEBench numbers.
 - [ ] **`p6-sweep`** — Light HP sweep: LR, snippet length T, hypernet capacity (~3–5 configs total).
 - [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
