@@ -122,6 +122,12 @@ the hypernetwork infers α from the context snippet.
 Compute: HW2D OpInf/B1 work used **Frontera CPU**; DISCO training and
 evaluation moves to **Vista Grace Hopper (GH200)** GPU nodes.
 
+Vista environment (verified 2026-05-16, see `knowledge/vista_compute.md`):
+- venv at `$WORK/envs/disco` (Python 3.11.8 + torch 2.12.0+cu126 + DISCO deps)
+- repo at `$WORK/repos/IEEE` (branch `refactor`)
+- GH200 access via `gh-dev` (≤2h debug) and `gh` (≤48h prod) queues; 1607 SUs (expires 2026-05-31)
+- end-to-end smoke at 32² confirmed on GH200: 2 s/step, loss decreases monotonically
+
 Generalization protocols (kept):
 - **G1**: trained α, future time (short-horizon MSE — meaningful inside τ_Lyap).
 - **G3**: held-out α=1.5 (statistical observables: ⟨Γₙ⟩, σ(Γₙ), energy time-average; rollout boundedness).
@@ -132,7 +138,7 @@ Workflow:
 - [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
 - [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` registers the four αs as `hw2d_a01/a10/a50/a15` (a15=G3 held-out). `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha, with `train`/`g1` tail-holdout split) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index`). Per-sample dict matches upstream's `MixedDataset` contract. CPU-smoke verified on synthetic HDF5.
 - [x] **`p6-smoke`** — Single-α α=1.0 CPU smoke (`disco/smoke_train.py`) at 32², hidden_dim=96, 15.8M params, batch=2, 8 SGD steps: loss 0.31→0.088 (monotone). Validated `src.*` import shim, HW2D `DATASET_SPECS` injection, full forward+backward through hypernet→param-generator→ODE-integrated operator. `hidden_dim` must be ÷12 (upstream `RMSGroupNorm` hardcode) and ÷`num_heads`.
-- [ ] **`p6-train`** — Full multi-α training on 3-α, 256², ~50 epochs on 1–2 Frontera GPU nodes (rtx queue). Target NRMSE comparable to DISCO's PDEBench numbers.
+- [ ] **`p6-train`** — Full multi-α training on 3-α at native HW2D resolution, multi-epoch on Vista GH200 (`gh` queue, 1 GPU). Target NRMSE comparable to DISCO's PDEBench numbers. **Vista env is ready** (see Compute block above and `knowledge/vista_compute.md`).
 - [ ] **`p6-sweep`** — Light HP sweep: LR, snippet length T, hypernet capacity (~3–5 configs total).
 - [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
 - [ ] **`p6-eval-g3`** — G3 rollout at α=1.5; report stability + ⟨Γₙ⟩, σ(Γₙ), energy time-average compared to ground-truth DNS.
@@ -150,7 +156,7 @@ Workflow:
 - [ ] Audit remaining pickle-mode MPI callsites for >2 GB risk (`infra-mpi-audit`)
 - [ ] Unify MPI wrappers (`opinf/utils.py` → `shared/mpi_utils.py`) (`infra-mpi-consolidate`)
 - [ ] Round-trip tests for `chunked_gather` / `chunked_bcast` (`infra-mpi-tests`)
-- [ ] Pin Vista venv constraints (`p0-pyenv`)
+- [x] Pin Vista venv constraints (`p0-pyenv`) — `$WORK/envs/disco` set up + verified on GH200 (`knowledge/vista_compute.md`)
 
 ---
 
