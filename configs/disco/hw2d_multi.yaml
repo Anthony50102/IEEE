@@ -1,0 +1,67 @@
+# Multi-α DISCO training on HW2D at native resolution.
+#
+# Train αs ∈ {0.1, 1.0, 5.0}. α=1.5 is deliberately held out for G3
+# evaluation (see ROADMAP.md Phase 6 / p6-eval-g3) and must NOT appear
+# in either train_datasets or val_datasets.
+#
+# Output goes to $SCRATCH/IEEE/output/<ts>_disco_train/ on Vista (set
+# via --out on the trainer CLI; see scripts/vista/disco_train.slurm).
+
+run_name: "disco_hw2d_multi"
+seed: 0
+
+# --- data ---------------------------------------------------------------
+data_root: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
+train_datasets:
+  - "hw2d_a01"
+  - "hw2d_a10"
+  - "hw2d_a50"
+val_datasets:
+  - "hw2d_a01"
+  - "hw2d_a10"
+  - "hw2d_a50"
+resolution: [256, 256]
+n_past: 16
+n_future: 1
+burn_in_frac: 0.5
+g1_tail_frac: 0.1
+num_workers: 4
+
+# --- model (upstream "S"-tier, matched to disco_pdebench.yaml) ----------
+# 384 / 12 = 32 ✓ ; 384 / 6 heads = 64 ✓ ; 256 / patch 16 = 16 ✓.
+hidden_dim: 384
+patch_size: 16
+processor_blocks: 12
+num_heads: 6
+groups: 1
+bias_type: "space-time"
+drop_path: 0.1
+max_steps: 32
+rtol: 5.0e-6
+atol: 1.0e-9
+integration_library: "torchdiffeq"
+hpnn_head_hidden_dim: 384
+
+# --- optimization -------------------------------------------------------
+batch_size: 2
+accum_grad: 4              # effective batch = 8
+max_epochs: 200
+epoch_size: 2000
+optimizer: "adamw"
+learning_rate: 5.0e-5
+weight_decay: 1.0e-3
+scheduler: "cosine"
+warmup_epochs: 1
+gnorm: 1.0
+amp: true                  # bf16 on H200
+
+# --- validation ---------------------------------------------------------
+val_batches: 16
+val_rollout_steps: [1]     # cheap; raise after first run wall-clock measured
+
+# --- logging / checkpoints ---------------------------------------------
+checkpoint_save_interval: 10
+log_interval: 50
+wandb_enabled: false
+wandb_project: "ieee-disco"
+wandb_entity: ""

@@ -1,0 +1,64 @@
+# Pipeline-smoke variant of hw2d_multi.yaml.
+#
+# Goal: fit inside a few-minute gh-dev session (or a couple minutes on a
+# laptop CPU against the synthetic HDF5 used for the dataset smoke).
+# Validates that the full train/val/checkpoint/resume loop runs before
+# committing to a production gh job.
+
+run_name: "disco_hw2d_smoke"
+seed: 0
+
+# --- data ---------------------------------------------------------------
+data_root: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
+train_datasets:
+  - "hw2d_a01"
+  - "hw2d_a10"
+  - "hw2d_a50"
+val_datasets:
+  - "hw2d_a01"
+  - "hw2d_a10"
+  - "hw2d_a50"
+resolution: [32, 32]
+n_past: 4
+n_future: 1
+burn_in_frac: 0.5
+g1_tail_frac: 0.1
+num_workers: 0
+
+# --- model (tiny) -------------------------------------------------------
+hidden_dim: 96
+patch_size: 8
+processor_blocks: 1
+num_heads: 4
+groups: 1
+bias_type: "space-time"
+drop_path: 0.0
+max_steps: 8
+rtol: 5.0e-6
+atol: 1.0e-9
+integration_library: "torchdiffeq"
+hpnn_head_hidden_dim: 96
+
+# --- optimization -------------------------------------------------------
+batch_size: 1
+accum_grad: 1
+max_epochs: 2
+epoch_size: 8
+optimizer: "adamw"
+learning_rate: 1.0e-3
+weight_decay: 1.0e-3
+scheduler: "cosine"
+warmup_epochs: 0
+gnorm: 1.0
+amp: false
+
+# --- validation ---------------------------------------------------------
+val_batches: 2
+val_rollout_steps: [1]
+
+# --- logging / checkpoints ---------------------------------------------
+checkpoint_save_interval: 1
+log_interval: 1
+wandb_enabled: false
+wandb_project: "ieee-disco"
+wandb_entity: ""

@@ -1,0 +1,48 @@
+#!/bin/bash
+#SBATCH -J disco_train
+#SBATCH -o %x.o%j.log
+#SBATCH -e %x.e%j.log
+#SBATCH -p gh
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH -t 24:00:00
+#SBATCH -A PHY25003
+#SBATCH --mail-type=fail,end
+
+# Multi-α DISCO training on Vista GH200 (1 H200).
+# See ROADMAP.md Phase 6 (p6-train) and knowledge/vista_compute.md.
+
+set -euo pipefail
+
+module reset
+module load cuda/12.5
+
+source "$WORK/envs/disco/bin/activate"
+cd "$WORK/repos/IEEE"
+
+# --- output directory (outside the repo, under $SCRATCH) -----------------
+ts="$(date +%Y%m%d_%H%M%S)"
+out="$SCRATCH/IEEE/output/${ts}_disco_train"
+mkdir -p "$out"
+echo "out=$out"
+
+# --- wandb -------------------------------------------------------------
+# Compute nodes on Vista normally have outbound HTTPS, so wandb online
+# works. If a run reports a connect error to wandb.ai, uncomment the
+# next line and run `wandb sync $out/wandb/offline-run-*` from a login
+# node afterward to upload.
+# export WANDB_MODE=offline
+
+# --- environment hygiene ----------------------------------------------
+export MPLBACKEND=Agg
+export PYTHONUNBUFFERED=1
+# Threads for the dataloader workers; H200 nodes have 72 Grace cores.
+export OMP_NUM_THREADS=8
+
+# --- run ----------------------------------------------------------------
+# Add --wandb to opt into wandb; add --resume <path> to continue.
+srun python -m disco.train_hw2d \
+    --config configs/disco/hw2d_multi.yaml \
+    --out "$out"
+
+echo "done; artifacts in $out"
