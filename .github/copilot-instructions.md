@@ -52,8 +52,13 @@ IEEE/
 │   ├── losses.py        # one-step + rollout + QoI losses
 │   └── train.py         # generic train loop, YAML-driven
 │
-├── disco_lite/          # Unstructured-operator ablation. One file differs.
-│   └── unet_operator.py # the only file unique to this baseline
+├── disco/               # DISCO sprint (Phase 6). Vendored upstream + our adapters.
+│   ├── upstream/        # Vendored RudyMorel/DISCO @ ddd18f17 (READ-ONLY).
+│   ├── dataset_specs.py # Registers HW2D αs as DISCO "datasets".
+│   ├── hw2d_dataset.py  # hw.dataset → DISCO context-snippet format.
+│   ├── config_hw2d.py   # Typed TrainConfig dataclass + YAML loader.
+│   ├── train_hw2d.py    # Production trainer (single-GPU, fp32).
+│   └── smoke_train.py   # CPU/GPU smoke entry point.
 │
 ├── opinf/               # Classical OpInf baselines (B1, B2).
 │   └── ...              # Existing 3-step pipeline; works today.
@@ -194,12 +199,12 @@ the 2026 refactor; their code (where worth keeping) is in `archive/`.
 
 ## HPC Quick Reference (TACC)
 
-`hw/dns.py` runs on Frontera, `rom/train.py` runs on Vista.
+`hw/dns.py` and `opinf/` run on Frontera; `disco/train_hw2d.py` runs on Vista.
 
 | System | Use |
 |--------|-----|
 | Frontera | CPU/MPI: OpInf baselines, HW DNS data generation |
-| Vista (gh) | GPU: ROM / DISCO-lite training |
+| Vista (gh) | GPU: DISCO training |
 
 **Frontera specifics: see `.github/frontera.md`.** That file documents the
 canonical Python module load (`unset PYTHONPATH; module reset; module load
@@ -207,8 +212,13 @@ python3/3.9.2 phdf5/1.10.4`), filesystem layout, queue choices, the
 `PYTHONPATH` bashrc gotcha, and submit conventions. Read it before any new
 Frontera session; the rules are non-obvious.
 
-Vista specifics: TBD (will be a sibling `.github/vista.md`). MPLBACKEND=Agg
-is required on both clusters for matplotlib in headless jobs.
+**Vista specifics: see `../../knowledge/vista_compute.md`.** Module triple
+on compute nodes is `gcc/15.1.0 cuda/12.5 python3/3.11.8` (a bare
+`cuda/12.5` load is insufficient). Venv at `$WORK/envs/disco`, repo at
+`$WORK/repos/IEEE`, outputs to `$SCRATCH/IEEE/output/<ts>_<run-name>/`.
+Submit with `sbatch --export=ALL,VAR=value scripts/vista/disco_train.slurm`
+(preserves env, adds vars). MPLBACKEND=Agg is required on both clusters
+for matplotlib in headless jobs.
 
 ---
 

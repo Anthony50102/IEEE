@@ -125,8 +125,9 @@ evaluation moves to **Vista Grace Hopper (GH200)** GPU nodes.
 Vista environment (verified 2026-05-16, see `knowledge/vista_compute.md`):
 - venv at `$WORK/envs/disco` (Python 3.11.8 + torch 2.12.0+cu126 + DISCO deps)
 - repo at `$WORK/repos/IEEE` (branch `refactor`)
-- GH200 access via `gh-dev` (≤2h debug) and `gh` (≤48h prod) queues; 1607 SUs (expires 2026-05-31)
+- GH200 access via `gh-dev` (≤2h debug) and `gh` (≤48h prod) queues; ~1606 SUs (expires 2026-05-31)
 - end-to-end smoke at 32² confirmed on GH200: 2 s/step, loss decreases monotonically
+- **Module triple on compute nodes**: `module load gcc/15.1.0 cuda/12.5 python3/3.11.8` (a bare `module load cuda/12.5` after `module reset` is insufficient — venv fails with `libpython3.11.so.1.0: cannot open shared object file`)
 
 Generalization protocols (kept):
 - **G1**: trained α, future time (short-horizon MSE — meaningful inside τ_Lyap).
@@ -138,8 +139,19 @@ Workflow:
 - [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
 - [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` registers the four αs as `hw2d_a01/a10/a50/a15` (a15=G3 held-out). `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha, with `train`/`g1` tail-holdout split) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index`). Per-sample dict matches upstream's `MixedDataset` contract. CPU-smoke verified on synthetic HDF5.
 - [x] **`p6-smoke`** — Single-α α=1.0 CPU smoke (`disco/smoke_train.py`) at 32², hidden_dim=96, 15.8M params, batch=2, 8 SGD steps: loss 0.31→0.088 (monotone). Validated `src.*` import shim, HW2D `DATASET_SPECS` injection, full forward+backward through hypernet→param-generator→ODE-integrated operator. `hidden_dim` must be ÷12 (upstream `RMSGroupNorm` hardcode) and ÷`num_heads`.
-- [x] **`p6-train`** — Trainer code landed. `disco/train_hw2d.py` + `disco/config_hw2d.py` (typed YAML), `configs/disco/hw2d_multi.yaml` (256², hidden 384, blocks 12, batch 2 × accum 4, bf16 AMP, cosine + 1-ep warmup), `_smoke.yaml` (32², hidden 96), and `scripts/vista/disco_train.slurm` (1 H200, `gh` 24h). Per-α G1-tail validation, latest+best+rotating checkpoints with opt/sched state, JSONL metrics, optional wandb, resume. CPU smoke verified end-to-end on synthetic 3-α HDF5: 16M-param model, 2 epochs in 9s, loss 1.07→0.90, val_nrmse 1.38→1.35, resume from `latest.pt` works. Ready for the actual GH200 run.
-- [ ] **`p6-sweep`** — Light HP sweep: LR, snippet length T, hypernet capacity (~3–5 configs total).
+- [x] **`p6-train`** — Trainer + 9 production runs in flight on Vista.
+  - Code: `disco/train_hw2d.py` + `disco/config_hw2d.py` (typed YAML), `scripts/vista/disco_train.slurm` (1 H200, `gh` 24h, `module load gcc/15.1.0 cuda/12.5 python3/3.11.8`, `CONFIG` env-var override). Per-α G1-tail validation, latest+best+rotating checkpoints with opt/sched/scaler state, JSONL metrics, optional wandb, resume.
+  - Verified: CPU smoke (synthetic 3-α HDF5, 16M params, loss 1.07→0.90, resume from `latest.pt`); Vista GPU smoke job 708132 on `gh-dev` (real HW2D 32², val_nrmse 0.36→0.31).
+  - **AMP bf16 disabled** in production (`amp: false`): vendored DISCO has a fp32 buffer indexed-assigned with autocast-bf16 outputs at `disco/upstream/models/disco.py:495`. Targeted-scope autocast deferred to `p6-sweep`.
+  - Submitted Vista runs (24h walltime, fp32, 101M params at 256²):
+    - 708144 `hw2d_multi.yaml` (batch 2 × accum 4) — running
+    - 708157 `hw2d_multi_tuned.yaml` (batch 8 × accum 1, epoch_size 200 / max_epochs 2000) — queued
+    - 708176/7/8 single-α baselines `hw2d_single_a{01,10,50}.yaml` — queued
+    - 708179/80 α-extrap holdouts `hw2d_extrap_{low,high}.yaml` — queued
+    - 708181 small `hw2d_multi_small.yaml` (hidden 192, blocks 8) — queued
+    - 708182 large `hw2d_multi_large.yaml` (hidden 576, blocks 12) — queued
+- [ ] **`p6-sweep`** — Light HP sweep (LR, snippet length T, hypernet capacity) and re-introduce AMP via a targeted autocast scope (encoder/hypernet only, not theta assembly).
+- [ ] **`p6-multinode`** *(proposed)* — DDP extension to `train_hw2d.py`. Draft sketch in `knowledge/multinode_training.md`. Not blocking for CiSE; gate on `p6-sweep` revealing a single-GPU bottleneck.
 - [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
 - [ ] **`p6-eval-g3`** — G3 rollout at α=1.5; report stability + ⟨Γₙ⟩, σ(Γₙ), energy time-average compared to ground-truth DNS.
 - [ ] **`p6-figures`** — Rollout snapshots, error tables, possibly a parameter-space UMAP (analog of paper Fig. 4) over the 3 αs.
