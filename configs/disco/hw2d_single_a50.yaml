@@ -4,12 +4,9 @@ run_name: "disco_hw2d_single_a50"
 seed: 0
 
 data_root: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
-train_datasets:
-  - "hw2d_a50"
-val_datasets:
-  - "hw2d_a01"
-  - "hw2d_a10"
-  - "hw2d_a50"
+dataset_name: "hw2d"
+train_alphas: [5.0]
+val_alphas:   [0.1, 1.0, 5.0]
 resolution: [256, 256]
 n_past: 16
 n_future: 1

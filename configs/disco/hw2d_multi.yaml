@@ -2,7 +2,12 @@
 #
 # Train αs ∈ {0.1, 1.0, 5.0}. α=1.5 is deliberately held out for G3
 # evaluation (see ROADMAP.md Phase 6 / p6-eval-g3) and must NOT appear
-# in either train_datasets or val_datasets.
+# in either train_alphas or val_alphas.
+#
+# Unified-dataset architecture (2026-05-17): DISCO sees a SINGLE
+# dataset name "hw2d" with 2 channels. α-identity is carried by the
+# snippet, never by the dataset label, so the hypernetwork must
+# actually infer α from context.
 #
 # Output goes to $SCRATCH/IEEE/output/<ts>_disco_train/ on Vista (set
 # via --out on the trainer CLI; see scripts/vista/disco_train.slurm).
@@ -12,14 +17,9 @@ seed: 0
 
 # --- data ---------------------------------------------------------------
 data_root: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
-train_datasets:
-  - "hw2d_a01"
-  - "hw2d_a10"
-  - "hw2d_a50"
-val_datasets:
-  - "hw2d_a01"
-  - "hw2d_a10"
-  - "hw2d_a50"
+dataset_name: "hw2d"
+train_alphas: [0.1, 1.0, 5.0]
+val_alphas:   [0.1, 1.0, 5.0]
 resolution: [256, 256]
 n_past: 16
 n_future: 1
@@ -43,15 +43,18 @@ integration_library: "torchdiffeq"
 hpnn_head_hidden_dim: 384
 
 # --- optimization -------------------------------------------------------
-batch_size: 2
-accum_grad: 4              # effective batch = 8
-max_epochs: 200
-epoch_size: 2000
+# Standardized on the "tuned" recipe (batch 8 × accum 1) since
+# 708182 demonstrated ~6.7× per-epoch speedup vs the old batch-2
+# × accum-4 layout, on H200 96 GB. Same total step budget.
+batch_size: 8
+accum_grad: 1
+max_epochs: 2000
+epoch_size: 200
 optimizer: "adamw"
 learning_rate: 5.0e-5
 weight_decay: 1.0e-3
 scheduler: "cosine"
-warmup_epochs: 1
+warmup_epochs: 10
 gnorm: 1.0
 amp: false                 # disabled: upstream DISCO.forward has a fp32 buffer
                            # indexed-assigned with autocast-bf16 outputs.
@@ -59,11 +62,11 @@ amp: false                 # disabled: upstream DISCO.forward has a fp32 buffer
 
 # --- validation ---------------------------------------------------------
 val_batches: 16
-val_rollout_steps: [1]     # cheap; raise after first run wall-clock measured
+val_rollout_steps: [1]
 
 # --- logging / checkpoints ---------------------------------------------
-checkpoint_save_interval: 10
-log_interval: 50
+checkpoint_save_interval: 50
+log_interval: 20
 wandb_enabled: false
 wandb_project: "ieee-disco"
 wandb_entity: ""

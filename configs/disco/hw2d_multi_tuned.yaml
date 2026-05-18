@@ -1,31 +1,20 @@
-# Tuned variant of hw2d_multi.yaml.
+# Multi-α DISCO training on HW2D — second seed of hw2d_multi.yaml.
 #
-# Same total step budget (max_epochs × epoch_size = 400 000), same
-# science, but with:
-#   - epoch_size 2000 → 200 : checkpoints + per-α validation every
-#     ~10 min instead of every 1.6 h. Safer for resumable 24h runs.
-#   - max_epochs 200 → 2000  : matches the cosine schedule to the new
-#     epoch_size so the LR curve and total step count are unchanged.
-#   - batch_size 2 → 8, accum_grad 4 → 1 : effective batch is still 8,
-#     but actually fits in one forward, so per-step wall-clock should
-#     drop ~3-4× on the H200 (101M params + activations fits in 96 GB).
+# Post-refactor (unified-dataset, 2026-05-17) hw2d_multi.yaml already
+# uses the batch-8 × accum-1 layout that was the original justification
+# for this "tuned" file. We keep it as a *different seed* of the same
+# recipe so the multi-α condition has n=2 runs for variance reporting.
 #
-# Use this for any second/parallel run while the original 708144 (with
-# hw2d_multi.yaml) finishes for comparison.
+# To extend to n≥3, copy this file and bump `seed`.
 
-run_name: "disco_hw2d_multi_tuned"
-seed: 0
+run_name: "disco_hw2d_multi_seed1"
+seed: 1
 
 # --- data ---------------------------------------------------------------
 data_root: "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
-train_datasets:
-  - "hw2d_a01"
-  - "hw2d_a10"
-  - "hw2d_a50"
-val_datasets:
-  - "hw2d_a01"
-  - "hw2d_a10"
-  - "hw2d_a50"
+dataset_name: "hw2d"
+train_alphas: [0.1, 1.0, 5.0]
+val_alphas:   [0.1, 1.0, 5.0]
 resolution: [256, 256]
 n_past: 16
 n_future: 1
@@ -33,7 +22,7 @@ burn_in_frac: 0.5
 g1_tail_frac: 0.1
 num_workers: 4
 
-# --- model (unchanged) -------------------------------------------------
+# --- model --------------------------------------------------------------
 hidden_dim: 384
 patch_size: 16
 processor_blocks: 12
@@ -47,25 +36,25 @@ atol: 1.0e-9
 integration_library: "torchdiffeq"
 hpnn_head_hidden_dim: 384
 
-# --- optimization ------------------------------------------------------
+# --- optimization -------------------------------------------------------
 batch_size: 8
-accum_grad: 1              # effective batch still 8, but in one step
-max_epochs: 2000           # 10× smaller epoch_size, so 10× more epochs
-epoch_size: 200            # 1 epoch ≈ 10 min at observed 2.9 s/batch
+accum_grad: 1
+max_epochs: 2000
+epoch_size: 200
 optimizer: "adamw"
 learning_rate: 5.0e-5
 weight_decay: 1.0e-3
 scheduler: "cosine"
-warmup_epochs: 10          # 1 ep → 10 ep, same number of warmup *steps*
+warmup_epochs: 10
 gnorm: 1.0
-amp: false                 # see note in hw2d_multi.yaml
+amp: false
 
-# --- validation --------------------------------------------------------
+# --- validation ---------------------------------------------------------
 val_batches: 16
 val_rollout_steps: [1]
 
 # --- logging / checkpoints ---------------------------------------------
-checkpoint_save_interval: 50   # epoch snapshot every ~8 h
+checkpoint_save_interval: 50
 log_interval: 20
 wandb_enabled: false
 wandb_project: "ieee-disco"

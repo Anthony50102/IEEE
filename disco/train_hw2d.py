@@ -54,7 +54,11 @@ from torch.utils.data import DataLoader
 
 import disco  # registers `src` alias and dataset-specs shim
 from disco.config_hw2d import TrainConfig, dump_config, load_config
-from disco.dataset_specs import HW2D_DATASET_SPECS, with_root
+from disco.dataset_specs import (
+    HW2D_ALPHA_META,
+    alpha_paths as _alpha_paths_for,
+    make_unified_spec,
+)
 from disco.hw2d_dataset import HW2DDataset, HW2DMixedDataset
 
 
@@ -87,22 +91,31 @@ def _amp_dtype(device: torch.device, cfg_amp: bool) -> Optional[torch.dtype]:
     return torch.float16
 
 
+def _alpha_key(alpha: float) -> str:
+    """Stable string label for an α value (used as the val-loader dict key)."""
+    return f"a{alpha:g}"
+
+
 def _build_specs(cfg: TrainConfig, data_root: str) -> Dict[str, Dict]:
-    """Slice HW2D_DATASET_SPECS down to the αs referenced by the config and
-    rewrite ``main_path`` under ``data_root``."""
-    names = sorted(set(cfg.train_datasets) | set(cfg.val_datasets))
-    return with_root({n: HW2D_DATASET_SPECS[n] for n in names}, data_root)
+    """Build the single-entry unified spec table for the union of train+val αs.
+
+    Registered into upstream's ``DATASET_SPECS`` so DISCO's introspection
+    succeeds for ``cfg.dataset_name``.
+    """
+    alphas = sorted(set(cfg.train_alphas) | set(cfg.val_alphas))
+    return make_unified_spec(alphas, root=data_root, dataset_name=cfg.dataset_name)
 
 
-def _build_train_loader(cfg: TrainConfig, specs: Dict[str, Dict]) -> DataLoader:
+def _build_train_loader(cfg: TrainConfig, data_root: str) -> DataLoader:
     dset = HW2DMixedDataset(
-        dataset_names=cfg.train_datasets,
-        specs_table=specs,
+        alpha_paths=_alpha_paths_for(cfg.train_alphas, root=data_root),
         n_past=cfg.n_past,
         n_future=cfg.n_future,
+        resolution=tuple(cfg.resolution),
         split="train",
+        burn_in_frac=cfg.burn_in_frac,
         g1_tail_frac=cfg.g1_tail_frac,
-        resolution_override=tuple(cfg.resolution),
+        name=cfg.dataset_name,
     )
     return DataLoader(
         dset,
@@ -115,24 +128,28 @@ def _build_train_loader(cfg: TrainConfig, specs: Dict[str, Dict]) -> DataLoader:
 
 
 def _build_val_loaders(
-    cfg: TrainConfig, specs: Dict[str, Dict]
+    cfg: TrainConfig, data_root: str
 ) -> Dict[str, DataLoader]:
-    """One loader per validation α so per-α NRMSE is straightforward."""
+    """One loader per validation α so per-α NRMSE is straightforward.
+
+    Loader keys are ``f"a{alpha:g}"`` strings; the per-sample
+    ``name`` is always ``cfg.dataset_name`` (no α leakage to the model).
+    """
     out: Dict[str, DataLoader] = {}
-    for i, name in enumerate(cfg.val_datasets):
-        spec = specs[name]
+    for i, alpha in enumerate(cfg.val_alphas):
         sub = HW2DDataset(
-            main_path=spec["main_path"],
+            main_path=f"{data_root}/{HW2D_ALPHA_META[alpha]['dirname']}",
             resolution=tuple(cfg.resolution),
             n_past=cfg.n_past,
             n_future=cfg.n_future,
-            burn_in_frac=spec.get("burn_in_frac", cfg.burn_in_frac),
+            burn_in_frac=cfg.burn_in_frac,
             split="g1",
             g1_tail_frac=cfg.g1_tail_frac,
-            name=name,
+            name=cfg.dataset_name,
+            alpha=alpha,
             file_index=i,
         )
-        out[name] = DataLoader(
+        out[_alpha_key(alpha)] = DataLoader(
             sub,
             batch_size=cfg.batch_size,
             shuffle=False,
@@ -158,7 +175,7 @@ def _build_model(cfg: TrainConfig, device: torch.device):
         num_heads=cfg.num_heads,
         bias_type=cfg.bias_type,
         hpnn_head_hidden_dim=cfg.hpnn_head_hidden_dim,
-        dataset_names=cfg.train_datasets,
+        dataset_names=[cfg.dataset_name],
         max_steps=cfg.max_steps,
         atol=cfg.atol,
         rtol=cfg.rtol,
@@ -276,8 +293,11 @@ def _train_one_epoch(
     fp16 = amp_dtype == torch.float16
 
     logs = {"loss": 0.0, "nrmse": 0.0, "n": 0}
+    # Per-α breakdown comes from the diagnostic ``alpha`` field on the sample
+    # dict (the model never sees this). Loader is mixed-α; we bucket each
+    # batch by its first sample's α.
     per_alpha: Dict[str, Dict[str, float]] = {
-        n: {"loss": 0.0, "nrmse": 0.0, "n": 0} for n in cfg.train_datasets
+        _alpha_key(a): {"loss": 0.0, "nrmse": 0.0, "n": 0} for a in cfg.train_alphas
     }
     optimizer.zero_grad(set_to_none=True)
 
@@ -292,7 +312,8 @@ def _train_one_epoch(
 
         x = batch["input_fields"].to(device, non_blocking=True)
         y_true = batch["output_fields"].to(device, non_blocking=True)
-        dset_name = batch["name"][0]
+        alpha = float(batch["alpha"][0])
+        akey = _alpha_key(alpha)
 
         autocast_ctx = (
             torch.amp.autocast("cuda", dtype=amp_dtype)
@@ -302,7 +323,7 @@ def _train_one_epoch(
         with autocast_ctx:
             y_pred, meta = model(
                 x, predict_normed=False,
-                state_labels=state_labels, dset_name=dset_name,
+                state_labels=state_labels, dset_name=cfg.dataset_name,
             )
             y_true_norm = (y_true - meta["mean"]) / meta["std"]
             loss, raw_nrmse2 = _gaussian_nll_normalized(y_true_norm, y_pred)
@@ -319,10 +340,11 @@ def _train_one_epoch(
             logs["loss"] += loss_v
             logs["nrmse"] += nrmse_v
             logs["n"] += 1
-            pa = per_alpha[dset_name]
-            pa["loss"] += loss_v
-            pa["nrmse"] += nrmse_v
-            pa["n"] += 1
+            if akey in per_alpha:
+                pa = per_alpha[akey]
+                pa["loss"] += loss_v
+                pa["nrmse"] += nrmse_v
+                pa["n"] += 1
 
         is_step = ((batch_idx + 1) % accum == 0) or (batch_idx + 1 == epoch_size)
         if is_step:
@@ -343,7 +365,7 @@ def _train_one_epoch(
             print(
                 f"  epoch {epoch:3d} batch {batch_idx:5d}/{epoch_size} "
                 f"loss={loss_v:.4e} nrmse={nrmse_v:.4e} "
-                f"lr={optimizer.param_groups[0]['lr']:.2e} ({dset_name})",
+                f"lr={optimizer.param_groups[0]['lr']:.2e} ({akey})",
                 flush=True,
             )
 
@@ -355,10 +377,10 @@ def _train_one_epoch(
         "train_steps_per_s": logs["n"] / max(1e-9, dt),
         "lr": optimizer.param_groups[0]["lr"],
     }
-    for name, d in per_alpha.items():
+    for akey, d in per_alpha.items():
         if d["n"] > 0:
-            out[f"train_nrmse/{name}"] = d["nrmse"] / d["n"]
-            out[f"train_loss/{name}"] = d["loss"] / d["n"]
+            out[f"train_nrmse/{akey}"] = d["nrmse"] / d["n"]
+            out[f"train_loss/{akey}"] = d["loss"] / d["n"]
     return out
 
 
@@ -373,7 +395,7 @@ def _validate(
     model.eval()
     out: Dict[str, float] = {}
     mean_acc, mean_n = 0.0, 0
-    for name, loader in val_loaders.items():
+    for akey, loader in val_loaders.items():
         nrmse_sum = 0.0
         n_batches = 0
         for batch_idx, batch in enumerate(loader):
@@ -383,13 +405,13 @@ def _validate(
             y_true = batch["output_fields"].to(device, non_blocking=True)
             y_pred, _meta = model(
                 x, predict_normed=True,
-                state_labels=state_labels, dset_name=name,
+                state_labels=state_labels, dset_name=cfg.dataset_name,
             )
             nrmse_v = _nrmse(y_true, y_pred).mean().item()
             nrmse_sum += nrmse_v
             n_batches += 1
         v = nrmse_sum / max(1, n_batches)
-        out[f"val_nrmse/{name}"] = v
+        out[f"val_nrmse/{akey}"] = v
         mean_acc += v
         mean_n += 1
     out["val_nrmse"] = mean_acc / max(1, mean_n)
@@ -493,11 +515,17 @@ def main() -> None:
     print(f"[trainer] device={device} amp_dtype={amp_dtype} out={out_dir}", flush=True)
 
     specs = _build_specs(cfg, cfg.data_root)
-    train_loader = _build_train_loader(cfg, specs)
-    val_loaders = _build_val_loaders(cfg, specs)
-    print(f"[trainer] train samples: {len(train_loader.dataset)}", flush=True)
-    for name, vl in val_loaders.items():
-        print(f"[trainer] val   {name}: {len(vl.dataset)} samples", flush=True)
+    disco.register_hw2d_specs()  # ensure the unified spec is visible to upstream
+    from src.utils.data_utils import DATASET_SPECS  # noqa: PLC0415
+    DATASET_SPECS.update(specs)
+
+    train_loader = _build_train_loader(cfg, cfg.data_root)
+    val_loaders = _build_val_loaders(cfg, cfg.data_root)
+    print(f"[trainer] dataset_name={cfg.dataset_name}", flush=True)
+    print(f"[trainer] train αs: {cfg.train_alphas}  "
+          f"({len(train_loader.dataset)} samples)", flush=True)
+    for akey, vl in val_loaders.items():
+        print(f"[trainer] val   {akey}: {len(vl.dataset)} samples", flush=True)
 
     model = _build_model(cfg, device)
     n_params = sum(p.numel() for p in model.parameters())

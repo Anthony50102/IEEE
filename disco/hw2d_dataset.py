@@ -9,11 +9,12 @@ DISCO's upstream trainer (``disco/upstream/train_reference.py``) consumes a
         'input_fields'        : (n_past,   C, H, W)  float tensor
         'output_fields'       : (n_future, C, H, W)  float tensor
         'boundary_conditions' : tensor of ints (1 = periodic per axis)
-        'name'                : str       (dataset name, e.g. 'hw2d_a01')
+        'name'                : str       (dataset name; 'hw2d' in unified mode)
         'file'                : str       (source filename)
         'index'               : tensor    (global sample index)
         'field_labels'        : tensor    (per-channel global field ids)
-        'file_index'          : int       (which sub-dataset)
+        'file_index'          : int       (which sub-dataset / which α file)
+        'alpha'               : float     (HW2D adiabaticity, diagnostic only)
     }
 
 This module implements that contract for HW2D trajectories produced by
@@ -25,6 +26,14 @@ This module implements that contract for HW2D trajectories produced by
   - we hold out a *tail window* per alpha as the G1 evaluation set, so
     'train' and 'g1' splits are disjoint in time
 
+**Unified-dataset architecture (2026-05-17).** All samples emit the
+same ``'name'`` (default ``'hw2d'``) regardless of which α file they
+came from. DISCO's per-dataset machinery is for cross-PDE channel
+counts, not parameter regimes; α-identity must live in the snippet
+content (which the hypernetwork reads), never in the label. The
+per-α metadata is retained on the sample dict as ``'alpha'`` for
+*diagnostic* purposes only — the model never consumes it.
+
 The classes here are intentionally PyTorch-only and free of upstream
 imports, so they can be CPU-smoke-tested without the full DISCO stack.
 """
@@ -34,7 +43,7 @@ from __future__ import annotations
 import glob
 import os
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -99,8 +108,14 @@ class HW2DDataset(Dataset):
     g1_tail_frac
         Fraction of the post-burn-in trajectory reserved as the G1 tail.
     name
-        Logical dataset name (e.g. ``'hw2d_a01'``), surfaced in the
-        per-sample dict so the hypernet can be conditioned on identity.
+        Logical dataset name (default ``'hw2d'``) emitted in the
+        per-sample dict. **All αs use the same name** so DISCO does not
+        receive α-identity as a label. To distinguish αs for metric
+        reporting, use ``alpha`` (a diagnostic field) or the loader key.
+    alpha
+        The HW adiabaticity for this trajectory. Surfaced on the per-
+        sample dict for downstream metric breakdowns; never consumed by
+        the model.
     file_index
         Position of this sub-dataset within an enclosing mixed dataset.
 
@@ -123,6 +138,7 @@ class HW2DDataset(Dataset):
         split: str = "train",
         g1_tail_frac: float = 0.1,
         name: str = "hw2d",
+        alpha: float = float("nan"),
         file_index: int = 0,
     ):
         super().__init__()
@@ -135,6 +151,7 @@ class HW2DDataset(Dataset):
         self.split = split
         self.g1_tail_frac = float(g1_tail_frac)
         self.name = name
+        self.alpha = float(alpha)
         self.file_index = int(file_index)
 
         self._file_path = self._find_trajectory_h5(main_path)
@@ -221,6 +238,7 @@ class HW2DDataset(Dataset):
             "file": os.path.basename(self._file_path),
             "index": torch.as_tensor(index, dtype=torch.long),
             "file_index": self.file_index,
+            "alpha": float(self.alpha),
         }
 
     def __getstate__(self):
@@ -232,49 +250,55 @@ class HW2DDataset(Dataset):
 class HW2DMixedDataset(Dataset):
     """Concatenation of several ``HW2DDataset`` instances.
 
-    The dict returned by ``__getitem__`` adds two keys to the per-α dict:
+    All sub-datasets emit the same ``name`` (default ``'hw2d'``). The
+    per-sample dict adds:
 
       - ``field_labels`` : global per-channel ids (here just ``[0, 1]``,
         since both density and phi are HW2D-specific and shared across
         all alphas). Mirrors upstream's ``MixedDataset`` contract.
       - ``file_index``   : index of the sub-dataset inside this mix.
+      - ``alpha``        : the HW adiabaticity for the sampled sub-dataset
+                          (diagnostic only — the model never sees this).
 
     Notes
     -----
     The hypernetwork is supposed to infer the alpha regime from the
-    context snippet; we deliberately do **not** expose alpha as a label.
+    context snippet; we deliberately do **not** expose alpha as a
+    label. ``alpha`` on the sample dict is for the trainer's per-α
+    metric reporting, not for the model.
     """
 
     HW2D_FIELD_LABELS = (0, 1)  # density=0, phi=1; shared across all HW2D alphas
 
     def __init__(
         self,
-        dataset_names: Sequence[str],
-        specs_table: Dict[str, Dict],
+        alpha_paths: Sequence[Tuple[float, str]],
         n_past: int,
         n_future: int,
+        resolution: Tuple[int, int],
         split: str = "train",
+        burn_in_frac: float = 0.5,
         g1_tail_frac: float = 0.1,
-        resolution_override: Optional[Tuple[int, int]] = None,
+        name: str = "hw2d",
     ):
         super().__init__()
-        self.dataset_names = list(dataset_names)
+        self.name = name
         self.split = split
+        self.alphas: List[float] = [a for a, _ in alpha_paths]
 
         sub_dsets: List[HW2DDataset] = []
-        for i, name in enumerate(self.dataset_names):
-            spec = specs_table[name]
-            resolution = resolution_override or spec["resolution"]
+        for i, (alpha, main_path) in enumerate(alpha_paths):
             sub_dsets.append(
                 HW2DDataset(
-                    main_path=spec["main_path"],
+                    main_path=main_path,
                     resolution=resolution,
                     n_past=n_past,
                     n_future=n_future,
-                    burn_in_frac=spec.get("burn_in_frac", 0.5),
+                    burn_in_frac=burn_in_frac,
                     split=split,
                     g1_tail_frac=g1_tail_frac,
                     name=name,
+                    alpha=alpha,
                     file_index=i,
                 )
             )
@@ -321,7 +345,8 @@ if __name__ == "__main__":
         n_future=n_future,
         burn_in_frac=0.5,
         split="train",
-        name="hw2d_smoke",
+        name="hw2d",
+        alpha=1.0,
     )
     print(
         f"file              : {d._file_path}\n"
@@ -338,3 +363,4 @@ if __name__ == "__main__":
             print(f"  {k:22s} {tuple(v.shape)} {v.dtype}")
         else:
             print(f"  {k:22s} {v!r}")
+

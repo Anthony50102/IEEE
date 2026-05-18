@@ -41,15 +41,26 @@ export OMP_NUM_THREADS=8
 
 # --- run ----------------------------------------------------------------
 # Config: defaults to hw2d_multi.yaml; override with
-#   sbatch --export=CONFIG=configs/disco/hw2d_multi_tuned.yaml scripts/vista/disco_train.slurm
-# Note: don't pass --export for env vars on Vista other than this single
-# overrideable knob; the rest comes from `module load` + the venv.
+#   sbatch --export=ALL,CONFIG=configs/disco/hw2d_multi_tuned.yaml scripts/vista/disco_train.slurm
+# To resume from a checkpoint, also set RESUME (absolute path), e.g.
+#   sbatch --export=ALL,CONFIG=...,RESUME=$SCRATCH/IEEE/output/<ts>_disco_train/checkpoints/latest.pt scripts/vista/disco_train.slurm
+# NOTE: with --export, prefix `ALL,` so the rest of the env (PATH, etc.)
+# is inherited; bare `--export=FOO=bar` replaces the env and breaks
+# module/venv setup.
 CONFIG="${CONFIG:-configs/disco/hw2d_multi.yaml}"
+RESUME="${RESUME:-}"
 echo "config=$CONFIG"
+[ -n "$RESUME" ] && echo "resume=$RESUME"
 
-# Add --wandb to opt into wandb; add --resume <path> to continue.
+resume_args=()
+if [ -n "$RESUME" ]; then
+    resume_args=(--resume "$RESUME")
+fi
+
+# Add --wandb to opt into wandb.
 srun python -m disco.train_hw2d \
     --config "$CONFIG" \
-    --out "$out"
+    --out "$out" \
+    "${resume_args[@]}"
 
 echo "done; artifacts in $out"

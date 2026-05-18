@@ -11,7 +11,7 @@ Example::
 
     python -m disco.smoke_train \\
         --data /tmp/hw2d_synth \\
-        --dataset hw2d_a10 \\
+        --alpha 1.0 \\
         --resolution 32 32 \\
         --hidden-dim 96 \\
         --n-past 4 --n-future 1 \\
@@ -34,14 +34,21 @@ import torch
 import torch.nn as nn
 
 import disco  # registers `src` alias and dataset-specs shim
-from disco.dataset_specs import HW2D_DATASET_SPECS, with_root
+from disco.dataset_specs import (
+    HW2D_ALPHA_META,
+    alpha_paths as _alpha_paths_for,
+    make_unified_spec,
+)
 from disco.hw2d_dataset import HW2DMixedDataset
 
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="HW2D × DISCO CPU smoke trainer")
     p.add_argument("--data", required=True, help="Root directory containing per-α subdirs")
-    p.add_argument("--dataset", default="hw2d_a10", help="Which HW2D α to train on")
+    p.add_argument("--alpha", type=float, default=1.0,
+                   help="HW2D adiabaticity to train on (must be in HW2D_ALPHA_META)")
+    p.add_argument("--dataset-name", default="hw2d",
+                   help="Unified dataset name passed to DISCO")
     p.add_argument("--resolution", nargs=2, type=int, default=(32, 32), metavar=("H", "W"))
     p.add_argument("--n-past", type=int, default=4)
     p.add_argument("--n-future", type=int, default=1)
@@ -65,21 +72,24 @@ def main():
 
     disco.register_hw2d_specs()
     from src.models.disco import DISCO  # noqa: PLC0415
+    from src.utils.data_utils import DATASET_SPECS  # noqa: PLC0415
 
-    specs = with_root({args.dataset: HW2D_DATASET_SPECS[args.dataset]}, args.data)
+    specs = make_unified_spec([args.alpha], root=args.data, dataset_name=args.dataset_name)
+    DATASET_SPECS.update(specs)
     dset = HW2DMixedDataset(
-        dataset_names=[args.dataset],
-        specs_table=specs,
+        alpha_paths=_alpha_paths_for([args.alpha], root=args.data),
         n_past=args.n_past,
         n_future=args.n_future,
+        resolution=tuple(args.resolution),
         split="train",
-        resolution_override=tuple(args.resolution),
+        name=args.dataset_name,
     )
     assert len(dset) >= args.batch_size, (
         f"dataset has {len(dset)} samples but batch_size={args.batch_size}"
     )
     loader = torch.utils.data.DataLoader(dset, batch_size=args.batch_size, shuffle=True)
-    print(f"dataset {args.dataset}: {len(dset)} samples; resolution={tuple(args.resolution)}")
+    print(f"alpha={args.alpha} ({args.dataset_name}): {len(dset)} samples; "
+          f"resolution={tuple(args.resolution)}")
 
     model = DISCO(
         n_states=2,
@@ -92,7 +102,7 @@ def main():
         num_heads=args.num_heads,
         bias_type="space-time",
         hpnn_head_hidden_dim=args.hidden_dim,
-        dataset_names=[args.dataset],
+        dataset_names=[args.dataset_name],
         max_steps=args.max_steps,
     ).to(args.device)
 
@@ -116,7 +126,7 @@ def main():
         x = batch["input_fields"].to(args.device)
         y_true = batch["output_fields"].to(args.device)
         opt.zero_grad()
-        y_pred, _meta = model(x, state_labels=state_labels, dset_name=args.dataset)
+        y_pred, _meta = model(x, state_labels=state_labels, dset_name=args.dataset_name)
         loss = loss_fn(y_pred, y_true)
         loss.backward()
         gn = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)

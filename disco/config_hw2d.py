@@ -29,11 +29,15 @@ class TrainConfig:
 
     # --- data --------------------------------------------------------------
     data_root: str = "/work2/10407/anthony50102/frontera/data/IEEE/hw2d"
-    train_datasets: List[str] = field(
-        default_factory=lambda: ["hw2d_a01", "hw2d_a10", "hw2d_a50"]
+    # Unified-dataset mode (2026-05-17): DISCO sees ONE dataset name. α is
+    # discriminated purely by snippet content, never by label. The per-α
+    # train/val αs choose which on-disk files are sampled.
+    dataset_name: str = "hw2d"
+    train_alphas: List[float] = field(
+        default_factory=lambda: [0.1, 1.0, 5.0]
     )
-    val_datasets: List[str] = field(
-        default_factory=lambda: ["hw2d_a01", "hw2d_a10", "hw2d_a50"]
+    val_alphas: List[float] = field(
+        default_factory=lambda: [0.1, 1.0, 5.0]
     )
     resolution: Tuple[int, int] = (256, 256)
     n_past: int = 16
@@ -82,6 +86,8 @@ class TrainConfig:
 
     # ----------------------------------------------------------------------
     def validate(self) -> None:
+        from disco.dataset_specs import HW2D_ALPHA_META  # noqa: PLC0415
+
         h, w = self.resolution
         assert self.hidden_dim % 12 == 0, (
             f"hidden_dim={self.hidden_dim} must be divisible by 12 "
@@ -100,8 +106,13 @@ class TrainConfig:
         assert 0.0 < self.g1_tail_frac < 1.0
         assert self.optimizer in ("adam", "adamw"), self.optimizer
         assert self.scheduler in ("cosine", "none"), self.scheduler
-        for name in self.train_datasets + self.val_datasets:
-            assert name.startswith("hw2d_"), f"non-hw2d dataset name: {name}"
+        assert self.dataset_name and isinstance(self.dataset_name, str)
+        assert len(self.train_alphas) > 0, "train_alphas must be non-empty"
+        assert len(self.val_alphas) > 0, "val_alphas must be non-empty"
+        for a in list(self.train_alphas) + list(self.val_alphas):
+            assert a in HW2D_ALPHA_META, (
+                f"alpha={a} not in HW2D_ALPHA_META; known αs: {sorted(HW2D_ALPHA_META)}"
+            )
 
 
 def load_config(path: str | Path, overrides: Optional[Dict[str, Any]] = None) -> TrainConfig:
@@ -125,6 +136,10 @@ def load_config(path: str | Path, overrides: Optional[Dict[str, Any]] = None) ->
         raw["resolution"] = tuple(raw["resolution"])
     if "val_rollout_steps" in raw and not isinstance(raw["val_rollout_steps"], tuple):
         raw["val_rollout_steps"] = tuple(raw["val_rollout_steps"])
+    # Coerce alpha lists to floats (YAML int 1 → float 1.0 for HW2D_ALPHA_META lookup).
+    for key in ("train_alphas", "val_alphas"):
+        if key in raw:
+            raw[key] = [float(a) for a in raw[key]]
 
     cfg = TrainConfig(**raw)
     cfg.validate()
