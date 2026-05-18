@@ -432,7 +432,14 @@ def _save_ckpt(
     scaler: torch.amp.GradScaler,
     best_val: float,
     cfg: TrainConfig,
-) -> None:
+) -> bool:
+    """Atomically write a checkpoint. Returns True on success, False otherwise.
+
+    Hardened against transient Lustre/NFS hiccups (see 709803 post-mortem):
+    the trainer should *not* abort just because one checkpoint write failed.
+    We retry the write twice; if it still fails we log and move on so the
+    next epoch's save can recover.
+    """
     payload = {
         "epoch": epoch,
         "iters": iters,
@@ -444,8 +451,30 @@ def _save_ckpt(
         "config": dump_config(cfg),
     }
     tmp = path.with_suffix(path.suffix + ".tmp")
-    torch.save(payload, tmp)
-    os.replace(tmp, path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            torch.save(payload, str(tmp))
+            if not tmp.exists():
+                raise FileNotFoundError(
+                    f"torch.save returned without raising but {tmp} is missing"
+                )
+            os.replace(str(tmp), str(path))
+            return True
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            print(f"[trainer] WARN: _save_ckpt {path} attempt {attempt + 1}/3 "
+                  f"failed: {e!r}", flush=True)
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except Exception:
+                pass
+            time.sleep(2 ** attempt)
+    print(f"[trainer] ERROR: _save_ckpt {path} giving up after 3 attempts "
+          f"(last err: {last_err!r}); training continues", flush=True)
+    return False
 
 
 def _load_ckpt(
