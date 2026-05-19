@@ -22,7 +22,11 @@ cd "$WORK/repos/IEEE"
 
 # --- output directory (outside the repo, under $SCRATCH) -----------------
 ts="$(date +%Y%m%d_%H%M%S)"
-out="$SCRATCH/IEEE/output/${ts}_disco_train"
+# Disambiguate when multiple jobs start in the same second (we hit this
+# with 709802+709803 colliding on 20260518_044221_disco_train and both
+# writing to the same metrics.jsonl / checkpoints/ — recoverable but
+# confusing).
+out="$SCRATCH/IEEE/output/${ts}_${SLURM_JOB_ID}_disco_train"
 mkdir -p "$out"
 echo "out=$out"
 
