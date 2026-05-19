@@ -54,11 +54,12 @@ IEEE/
 │
 ├── disco/               # DISCO sprint (Phase 6). Vendored upstream + our adapters.
 │   ├── upstream/        # Vendored RudyMorel/DISCO @ ddd18f17 (READ-ONLY).
-│   ├── dataset_specs.py # Registers HW2D αs as DISCO "datasets".
+│   ├── dataset_specs.py # HW2D_ALPHA_META + make_unified_spec(); single
+│   │                    # dset_name="hw2d", α from snippet only.
 │   ├── hw2d_dataset.py  # hw.dataset → DISCO context-snippet format.
-│   ├── config_hw2d.py   # Typed TrainConfig dataclass + YAML loader.
+│   ├── config_hw2d.py   # Typed TrainConfig (dataset_name + train_alphas/val_alphas).
 │   ├── train_hw2d.py    # Production trainer (single-GPU, fp32).
-│   └── smoke_train.py   # CPU/GPU smoke entry point.
+│   └── smoke_train.py   # CPU/GPU smoke entry point (single --alpha).
 │
 ├── opinf/               # Classical OpInf baselines (B1, B2).
 │   └── ...              # Existing 3-step pipeline; works today.

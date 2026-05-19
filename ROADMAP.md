@@ -137,19 +137,18 @@ Generalization protocols (kept):
 Workflow:
 
 - [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
-- [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` registers the four αs as `hw2d_a01/a10/a50/a15` (a15=G3 held-out). `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha, with `train`/`g1` tail-holdout split) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index`). Per-sample dict matches upstream's `MixedDataset` contract. CPU-smoke verified on synthetic HDF5.
+- [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` exposes `HW2D_ALPHA_META` (the per-α metadata source of truth) plus `make_unified_spec()`. `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index` + per-sample `alpha` diagnostic). All samples carry the same `name="hw2d"` — α-identity is in the snippet content, never in the label. CPU-smoke verified on synthetic HDF5.
 - [x] **`p6-smoke`** — Single-α α=1.0 CPU smoke (`disco/smoke_train.py`) at 32², hidden_dim=96, 15.8M params, batch=2, 8 SGD steps: loss 0.31→0.088 (monotone). Validated `src.*` import shim, HW2D `DATASET_SPECS` injection, full forward+backward through hypernet→param-generator→ODE-integrated operator. `hidden_dim` must be ÷12 (upstream `RMSGroupNorm` hardcode) and ÷`num_heads`.
-- [x] **`p6-train`** — Trainer + 9 production runs in flight on Vista.
-  - Code: `disco/train_hw2d.py` + `disco/config_hw2d.py` (typed YAML), `scripts/vista/disco_train.slurm` (1 H200, `gh` 24h, `module load gcc/15.1.0 cuda/12.5 python3/3.11.8`, `CONFIG` env-var override). Per-α G1-tail validation, latest+best+rotating checkpoints with opt/sched/scaler state, JSONL metrics, optional wandb, resume.
-  - Verified: CPU smoke (synthetic 3-α HDF5, 16M params, loss 1.07→0.90, resume from `latest.pt`); Vista GPU smoke job 708132 on `gh-dev` (real HW2D 32², val_nrmse 0.36→0.31).
+- [x] **`p6-train`** — Trainer + 9 sweep runs delivered; first wave finished (5 jobs TIMEOUT'd at 24h with ~80 epochs each), 4 still running, 5 resumed from `latest.pt` (jobs 712487–712491) to push toward ~160 epochs.
+  - Code: `disco/train_hw2d.py` + `disco/config_hw2d.py` (typed YAML), `scripts/vista/disco_train.slurm` (1 H200, `gh` 24h, `module load gcc/15.1.0 cuda/12.5 python3/3.11.8`, `CONFIG` + `RESUME` env-var overrides, `$SLURM_JOB_ID` in out-dir to avoid same-second collisions). Per-α G1-tail validation, robust atomic checkpoint save (3× retry, never aborts a run), JSONL metrics, optional wandb, resume.
+  - **Unified-dataset architecture (2026-05-17, commit `c39981f`).** Initially each α was registered as its own DISCO dataset (`hw2d_a01/10/50`), which broke 5/9 sweep jobs with `KeyError` *and* leaked α-identity via the `dset_name` label, defeating the hypernet's snippet-inference job. Verified against upstream `disco.py` + paper + `knowledge/disco.md`: DISCO's per-dataset machinery is for **channel-count differences across PDE families**, not parameter regimes. Refactored to single `dset_name="hw2d"`; α-identity carried only by snippet content.
   - **AMP bf16 disabled** in production (`amp: false`): vendored DISCO has a fp32 buffer indexed-assigned with autocast-bf16 outputs at `disco/upstream/models/disco.py:495`. Targeted-scope autocast deferred to `p6-sweep`.
-  - Submitted Vista runs (24h walltime, fp32, 101M params at 256²):
-    - 708144 `hw2d_multi.yaml` (batch 2 × accum 4) — running
-    - 708157 `hw2d_multi_tuned.yaml` (batch 8 × accum 1, epoch_size 200 / max_epochs 2000) — queued
-    - 708176/7/8 single-α baselines `hw2d_single_a{01,10,50}.yaml` — queued
-    - 708179/80 α-extrap holdouts `hw2d_extrap_{low,high}.yaml` — queued
-    - 708181 small `hw2d_multi_small.yaml` (hidden 192, blocks 8) — queued
-    - 708182 large `hw2d_multi_large.yaml` (hidden 576, blocks 12) — queued
+  - First-wave results (5 TIMEOUT runs, ~80 epochs):
+    - `multi`        avg val_nrmse **0.0653** (α=0.1: 0.142, α=1: 0.043, α=5: 0.013)
+    - `multi_large`  avg val_nrmse **0.0653** (α=0.1: 0.142, α=1: 0.042, α=5: 0.011) — size not the bottleneck
+    - `extrap_high`  avg 0.079; held-out **α=5: 0.057** (5× in-dist; strong)
+    - `extrap_low`   avg 0.107; held-out **α=0.1: 0.274** (harder regime)
+    - `single_a50`   off-dist catastrophic (α=0.1: 0.418) — multi beats best single-α baseline by 3×
 - [ ] **`p6-sweep`** — Light HP sweep (LR, snippet length T, hypernet capacity) and re-introduce AMP via a targeted autocast scope (encoder/hypernet only, not theta assembly).
 - [ ] **`p6-multinode`** *(proposed)* — DDP extension to `train_hw2d.py`. Draft sketch in `knowledge/multinode_training.md`. Not blocking for CiSE; gate on `p6-sweep` revealing a single-GPU bottleneck.
 - [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
