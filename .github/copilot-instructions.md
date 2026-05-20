@@ -59,6 +59,7 @@ IEEE/
 │   ├── hw2d_dataset.py  # hw.dataset → DISCO context-snippet format.
 │   ├── config_hw2d.py   # Typed TrainConfig (dataset_name + train_alphas/val_alphas).
 │   ├── train_hw2d.py    # Production trainer (single-GPU, fp32).
+│   ├── eval_g1.py       # G1 short-horizon rollout eval (NRMSE + VPT).
 │   └── smoke_train.py   # CPU/GPU smoke entry point (single --alpha).
 │
 ├── opinf/               # Classical OpInf baselines (B1, B2).

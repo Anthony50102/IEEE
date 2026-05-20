@@ -156,6 +156,11 @@ Workflow:
 - [ ] **`p6-sweep`** — Light HP sweep (LR, snippet length T, hypernet capacity) and re-introduce AMP via a targeted autocast scope (encoder/hypernet only, not theta assembly).
 - [ ] **`p6-multinode`** *(proposed)* — DDP extension to `train_hw2d.py`. Draft sketch in `knowledge/multinode_training.md`. Not blocking for CiSE; gate on `p6-sweep` revealing a single-GPU bottleneck.
 - [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
+  Scaffolded: `disco/eval_g1.py` (autoregressive 1-step rollout from
+  trained checkpoint, per-step NRMSE + valid-prediction-time), and
+  `scripts/vista/disco_eval_g1.slurm` (2h gh wallclock). Locally
+  imports + `--help` clean; first real run will go against
+  `best.pt` of job 712489 (multi, val_nrmse 0.0594).
 - [ ] **`p6-eval-g3`** — G3 rollout at α=1.5; report stability + ⟨Γₙ⟩, σ(Γₙ), energy time-average compared to ground-truth DNS.
 - [ ] **`p6-figures`** — Rollout snapshots, error tables, possibly a parameter-space UMAP (analog of paper Fig. 4) over the 3 αs.
 - [ ] **`p6-paper-update`** — Strip B4/structured language from `IEEE-CiSE-Special-Issue/`; refocus claim on parameter-regime generalization.
