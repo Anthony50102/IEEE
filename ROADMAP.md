@@ -139,16 +139,20 @@ Workflow:
 - [x] **`p6-clone`** — Upstream `RudyMorel/DISCO` @ `ddd18f17` vendored to `IEEE/disco/upstream/` (models, attention, torchdiffeq, yparams, train_reference.py, config_reference/). License + SOURCE.md preserved. Old `IEEE/disco_lite/` B3 stub removed.
 - [x] **`p6-data`** — Adapter from `hw.dataset` → DISCO context-snippet format `(T, C=2, H, W)`. `IEEE/disco/dataset_specs.py` exposes `HW2D_ALPHA_META` (the per-α metadata source of truth) plus `make_unified_spec()`. `IEEE/disco/hw2d_dataset.py` provides `HW2DDataset` (one alpha) and `HW2DMixedDataset` (multi-α concat with `field_labels` + `file_index` + per-sample `alpha` diagnostic). All samples carry the same `name="hw2d"` — α-identity is in the snippet content, never in the label. CPU-smoke verified on synthetic HDF5.
 - [x] **`p6-smoke`** — Single-α α=1.0 CPU smoke (`disco/smoke_train.py`) at 32², hidden_dim=96, 15.8M params, batch=2, 8 SGD steps: loss 0.31→0.088 (monotone). Validated `src.*` import shim, HW2D `DATASET_SPECS` injection, full forward+backward through hypernet→param-generator→ODE-integrated operator. `hidden_dim` must be ÷12 (upstream `RMSGroupNorm` hardcode) and ÷`num_heads`.
-- [x] **`p6-train`** — Trainer + 9 sweep runs delivered; first wave finished (5 jobs TIMEOUT'd at 24h with ~80 epochs each), 4 still running, 5 resumed from `latest.pt` (jobs 712487–712491) to push toward ~160 epochs.
+- [x] **`p6-train`** — Trainer + 14 sweep runs across 3 waves; multi-α
+  headline locked at **val_nrmse 0.0594** (165 epochs, α-stratified
+  below). See "Locked results" table.
   - Code: `disco/train_hw2d.py` + `disco/config_hw2d.py` (typed YAML), `scripts/vista/disco_train.slurm` (1 H200, `gh` 24h, `module load gcc/15.1.0 cuda/12.5 python3/3.11.8`, `CONFIG` + `RESUME` env-var overrides, `$SLURM_JOB_ID` in out-dir to avoid same-second collisions). Per-α G1-tail validation, robust atomic checkpoint save (3× retry, never aborts a run), JSONL metrics, optional wandb, resume.
   - **Unified-dataset architecture (2026-05-17, commit `c39981f`).** Initially each α was registered as its own DISCO dataset (`hw2d_a01/10/50`), which broke 5/9 sweep jobs with `KeyError` *and* leaked α-identity via the `dset_name` label, defeating the hypernet's snippet-inference job. Verified against upstream `disco.py` + paper + `knowledge/disco.md`: DISCO's per-dataset machinery is for **channel-count differences across PDE families**, not parameter regimes. Refactored to single `dset_name="hw2d"`; α-identity carried only by snippet content.
   - **AMP bf16 disabled** in production (`amp: false`): vendored DISCO has a fp32 buffer indexed-assigned with autocast-bf16 outputs at `disco/upstream/models/disco.py:495`. Targeted-scope autocast deferred to `p6-sweep`.
-  - First-wave results (5 TIMEOUT runs, ~80 epochs):
-    - `multi`        avg val_nrmse **0.0653** (α=0.1: 0.142, α=1: 0.043, α=5: 0.013)
-    - `multi_large`  avg val_nrmse **0.0653** (α=0.1: 0.142, α=1: 0.042, α=5: 0.011) — size not the bottleneck
-    - `extrap_high`  avg 0.079; held-out **α=5: 0.057** (5× in-dist; strong)
-    - `extrap_low`   avg 0.107; held-out **α=0.1: 0.274** (harder regime)
-    - `single_a50`   off-dist catastrophic (α=0.1: 0.418) — multi beats best single-α baseline by 3×
+  - **Final-wave results (5 resumed runs, ~163 epochs):**
+    - `multi`        avg val_nrmse **0.0594** (α=0.1: 0.133, α=1: 0.036, α=5: 0.009) — **headline**
+    - `multi_large`  avg val_nrmse **0.0610** (α=0.1: 0.136, α=1: 0.038, α=5: 0.009) — width not the bottleneck
+    - `extrap_high`  avg 0.0747; held-out **α=5: 0.055** (zero-shot)
+    - `extrap_low`   avg 0.1064; held-out **α=0.1: 0.277** (zero-shot, harder regime)
+    - `single_a50`   off-dist catastrophic (α=0.1: 0.425) — multi beats best single-α baseline by **3.2×** on the worst-case regime
+  - Headline-improvement curve: 80ep → 165ep took multi from 0.0653 → 0.0594; extrapolation held-out essentially plateaued by 80ep. Diminishing returns past ~150ep on this budget; no further resume submitted for the resume wave.
+  - Wave-3 (jobs 714630–714633, in flight) supplies seed=1 reproduction (`multi_tuned`), `multi_small` resume past 100ep, and clean single-α controls.
 - [ ] **`p6-sweep`** — Light HP sweep (LR, snippet length T, hypernet capacity) and re-introduce AMP via a targeted autocast scope (encoder/hypernet only, not theta assembly).
 - [ ] **`p6-multinode`** *(proposed)* — DDP extension to `train_hw2d.py`. Draft sketch in `knowledge/multinode_training.md`. Not blocking for CiSE; gate on `p6-sweep` revealing a single-GPU bottleneck.
 - [ ] **`p6-eval-g1`** — G1 short-horizon rollout at each trained α; report NRMSE vs B1.
@@ -179,11 +183,22 @@ Workflow:
 | B1 v1 α=1   r=50 | Vanilla OpInf, T=1500, 1.5× over-det (initial lock) | 6.6% | 75% | `results/b1_v1_alpha1/` |
 | B1 v1 α=5   r=50 | Vanilla OpInf, T=3000, 3.8× over-det | 12.7% | 66% | `results/b1_v1_alpha5.0/` |
 | **B1 v2 α=1 r=75** | Vanilla OpInf, T=3000, 1.7× over-det, widened reg | **3.7%** | 87% | `results/b1_v2_alpha1/` |
+| **B3′ DISCO multi-α** | DISCO hypernet over α∈{0.1,1,5}, 165 ep, 384-wide × 12 blocks, seed=0 | val_nrmse **0.0594** (α=0.1: 0.133, α=1: 0.036, α=5: 0.009) | — | `$SCRATCH/IEEE/output/20260519_161824_disco_train/checkpoints/best.pt` (job 712489) |
+| **B3′ DISCO extrap α=5** | Trained on {0.1, 1}, **zero-shot α=5** | val_nrmse **0.055** | — | `$SCRATCH/IEEE/output/20260519_163407_disco_train/` (job 712490) |
+| **B3′ DISCO extrap α=0.1** | Trained on {1, 5}, **zero-shot α=0.1** | val_nrmse **0.277** | — | `$SCRATCH/IEEE/output/20260519_174953_disco_train/` (job 712491) |
 
 Headline B1 finding: more modes (r=50 → r=75) cut the mean error nearly
 in half but *worsened* the σ collapse. The collapse is structural to
 unstructured OpInf on a chaotic flux state — exactly the gap our
 context-conditioned structured operator is designed to close.
+
+Headline B3′ DISCO finding: a single multi-α hypernet trained on
+α∈{0.1, 1, 5} reaches val_nrmse 0.0594 averaged across the 3 regimes,
+**zero-shot extrapolates** to held-out α=5 at 0.055 and to held-out
+α=0.1 at 0.277, and **beats the best single-α baseline by 3.2×** on
+its worst off-distribution regime (multi 0.133 vs single_a50 0.425 on
+α=0.1). The hypernet is genuinely reading the parameter regime from
+the snippet — not memorizing a label.
 
 ---
 
