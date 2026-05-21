@@ -76,8 +76,18 @@ def compute_gamma_c(n: np.ndarray, phi: np.ndarray, c1: float = 1.0) -> float:
 # ---------------------------------------------------------------------------
 
 def _load_model_from_checkpoint(
-    cfg: TrainConfig, checkpoint_path: Path, device: torch.device
+    cfg: TrainConfig, checkpoint_path: Path, device: torch.device,
+    data_root: str,
 ):
+    # Mirror train_hw2d.main(): register both the legacy per-α specs
+    # AND the unified ``cfg.dataset_name`` spec into upstream's
+    # DATASET_SPECS *before* building the model.
+    import disco as _disco  # noqa: PLC0415
+    _disco.register_hw2d_specs()
+    specs = th._build_specs(cfg, data_root)
+    from src.utils.data_utils import DATASET_SPECS  # noqa: PLC0415
+    DATASET_SPECS.update(specs)
+
     model = th._build_model(cfg, device)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = ckpt.get("model", ckpt)
@@ -363,7 +373,9 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
 
     print(f"[rollout] loading {args.checkpoint}")
-    model, ckpt_epoch = _load_model_from_checkpoint(cfg, args.checkpoint, device)
+    model, ckpt_epoch = _load_model_from_checkpoint(
+        cfg, args.checkpoint, device, args.data_root,
+    )
     print(f"[rollout] model built; checkpoint epoch={ckpt_epoch}")
 
     state_labels = torch.tensor([0, 1], dtype=torch.long, device=device)
