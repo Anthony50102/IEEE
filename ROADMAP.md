@@ -162,7 +162,16 @@ Workflow:
   imports + `--help` clean; first real run will go against
   `best.pt` of job 712489 (multi, val_nrmse 0.0594).
 - [ ] **`p6-eval-g3`** — G3 rollout at α=1.5; report stability + ⟨Γₙ⟩, σ(Γₙ), energy time-average compared to ground-truth DNS.
-- [ ] **`p6-figures`** — Rollout snapshots, error tables, possibly a parameter-space UMAP (analog of paper Fig. 4) over the 3 αs.
+- [~] **`p6-figures`** — Rollout snapshots, error tables, possibly a parameter-space UMAP (analog of paper Fig. 4) over the 3 αs.
+  Scaffolded: `disco/rollout.py` (long-horizon autoregressive rollout
+  that saves full pred + ref fields and Γₙ/Γc time-series to HDF5),
+  `disco/plot_rollout.py` (MP4 state animation + Γₙ/Γc PNGs +
+  per-step NRMSE plot; runs locally with no GPU), and
+  `scripts/vista/disco_rollout.slurm` (2h gh wallclock). All three
+  locally lint clean; plot module smoke-tested end-to-end (PNGs +
+  MP4 via ffmpeg). First real submissions will target the 3 locked
+  checkpoints (712489 multi headline + 712490 extrap_high + 712491
+  extrap_low) at αs ∈ {0.1, 1, 5}, 2000-step horizon.
 - [ ] **`p6-paper-update`** — Strip B4/structured language from `IEEE-CiSE-Special-Issue/`; refocus claim on parameter-regime generalization.
 
 ### Phases retired (~~~~ kept for record ~~~~)
