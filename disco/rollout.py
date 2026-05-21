@@ -51,7 +51,24 @@ from disco.config_hw2d import TrainConfig, load_config
 from disco.dataset_specs import HW2D_ALPHA_META
 from disco.hw2d_dataset import HW2DDataset
 from disco import train_hw2d as th  # _build_model, _alpha_key
-from shared.physics import compute_gamma_n, compute_gamma_c
+
+
+# ---------------------------------------------------------------------------
+# QoI computations
+# ---------------------------------------------------------------------------
+# Inlined from shared.physics to avoid pulling shared/__init__'s heavier
+# deps (xarray) into the DISCO inference venv. Mirrors the canonical
+# definitions exactly.
+
+def compute_gamma_n(n: np.ndarray, phi: np.ndarray, dx: float) -> float:
+    """Particle flux Γₙ = -<n · ∂φ/∂y> with periodic central differences."""
+    dphi_dy = (np.roll(phi, -1, axis=-2) - np.roll(phi, 1, axis=-2)) / (2.0 * dx)
+    return float(-np.mean(n * dphi_dy))
+
+
+def compute_gamma_c(n: np.ndarray, phi: np.ndarray, c1: float = 1.0) -> float:
+    """Conductive flux Γc = c1 · <(n − φ)²>."""
+    return float(c1 * np.mean((n - phi) ** 2))
 
 
 # ---------------------------------------------------------------------------
