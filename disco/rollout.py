@@ -90,7 +90,14 @@ def _load_model_from_checkpoint(
 
     model = th._build_model(cfg, device)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = ckpt.get("model", ckpt)
+    # Production checkpoints (train_hw2d.py) store under "model_state_dict";
+    # older test ones used "model"; bare state_dict is the legacy fallback.
+    if "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+    elif "model" in ckpt:
+        state_dict = ckpt["model"]
+    else:
+        state_dict = ckpt
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
         print(f"[rollout] state_dict mismatch: missing={len(missing)} "
@@ -99,6 +106,12 @@ def _load_model_from_checkpoint(
             print(f"  e.g. missing[:3] = {missing[:3]}")
         if unexpected:
             print(f"  e.g. unexpected[:3] = {unexpected[:3]}")
+        if len(missing) > 10:
+            raise RuntimeError(
+                f"refusing to run with {len(missing)} missing weight tensors; "
+                "checkpoint format probably mismatched (keys: "
+                f"{list(ckpt.keys())[:6]}...)"
+            )
     model.eval()
     return model, int(ckpt.get("epoch", -1))
 
@@ -231,20 +244,34 @@ def rollout_alpha(
         file_index=0,
     )
     n_avail = len(dset)
-    if n_avail < rollout_steps + 1:
-        raise RuntimeError(
-            f"α={alpha}: G1 tail too short ({n_avail} samples) for "
-            f"{rollout_steps}-step rollout"
-        )
+    if n_avail < 1:
+        raise RuntimeError(f"α={alpha}: G1 tail is empty")
 
-    rng = np.random.default_rng(seed)
-    last_valid = max(1, n_avail - rollout_steps - 1)
-    start = int(rng.integers(0, last_valid))
-    print(f"[rollout] α={alpha}: n_avail={n_avail} start={start} "
-          f"rollout_steps={rollout_steps}")
+    # Seed from the start of the G1 tail (deterministic, gives the most
+    # post-seed runway). The rollout itself is allowed to extend past the
+    # G1 boundary into the trajectory tail; we read GT directly from the
+    # underlying HDF5 (which doesn't know about train/g1 splits).
+    start = 0
+    print(f"[rollout] α={alpha}: n_avail={n_avail} (G1 tail samples) "
+          f"start={start} rollout_steps={rollout_steps}")
 
     seed_sample = dset[start]
     x0 = seed_sample["input_fields"].unsqueeze(0).to(device)  # (1, P, C, H, W)
+
+    # Cap rollout_steps to what the trajectory can support past the seed.
+    h5_path = dset._file_path
+    sy, sx = dset._stride
+    g1 = dset._g1_split
+    start_frame_abs = dset._t_burn + g1.t_lo + start + cfg.n_past
+    import h5py  # noqa: PLC0415
+    with h5py.File(h5_path, "r") as _f:
+        n_t_total = _f["density"].shape[0]
+    max_rollout = n_t_total - start_frame_abs
+    if rollout_steps > max_rollout:
+        print(f"[rollout] α={alpha}: capping rollout_steps "
+              f"{rollout_steps}→{max_rollout} (trajectory has {n_t_total} "
+              f"frames; seed at abs frame {start_frame_abs})")
+        rollout_steps = max_rollout
 
     t0 = time.time()
     pred = _autoregressive_rollout(
@@ -258,11 +285,7 @@ def rollout_alpha(
     pred_n = pred_np[:, 0]
     pred_phi = pred_np[:, 1]
 
-    h5_path = dset._file_path
-    sy, sx = dset._stride
-    # First predicted frame absolute index in HDF5 = t_burn + g1.t_lo + start + n_past
-    g1 = dset._g1_split
-    start_frame_abs = dset._t_burn + g1.t_lo + start + cfg.n_past
+    # (h5_path, sy, sx, start_frame_abs already computed above)
 
     ref_n, ref_phi, ref_gn_full, ref_gc_full = _read_gt_frames(
         h5_path, start_frame_abs, rollout_steps, sy, sx,

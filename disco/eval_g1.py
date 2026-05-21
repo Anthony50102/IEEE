@@ -146,7 +146,12 @@ def _load_model_from_checkpoint(
 
     model = th._build_model(cfg, device)
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = ckpt.get("model", ckpt)
+    if "model_state_dict" in ckpt:
+        state_dict = ckpt["model_state_dict"]
+    elif "model" in ckpt:
+        state_dict = ckpt["model"]
+    else:
+        state_dict = ckpt
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     if missing or unexpected:
         print(f"[eval_g1] state_dict mismatch: missing={len(missing)} "
@@ -155,6 +160,12 @@ def _load_model_from_checkpoint(
             print(f"  e.g. missing[:3] = {missing[:3]}")
         if unexpected:
             print(f"  e.g. unexpected[:3] = {unexpected[:3]}")
+        if len(missing) > 10:
+            raise RuntimeError(
+                f"refusing to run with {len(missing)} missing weight tensors; "
+                f"checkpoint format probably mismatched (keys: "
+                f"{list(ckpt.keys())[:6]}...)"
+            )
     model.eval()
     return model, ckpt.get("epoch", -1)
 
