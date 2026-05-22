@@ -163,15 +163,44 @@ Workflow:
   `best.pt` of job 712489 (multi, val_nrmse 0.0594).
 - [ ] **`p6-eval-g3`** — G3 rollout at α=1.5; report stability + ⟨Γₙ⟩, σ(Γₙ), energy time-average compared to ground-truth DNS.
 - [~] **`p6-figures`** — Rollout snapshots, error tables, possibly a parameter-space UMAP (analog of paper Fig. 4) over the 3 αs.
-  Scaffolded: `disco/rollout.py` (long-horizon autoregressive rollout
-  that saves full pred + ref fields and Γₙ/Γc time-series to HDF5),
+  Implemented: `disco/rollout.py` (long-horizon autoregressive rollout
+  with full pred + ref field + Γₙ/Γc HDF5 export),
   `disco/plot_rollout.py` (MP4 state animation + Γₙ/Γc PNGs +
-  per-step NRMSE plot; runs locally with no GPU), and
-  `scripts/vista/disco_rollout.slurm` (2h gh wallclock). All three
-  locally lint clean; plot module smoke-tested end-to-end (PNGs +
-  MP4 via ffmpeg). First real submissions will target the 3 locked
-  checkpoints (712489 multi headline + 712490 extrap_high + 712491
-  extrap_low) at αs ∈ {0.1, 1, 5}, 2000-step horizon.
+  per-step NRMSE, all local-runnable), and
+  `scripts/vista/disco_rollout.slurm` (2h gh wallclock).
+
+  **First run (2026-05-21).** Jobs 717426/427/428 on `gh-dev`
+  produced 9 rollouts (3 ckpts × 3 αs, capped at 519/584 frames each
+  since the G1 tail + remaining trajectory < 2000 steps). Artifacts
+  live at `$SCRATCH/IEEE/output/{20260521_185015_717426,_190854_717427,_192803_717428}_disco_rollout/`
+  on Vista and `local_output/disco_rollouts/{multi,extrap_high,extrap_low}/`
+  locally (~1.3 GB per ckpt). Plots in
+  `local_output/disco_plots/rollouts/<ckpt>/`.
+
+  **Key qualitative finding.** The headline checkpoint (multi, 1-step
+  val_nrmse 0.0594) crosses NRMSE=1 (climatology baseline) within
+  ~0.3 sim-time units of autoregressive rollout and oscillates
+  between 1–3.5 thereafter. Γₙ collapses to ~0 within a few steps
+  (pred mean −0.04 vs GT 1.48 at α=0.1; −0.06 vs 0.61 at α=1;
+  −0.03 vs 0.14 at α=5) while Γc inflates 5–300×. Same pattern on
+  both extrap checkpoints. This is the **expected** failure mode for
+  1-step-trained surrogates on a chaotic PDE — no rollout loss, no
+  spectral targets. The model is an excellent 1-step predictor but
+  loses the n–φ phase correlation that drives net transport almost
+  immediately. Strong motivation for the structured (B4) journal
+  extension.
+
+  **Bugs fixed during first-run debugging:**
+   - Missing `xarray` in Vista venv → inlined Γₙ/Γc (commit `6ad9270`)
+   - Unified `dataset_name="hw2d"` spec not auto-registered in
+     `_build_model` → mirror `train_hw2d.main()`'s registration order
+     (commit `bab858a`)
+   - `state_dict` key was `model_state_dict` not `model`; silent
+     fallback loaded zero weights → explicit key check + hard fail
+     on > 10 missing tensors (commit `cc50a4f`)
+   - G1 tail too short for 2000-step rollout → seed from G1 tail
+     start, allow rollout to extend past G1 boundary, cap at end of
+     trajectory (commit `cc50a4f`).
 - [ ] **`p6-paper-update`** — Strip B4/structured language from `IEEE-CiSE-Special-Issue/`; refocus claim on parameter-regime generalization.
 
 ### Phases retired (~~~~ kept for record ~~~~)
